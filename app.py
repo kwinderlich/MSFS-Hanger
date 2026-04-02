@@ -1,0 +1,1818 @@
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import mimetypes
+import base64
+import os
+import re
+import shutil
+import time
+import uuid
+import unicodedata
+from html import escape
+from pathlib import Path
+from typing import Optional
+from urllib.parse import quote, unquote, urlparse, parse_qs, urljoin
+
+import requests
+from bs4 import BeautifulSoup
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query, UploadFile, File, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+import linker
+import scanner as scan_module
+import storage
+from realworld import fetch_aircraft_specs, guess_icao
+from logger import build_diag_report, get_logger, write_startup_snapshot
+from paths import BASE_DIR, USER_DATA_DIR, initialize_user_data, SETTINGS_JSON_PATH, DB_PATH
+
+log = get_logger(__name__)
+
+app = FastAPI(title="MSFS Hangar", version="2.0.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+BASE_DIR = Path(__file__).parent
+FRONTEND_DIR = BASE_DIR / "frontend"
+initialize_user_data()
+DATA_DIR = USER_DATA_DIR
+if DATA_DIR.exists():
+    app.mount("/data", StaticFiles(directory=str(DATA_DIR)), name="data")
+
+_scan_cancel: Optional[asyncio.Event] = None
+_scan_running = False
+_enrich_running = False
+_enrich_progress = {"running": False, "pct": 0, "current": "", "done": 0, "total": 0, "message": "", "type": "idle"}
+
+_browser_state = {
+    'requested_url': '',
+    'requested_title': '',
+    'current_url': '',
+    'current_title': '',
+    'visible': False,
+    'updated_at': 0.0,
+}
+
+_search_cache: dict[tuple[str, str], dict] = {}
+_SEARCH_CACHE_TTL = 900
+
+def _update_browser_state(**kwargs):
+    _browser_state.update({k: v for k, v in kwargs.items() if v is not None})
+    _browser_state['updated_at'] = time.time()
+
+
+@app.on_event("startup")
+async def startup():
+    initialize_user_data()
+    await storage.init_db()
+    settings = await storage.get_all_settings()
+    write_startup_snapshot(settings)
+    log.info("Using external data dir: %s", USER_DATA_DIR)
+    log.info("Settings file: %s", SETTINGS_JSON_PATH)
+    log.info("Library DB: %s", DB_PATH)
+
+@app.get("/api/diag")
+async def diagnostics():
+    addons = await storage.get_all_addons()
+    settings = await storage.get_all_settings()
+    report = build_diag_report(extra={
+        "addon_count": len(addons),
+        "settings": {k: ("***" if "key" in k.lower() else v) for k, v in settings.items()},
+        "scan_running": _scan_running,
+    })
+    return HTMLResponse(f"<html><body><pre>{escape(json.dumps(report, indent=2))}</pre></body></html>")
+
+@app.get("/thumb/{addon_id}")
+async def thumb(addon_id: str):
+    addon = await storage.get_addon(addon_id)
+    if not addon:
+        raise HTTPException(404, "No thumbnail")
+    path = None
+    if addon.thumbnail_path and Path(addon.thumbnail_path).exists():
+        path = addon.thumbnail_path
+    elif addon.gallery_paths:
+        for gp in addon.gallery_paths:
+            if Path(gp).exists():
+                path = gp
+                break
+    if not path:
+        raise HTTPException(404, "No thumbnail")
+    return FileResponse(path)
+
+@app.get("/gallery/{addon_id}/{index}")
+async def gallery(addon_id: str, index: int):
+    addon = await storage.get_addon(addon_id)
+    if not addon or index < 0 or index >= len(addon.gallery_paths):
+        raise HTTPException(404, "No image")
+    path = Path(addon.gallery_paths[index])
+    if not path.exists():
+        raise HTTPException(404, "No image")
+    return FileResponse(str(path))
+
+
+def _addon_image_dir(addon_id: str) -> Path:
+    img_dir = USER_DATA_DIR / "gallery" / addon_id
+    img_dir.mkdir(parents=True, exist_ok=True)
+    return img_dir
+
+
+def _guess_ext(filename: str, content_type: str = "") -> str:
+    ext = Path(filename or "").suffix.lower()
+    if ext in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+        return ext
+    if content_type:
+        guessed = mimetypes.guess_extension(content_type.split(";")[0].strip()) or ""
+        if guessed:
+            return guessed
+    return ".png"
+
+
+async def _store_gallery_upload(addon_id: str, upload: UploadFile) -> str:
+    raw = await upload.read()
+    if not raw:
+        raise HTTPException(400, "Empty image upload")
+    ext = _guess_ext(upload.filename or "image", upload.content_type or "")
+    dest = _addon_image_dir(addon_id) / f"{uuid.uuid4().hex}{ext}"
+    dest.write_bytes(raw)
+    return str(dest.resolve())
+
+
+@app.post("/api/addons/{addon_id}/gallery/upload")
+async def upload_gallery_image(addon_id: str, file: UploadFile = File(...)):
+    addon = await storage.get_addon(addon_id)
+    if not addon:
+        raise HTTPException(404)
+    path = await _store_gallery_upload(addon_id, file)
+    gallery = [gp for gp in addon.gallery_paths if Path(gp).exists()]
+    gallery.append(path)
+    addon.gallery_paths = list(dict.fromkeys(gallery))
+    if not addon.thumbnail_path or not Path(addon.thumbnail_path).exists():
+        addon.thumbnail_path = path
+    await storage.upsert_addon(addon)
+    return addon.to_frontend_dict()
+
+
+class GalleryDefaultUpdate(BaseModel):
+    index: int
+
+
+@app.post("/api/addons/{addon_id}/gallery/set-default")
+async def gallery_set_default(addon_id: str, body: GalleryDefaultUpdate):
+    addon = await storage.get_addon(addon_id)
+    if not addon:
+        raise HTTPException(404)
+    if body.index < 0 or body.index >= len(addon.gallery_paths):
+        raise HTTPException(404, "No image")
+    path = addon.gallery_paths[body.index]
+    if not Path(path).exists():
+        raise HTTPException(404, "No image")
+    addon.thumbnail_path = path
+    await storage.upsert_addon(addon)
+    return addon.to_frontend_dict()
+
+
+@app.delete("/api/addons/{addon_id}/gallery/{index}")
+async def delete_gallery_image(addon_id: str, index: int):
+    addon = await storage.get_addon(addon_id)
+    if not addon:
+        raise HTTPException(404)
+    if index < 0 or index >= len(addon.gallery_paths):
+        raise HTTPException(404, "No image")
+    path = addon.gallery_paths.pop(index)
+    try:
+        p = Path(path)
+        if str(p).startswith(str(USER_DATA_DIR)) and p.exists():
+            p.unlink(missing_ok=True)
+    except Exception:
+        pass
+    if addon.thumbnail_path == path:
+        addon.thumbnail_path = addon.gallery_paths[0] if addon.gallery_paths else None
+    await storage.upsert_addon(addon)
+    return addon.to_frontend_dict()
+
+@app.get("/api/addons")
+async def list_addons():
+    addons = await storage.get_all_addons()
+    return [a.to_frontend_dict() for a in addons.values()]
+
+@app.get("/api/addons/{addon_id}")
+async def get_addon(addon_id: str):
+    addon = await storage.get_addon(addon_id)
+    if not addon:
+        raise HTTPException(404)
+    return addon.to_frontend_dict()
+
+class UserDataUpdate(BaseModel):
+    fav: Optional[bool] = None
+    rating: Optional[int] = None
+    notes: Optional[str] = None
+    tags: Optional[list[str]] = None
+    paid: Optional[float] = None
+    source_store: Optional[str] = None
+    avionics: Optional[str] = None
+    features: Optional[str] = None
+    resources: Optional[list] = None
+
+@app.patch("/api/addons/{addon_id}/user")
+async def update_user(addon_id: str, body: UserDataUpdate):
+    update = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not update:
+        raise HTTPException(400, "No fields provided")
+    await storage.update_addon_user_data(addon_id, update)
+    return {"ok": True}
+
+class ToggleRequest(BaseModel):
+    enabled: bool
+
+class BrowserOpenRequest(BaseModel):
+    url: str
+    title: Optional[str] = None
+
+class BrowserUpdateRequest(BaseModel):
+    current_url: Optional[str] = None
+    current_title: Optional[str] = None
+    visible: Optional[bool] = None
+
+class AddonCoreUpdate(BaseModel):
+    type: Optional[str] = None
+    sub: Optional[str] = None
+    title: Optional[str] = None
+    publisher: Optional[str] = None
+    summary: Optional[str] = None
+    thumbnail_path: Optional[str] = None
+    gallery_paths: Optional[list[str]] = None
+    manufacturer: Optional[str] = None
+    manufacturer_full_name: Optional[str] = None
+    model: Optional[str] = None
+    category: Optional[str] = None
+    icao: Optional[str] = None
+    version: Optional[str] = None
+    latest_version: Optional[str] = None
+    released: Optional[str] = None
+    price: Optional[float] = None
+    package_name: Optional[str] = None
+    product_source_store: Optional[str] = None
+    rw_override: Optional[dict] = None
+
+@app.patch("/api/addons/{addon_id}/meta")
+async def update_addon_meta(addon_id: str, body: AddonCoreUpdate):
+    update = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not update:
+        raise HTTPException(400, "No fields provided")
+    await storage.update_addon_core(addon_id, update)
+    return {"ok": True}
+
+@app.post("/api/addons/{addon_id}/toggle")
+async def toggle_addon(addon_id: str, body: ToggleRequest):
+    addon = await storage.get_addon(addon_id)
+    if not addon:
+        raise HTTPException(404)
+    community_dir = await storage.get_setting("community_dir")
+    if not community_dir:
+        raise HTTPException(400, "Community folder not set")
+    ok, msg = linker.toggle_addon(addon.addon_path, community_dir, body.enabled)
+    if not ok:
+        raise HTTPException(500, msg)
+    await storage.set_enabled(addon_id, body.enabled)
+    return {"ok": True, "message": msg, "enabled": body.enabled}
+
+@app.get("/api/settings")
+async def get_settings():
+    return await storage.get_all_settings()
+
+class SettingUpdate(BaseModel):
+    value: str
+
+@app.put("/api/settings/{key}")
+async def set_setting(key: str, body: SettingUpdate):
+    await storage.set_setting(key, body.value)
+    return {"ok": True}
+
+@app.post("/api/library/reset")
+async def reset_library():
+    await storage.delete_all_addons()
+    return {"ok": True}
+
+@app.get("/api/selection")
+async def get_selection():
+    return {"paths": await storage.get_json_setting("scan_selected_paths", [])}
+
+class SelectionUpdate(BaseModel):
+    paths: list[str]
+
+@app.put("/api/selection")
+async def set_selection(body: SelectionUpdate):
+    await storage.set_json_setting("scan_selected_paths", body.paths)
+    return {"ok": True}
+
+
+DEFAULT_DATA_OPTIONS = {
+    "sources": sorted(["Aerosoft Shop","flightsim.to","Flightbeam Store","FlyTampa Store","GitHub","iniBuilds Store","Just Flight","MSFS Marketplace","Orbx Direct","PMDG Store","Simmarket","Other"]),
+    "avionics": sorted(["Analog","G1000","G3000","G430","G530","G550","G750","GTN 750","Unsure"]),
+    "tags": ["IFR","VFR","Study Level","Freeware","Payware","Major Hub","Training","Scenic","GA","Helicopter","Military","Business Jet"],
+    "subtypes": {
+        "Aircraft": ["Airliner","General Aviation","Business Jet","Helicopter","Military","Regional"],
+        "Airport": ["Large Commercial","Medium Commercial","General Aviation","Heliport","Seaplane Base","Closed"],
+        "Scenery": ["City","Region","Landmark","Mesh","Airport scenery"],
+        "Utility": ["Navigation","Tool","Weather","Mission"],
+        "Mod": ["Livery","Enhancement","Other"],
+    },
+}
+
+
+def _merged_data_options(settings: dict[str, str]) -> dict:
+    options = json.loads(json.dumps(DEFAULT_DATA_OPTIONS))
+    for key, setting_key in [("sources", "data_options_sources"), ("avionics", "data_options_avionics"), ("tags", "data_options_tags"), ("subtypes", "data_options_subtypes")]:
+        raw = settings.get(setting_key)
+        if not raw:
+            continue
+        try:
+            val = json.loads(raw)
+            if isinstance(val, (list, dict)):
+                options[key] = val
+        except Exception:
+            continue
+    return options
+
+
+@app.get("/api/data-options")
+async def get_data_options():
+    settings = await storage.get_all_settings()
+    return _merged_data_options(settings)
+
+
+class DataOptionsUpdate(BaseModel):
+    options: dict
+
+
+@app.put("/api/data-options")
+async def set_data_options(body: DataOptionsUpdate):
+    options = body.options or {}
+    for key, setting_key in [("sources", "data_options_sources"), ("avionics", "data_options_avionics"), ("tags", "data_options_tags"), ("subtypes", "data_options_subtypes")]:
+        if key in options:
+            await storage.set_json_setting(setting_key, options[key])
+    return {"ok": True}
+
+
+class ReplaceLibraryValue(BaseModel):
+    field: str
+    old_value: str
+    new_value: str
+
+
+@app.post("/api/library/replace-value")
+async def replace_library_value(body: ReplaceLibraryValue):
+    field = (body.field or '').strip()
+    old = body.old_value
+    new = body.new_value
+    if not field or old == new:
+        return {"ok": True, "updated": 0}
+    addons = await storage.get_all_addons(include_removed=True)
+    updated = []
+    for addon in addons.values():
+        changed = False
+        if field == 'source_store' and addon.usr.source_store == old:
+            addon.usr.source_store = new; changed = True
+        elif field == 'avionics' and addon.usr.avionics == old:
+            addon.usr.avionics = new; addon.rw.avionics = new; changed = True
+        elif field == 'sub' and addon.sub == old:
+            addon.sub = new; changed = True
+        elif field == 'type' and addon.type == old:
+            addon.type = new; changed = True
+        elif field == 'tags' and old in (addon.usr.tags or []):
+            addon.usr.tags = [new if t == old else t for t in addon.usr.tags]; changed = True
+        if changed:
+            updated.append(addon)
+    if updated:
+        await storage.upsert_many(updated)
+    return {"ok": True, "updated": len(updated)}
+
+
+def _tree_node(path: Path, depth: int, max_depth: int):
+    node = {"name": path.name, "path": str(path), "children": []}
+    if depth >= max_depth:
+        return node
+    try:
+        children = [p for p in sorted(path.iterdir(), key=lambda x: x.name.lower()) if p.is_dir() and not p.name.startswith(".")]
+    except Exception:
+        return node
+    for child in children:
+        node["children"].append(_tree_node(child, depth + 1, max_depth))
+    return node
+
+@app.get("/api/folders/tree")
+async def folder_tree(root: Optional[str] = None, max_depth: int = 4):
+    if not root:
+        root = await storage.get_setting("addons_root")
+    if not root:
+        return {"root": None, "children": []}
+    root_path = Path(root)
+    if not root_path.exists():
+        raise HTTPException(404, "Addons root not found")
+    try:
+        children = [_tree_node(p, 1, max_depth) for p in sorted(root_path.iterdir(), key=lambda x: x.name.lower()) if p.is_dir() and not p.name.startswith(".")]
+    except Exception as e:
+        raise HTTPException(500, str(e))
+    return {"root": str(root_path), "children": children}
+
+
+@app.get("/api/folders/top")
+async def folder_top(root: Optional[str] = None):
+    if not root:
+        root = await storage.get_setting("addons_root")
+    if not root:
+        return {"root": None, "folders": []}
+    root_path = Path(root)
+    if not root_path.exists():
+        raise HTTPException(404, "Addons root not found")
+    folders = []
+    for p in sorted(root_path.iterdir(), key=lambda x: x.name.lower()):
+        if p.is_dir() and not p.name.startswith('.'):
+            folders.append({"name": p.name, "path": str(p.resolve())})
+    return {"root": str(root_path), "folders": folders}
+@app.get("/api/docs/{addon_id}/{index}")
+async def addon_doc(addon_id: str, index: int):
+    addon = await storage.get_addon(addon_id)
+    if not addon or index < 0 or index >= len(addon.docs):
+        raise HTTPException(404)
+    doc = addon.docs[index]
+    path = Path(doc.path)
+    if not path.exists():
+        raise HTTPException(404)
+    media = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    headers = {"Content-Disposition": f"inline; filename=\"{path.name}\"", "Cache-Control": "no-store"}
+    return FileResponse(str(path), media_type=media, headers=headers)
+
+class AircraftFetchRequest(BaseModel):
+    manufacturer: str
+    model: str
+    manufacturer_full_name: Optional[str] = None
+
+
+class AirportFetchRequest(BaseModel):
+    icao: str
+
+
+@app.post("/api/aircraft/fetch-specs")
+async def aircraft_fetch_specs(body: AircraftFetchRequest):
+    try:
+        from aircraft_data import fetch_aircraft_specs as wiki_fetch_aircraft_specs
+        lookup_mfr = body.manufacturer_full_name or body.manufacturer
+        data = wiki_fetch_aircraft_specs(lookup_mfr, body.model)
+        return {
+            "manufacturer": body.manufacturer,
+            "manufacturer_full_name": data.get("manufacturer_full_name") or data.get("mfr") or lookup_mfr,
+            "model": data.get("model") or body.model,
+            "category": data.get("category") or data.get("wiki_title") or "",
+            "engine": data.get("engine") or "",
+            "engine_type": data.get("engine_type") or "",
+            "max_speed": data.get("max_speed") or "",
+            "cruise": data.get("cruise") or "",
+            "range": data.get("range") or "",
+            "range_nm": data.get("range_nm"),
+            "ceiling": data.get("ceiling") or "",
+            "seats": data.get("seats") or "",
+            "mtow": data.get("mtow") or "",
+            "introduced": data.get("introduced") or data.get("first_flight") or "",
+            "wiki_title": data.get("wiki_title") or "",
+            "wiki_url": data.get("wiki_url") or "",
+            "wiki_summary": data.get("wiki_summary") or "",
+            "source": "Wikipedia",
+        }
+    except Exception as e:
+        raise HTTPException(502, f"Wikipedia lookup failed: {e}")
+
+
+def _wiki_request(params: dict) -> dict:
+    params = dict(params)
+    params.setdefault("format", "json")
+    params.setdefault("origin", "*")
+    resp = requests.get("https://en.wikipedia.org/w/api.php", params=params, timeout=20, headers={"User-Agent": "MSFS-Hangar/2.0"})
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _extract_infobox_field(html: str, keys: list[str]) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    for row in soup.select("table.infobox tr"):
+        th = row.find("th")
+        td = row.find("td")
+        if not th or not td:
+            continue
+        label = th.get_text(" ", strip=True).lower()
+        if any(k in label for k in keys):
+            return re.sub(r"\s+", " ", td.get_text(" ", strip=True)).strip()
+    return ""
+
+
+@app.post("/api/airport/fetch-data")
+async def airport_fetch_data(body: AirportFetchRequest):
+    icao = (body.icao or "").strip().upper()
+    if len(icao) < 3:
+        raise HTTPException(400, "ICAO required")
+    try:
+        from airports import lookup_airport
+        csv_data = lookup_airport(icao) or {}
+    except Exception:
+        csv_data = {}
+    wiki_extra = {}
+    try:
+        search = _wiki_request({"action": "opensearch", "search": f"{icao} airport", "limit": 5, "namespace": 0})
+        titles = search[1] if isinstance(search, list) and len(search) > 1 else []
+        urls = search[3] if isinstance(search, list) and len(search) > 3 else []
+        title = titles[0] if titles else ""
+        wiki_url = urls[0] if urls else (f"https://en.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}" if title else "")
+        if title:
+            parse = _wiki_request({"action": "parse", "page": title, "prop": "text"})
+            html = ((((parse or {}).get("parse") or {}).get("text") or {}).get("*")) or ""
+            wiki_extra = {
+                "first_opened": _extract_infobox_field(html, ["opened", "first opened", "opening"]),
+                "wiki_title": title,
+                "wiki_url": wiki_url,
+            }
+            q = _wiki_request({"action": "query", "prop": "extracts", "titles": title, "exintro": True, "explaintext": True, "exsentences": 4})
+            pages = (((q or {}).get("query") or {}).get("pages") or {})
+            page = next(iter(pages.values())) if pages else {}
+            wiki_extra["wiki_summary"] = page.get("extract", "")
+    except Exception:
+        pass
+    return {**csv_data, **wiki_extra, "source": "OurAirports + Wikipedia" if wiki_extra else "OurAirports"}
+
+
+# --- Research helpers ---
+
+def _fetch_url(url: str, timeout: int = 30) -> tuple[str, str]:
+    resp = requests.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0 MSFSHangar/2.0", "Accept-Language": "en-US,en;q=0.9"})
+    resp.raise_for_status()
+    content_type = resp.headers.get("content-type", "")
+    if "text" in content_type or "html" in content_type:
+        return resp.text, content_type
+    return resp.content.decode("utf-8", errors="replace"), content_type
+
+
+def _postmessage_script(current_url: str) -> str:
+    url_json = json.dumps(current_url)
+    return """<script>
+(function(){{
+  function report(state){{
+    try{{ parent.postMessage(Object.assign({{type:'hangar-browser-state'}}, state||{{url:{u}, title:document.title||{u}}}), '*'); }}catch(e){{}}
+  }}
+  window.addEventListener('load', function(){{ report(); }});
+  document.addEventListener('DOMContentLoaded', function(){{ report(); }});
+  document.addEventListener('click', function(ev){{
+    var a = ev.target && ev.target.closest ? ev.target.closest('a[href]') : null;
+    if(a){{
+      setTimeout(function(){{ report({{url:a.getAttribute('data-final-url')||a.href||{u}, title:(a.textContent||document.title||'').trim()}}); }}, 0);
+    }}
+  }}, true);
+}})();
+</script>""".format(u=url_json)
+
+
+def _safe_browse_url(url: str) -> str:
+    return "/api/research/open?url=" + quote(url, safe="")
+
+
+def _proxy_html(url: str) -> str:
+    parsed = urlparse(url)
+    html, _ = _fetch_url(url, timeout=20)
+    soup = BeautifulSoup(html, "html.parser")
+    keep_scripts = any(host in parsed.netloc for host in ["skyvector.com"])
+    if not keep_scripts:
+        for tag in soup(["script", "noscript"]):
+            tag.decompose()
+    for meta in soup.select("meta[http-equiv]"):
+        meta.decompose()
+    for base in soup.select("base"):
+        base.decompose()
+    for form in soup.select("form[action]"):
+        action = form.get("action") or url
+        abs_action = urljoin(url, action)
+        form["action"] = _safe_browse_url(abs_action)
+        form["method"] = "get"
+        form["target"] = "_self"
+    for a in soup.select("a[href]"):
+        href = a.get("href") or ""
+        if href.startswith("#"):
+            continue
+        abs_href = urljoin(url, href)
+        if abs_href.startswith(("http://", "https://")):
+            a["href"] = _safe_browse_url(abs_href)
+            a["target"] = "_self"
+            a["data-final-url"] = abs_href
+    for img in soup.select("img[src]"):
+        img["src"] = urljoin(url, img.get("src") or "")
+    for tag in soup.select("[srcset]"):
+        tag.attrs.pop("srcset", None)
+    head = soup.head or soup.new_tag("head")
+    head.insert(0, soup.new_tag("base", href=url))
+    style = soup.new_tag("style")
+    style.string = "body{max-width:none;margin:0;padding:18px;font-family:Segoe UI,Arial,sans-serif;line-height:1.5} img,video{max-width:100%;height:auto} a{color:#2563eb} iframe{max-width:100%}"
+    head.append(style)
+    bridge = BeautifulSoup(_postmessage_script(url), 'html.parser')
+    head.append(bridge)
+    if not soup.head:
+        soup.insert(0, head)
+    return str(soup)
+
+
+def _query_tokens(query: str) -> list[str]:
+    return [t for t in re.split(r"[^A-Za-z0-9]+", (query or '').lower()) if len(t) > 1]
+
+
+_SEARCH_STOPWORDS = {
+    'the','and','for','with','from','that','this',
+    'guide','official','product','addon','site'
+}
+
+
+def _significant_tokens(query: str) -> list[str]:
+    toks = []
+    for tok in _query_tokens(query):
+        if tok in _SEARCH_STOPWORDS:
+            continue
+        toks.append(tok)
+    return toks or _query_tokens(query)
+
+
+def _ascii_fold(text: str) -> str:
+    return unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode("ascii")
+
+
+def _normalized_phrase(query: str) -> str:
+    folded = _ascii_fold((query or '').replace('"', ' '))
+    return re.sub(r"\s+", " ", folded.strip()).lower()
+
+
+_KNOWN_VENDORS = [
+    'just flight','aerosoft','sofly','inibuilds','orbx','pmdg','simmarket','flytampa',
+    'flightbeam','blacksquare','black square','fsreborn','parallel 42','milviz','fss','got friends'
+]
+
+
+def _remove_search_operators(query: str) -> str:
+    q = re.sub(r'\bsite\s*:\s*[^\s]+', ' ', query or '', flags=re.I)
+    q = re.sub(r'\b(inurl|intitle)\s*:\s*[^\s]+', ' ', q, flags=re.I)
+    return re.sub(r'\s+', ' ', q).strip()
+
+
+def _strip_known_vendors(query: str) -> str:
+    q = ' ' + (query or '').strip() + ' '
+    for vendor in _KNOWN_VENDORS:
+        q = re.sub(r'(?i)(^|\s)' + re.escape(vendor) + r'(\s|$)', ' ', q)
+    return re.sub(r'\s+', ' ', q).strip()
+
+
+def _focus_query(query: str, context: str = 'web') -> str:
+    q = _remove_search_operators(query or '')
+    if context == 'research':
+        # Preserve publisher/vendor and addon wording for product-focused searches.
+        q = re.sub(r'(?i)\b(videos?|youtube)\b', ' ', q)
+        q = re.sub(r'\s+', ' ', q).strip()
+        return q or _remove_search_operators(query or '').strip()
+
+    q = _strip_known_vendors(q)
+    q = re.sub(r'(?i)\b(msfs|microsoft flight simulator|flight simulator|review|reviews|video|videos|guide|preview|official|edition|pack|addon)\b', ' ', q)
+    if context == 'airport':
+        q = re.sub(r'(?i)\b(international|municipal|airfield|aerodrome|msfs|2020|2024)\b', ' ', q)
+    if context == 'aircraft':
+        q = re.sub(r'(?i)\b(aircraft|airplane|plane|msfs|2020|2024)\b', ' ', q)
+    q = re.sub(r'\s+', ' ', q).strip()
+    return q or _remove_search_operators(query or '').strip()
+
+def _youtube_mode(query: str, context: str = 'web') -> bool:
+    q = (query or '').lower()
+    return context == 'video' or 'site:youtube.com' in q or 'site:youtu.be' in q or q.strip().startswith('youtube ')
+
+
+def _youtube_search_url(query: str) -> str:
+    base = _remove_search_operators(query or '')
+    base = re.sub(r'(?i)\byoutube\b', ' ', base)
+    base = re.sub(r'\s+', ' ', base).strip()
+    return 'https://www.youtube.com/results?search_query=' + quote(base)
+
+
+def _is_probably_english_result(title: str, url: str, snippet: str = '') -> bool:
+    host = (urlparse(url).netloc or '').lower()
+    path = (urlparse(url).path or '').lower()
+    lowered = f"{title} {snippet} {host} {path}".lower()
+    bad_tlds = ('.fr', '.de', '.es', '.it', '.pt', '.ru', '.jp', '.cn', '.kr', '.pl', '.cz', '.hu', '.tr')
+    if any(host.endswith(tld) for tld in bad_tlds):
+        return False
+    if re.search(r'/(fr|de|es|it|pt|ru|jp|cn|kr|pl)(/|$)', path):
+        return False
+    bad_flags = [' deutsch', 'français', 'español', 'italiano', 'русский', '日本語', '中文', 'português']
+    if any(flag in lowered for flag in bad_flags):
+        return False
+    sample = (title or '') + ' ' + (snippet or '')
+    if sample:
+        ascii_ratio = (sum(1 for ch in sample if ord(ch) < 128) / max(len(sample), 1))
+        if ascii_ratio < 0.85:
+            return False
+    return True
+
+
+def _domain_score(host: str, context: str = 'web') -> int:
+    host = (host or '').lower()
+    research = ['flightsim.to','justflight.com','inibuilds.com','forum.inibuilds.com','simmarket.com','orbxdirect.com','orbx.com','pmdg.com','aerosoft.com','forums.flightsimulator.com','avsim.com','fselite.net','msfsaddons.com','thresholdx.net','cruiselevel.de','youtube.com']
+    common = ['wikipedia.org','ourairports.com','skyvector.com'] + research
+    aircraft = ['wikipedia.org','simpleflying.com','skybrary.aero','faa.gov','easa.europa.eu','flightglobal.com','planespotters.net']
+    airport = ['skyvector.com','ourairports.com','wikipedia.org','flightaware.com','airnav.com','airport-technology.com','aena.es']
+    preferred = common
+    if context == 'research':
+        preferred = research + common
+    elif context == 'aircraft':
+        preferred = aircraft + common
+    elif context == 'airport':
+        preferred = airport + common
+    for i, dom in enumerate(preferred):
+        if dom in host:
+            return max(30 - i, 6)
+    if any(bad in host for bad in ['figma.com','pinterest.com','facebook.com','instagram.com','linkedin.com']):
+        return -28
+    return 0
+
+def _score_result(query: str, title: str, url: str, snippet: str = '', context: str = 'web') -> int:
+    sig = _significant_tokens(query)
+    phrase = _normalized_phrase(query)
+    text = f"{title} {snippet} {url}".lower()
+    host = (urlparse(url).netloc or '').lower()
+    score = _domain_score(host, context)
+    if phrase and phrase in text:
+        score += 70
+    token_hits = sum(1 for tok in sig if tok in text)
+    coverage = token_hits / max(len(sig), 1)
+    score += int(coverage * 42)
+    score += token_hits * 5
+    for a, b in zip(sig, sig[1:]):
+        if f"{a} {b}" in text:
+            score += 16
+    if any(m in text for m in ['airport','aircraft','msfs','flight simulator','aviation','runway','icao','review','preview','addon']):
+        score += 10
+    if context == 'research':
+        if any(term in text for term in ['msfs','microsoft flight simulator','flight simulator','addon','review','preview','2020','2024']):
+            score += 18
+        elif _domain_score(host, 'research') <= 0:
+            score -= 18
+        if any(vendor in text for vendor in _KNOWN_VENDORS):
+            score += 8
+    elif context == 'airport':
+        if any(term in text for term in ['airport','icao','runway','skyvector','ourairports','terminal']):
+            score += 12
+    elif context == 'aircraft':
+        if any(term in text for term in ['cruise speed','range','ceiling','specifications','variant','engine','wikipedia']):
+            score += 12
+    if 'youtube.com' in host or 'youtu.be' in host:
+        if any(term in text for term in ['review','preview','video','walkaround','landing']):
+            score += 14
+        else:
+            score += 6
+    return score
+
+def _relevance_ok(query: str, title: str, url: str, snippet: str = '', context: str = 'web') -> bool:
+    text = _normalized_phrase(f"{title} {snippet} {url}")
+    sig = _significant_tokens(query)
+    if not sig:
+        return True
+    hits = [tok for tok in sig if tok in text]
+    coverage = len(hits) / max(len(sig), 1)
+    host = (urlparse(url).netloc or '').lower()
+    exact_phrase = _normalized_phrase(query) in text if _normalized_phrase(query) else False
+    preferred = _domain_score(host, context) > 0
+    query_lower = _normalized_phrase(query)
+    if exact_phrase:
+        return True
+    if context == 'research':
+        if preferred and len(hits) >= 1:
+            return True
+        if any(term in query_lower for term in ['msfs','review','addon','2020','2024']) and not any(term in text for term in ['msfs','flight simulator','review','addon','2020','2024']):
+            return False
+        return coverage >= 0.28 or len(hits) >= min(2, len(sig))
+    if 'msfs' in query_lower and not any(term in text for term in ['msfs','microsoft flight simulator','flight simulator','simulator']):
+        if not preferred and 'youtube' not in host:
+            return False
+    if preferred and len(hits) >= 1:
+        return True
+    if len(sig) <= 3:
+        return coverage >= 0.28 or len(hits) >= 1
+    return coverage >= 0.34 or len(hits) >= min(2, len(sig))
+
+def _rank_results(query: str, results: list[dict], context: str = 'web') -> list[dict]:
+    seen = set()
+    ranked = []
+    for r in results:
+        url = _clean_result_url(r.get('url') or '')
+        title = r.get('title') or ''
+        snippet = r.get('snippet') or ''
+        if not url or url in seen:
+            continue
+        if not _is_probably_english_result(title, url, snippet):
+            continue
+        if not _relevance_ok(query, title, url, snippet, context):
+            continue
+        seen.add(url)
+        ranked.append({**r, 'url': url, 'display_url': _display_result_url(url), 'score': _score_result(query, title, url, snippet, context)})
+    ranked.sort(key=lambda r: (-r.get('score', 0), len(r.get('title') or '')))
+    return ranked
+
+
+def _search_bing(query: str, first: int = 1, count: int = 24, context: str = 'web') -> list[dict]:
+    url = f"https://www.bing.com/search?q={quote(query)}&setlang=en-US&cc=US&mkt=en-US&count={count}&first={first}"
+    html, _ = _fetch_url(url, timeout=4)
+    soup = BeautifulSoup(html, "html.parser")
+    out = []
+    seen = set()
+    for node in soup.select("li.b_algo"):
+        a = node.select_one("h2 a")
+        if not a:
+            continue
+        href = _clean_result_url(a.get("href") or "")
+        title = a.get_text(" ", strip=True)
+        snippet_el = node.select_one(".b_caption p")
+        snippet = snippet_el.get_text(" ", strip=True) if snippet_el else ""
+        if href.startswith("http") and title and href not in seen:
+            seen.add(href)
+            out.append({"title": title, "url": href, "snippet": snippet, "source": "Bing"})
+        if len(out) >= count:
+            break
+    return out
+
+
+def _search_duckduckgo(query: str, context: str = 'web') -> list[dict]:
+    out = []
+    for search_url in [f"https://html.duckduckgo.com/html/?q={quote(query)}&kl=us-en", f"https://lite.duckduckgo.com/lite/?q={quote(query)}&kl=us-en"]:
+        try:
+            html, _ = _fetch_url(search_url, timeout=4)
+            soup = BeautifulSoup(html, "html.parser")
+            seen = set()
+            for item in soup.select('.result, .result__body'):
+                a = item.select_one('a.result__a, a.result-link, a[href]')
+                if not a:
+                    continue
+                href = a.get('href') or ''
+                title = a.get_text(' ', strip=True)
+                snippet_el = item.select_one('.result__snippet, .result-snippet')
+                snippet = snippet_el.get_text(' ', strip=True) if snippet_el else ''
+                if href.startswith('//'):
+                    href = 'https:' + href
+                if href.startswith('/l/?uddg='):
+                    qs = parse_qs(urlparse(href).query)
+                    href = unquote((qs.get('uddg') or [''])[0])
+                if href.startswith('http') and title and href not in seen and 'duckduckgo.com' not in href:
+                    seen.add(href)
+                    out.append({'title': title, 'url': href, 'snippet': snippet, 'source': 'DuckDuckGo'})
+                if len(out) >= 24:
+                    break
+            if out:
+                return out
+        except Exception:
+            continue
+    return out
+
+
+def _search_wikipedia(query: str, context: str = 'web') -> list[dict]:
+    try:
+        payload = _wiki_request({"action": "opensearch", "search": query, "limit": 12, "namespace": 0})
+        titles = payload[1] if len(payload) > 1 else []
+        urls = payload[3] if len(payload) > 3 else []
+        return [{"title": t, "url": u, 'snippet': '', 'source': 'Wikipedia'} for t, u in zip(titles, urls) if t and u]
+    except Exception:
+        return []
+
+
+def _clean_result_url(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+        host = (parsed.netloc or '').lower()
+        if 'bing.com' in host and parsed.path.startswith('/ck/a'):
+            qs = parse_qs(parsed.query)
+            token = (qs.get('u') or [''])[0]
+            if token.startswith('a1'):
+                payload = token[2:]
+                payload += '=' * ((4 - len(payload) % 4) % 4)
+                decoded = base64.b64decode(payload).decode('utf-8', errors='ignore')
+                return unquote(decoded) or url
+            if token:
+                return unquote(token)
+        if 'duckduckgo.com' in host and parsed.path.startswith('/l/'):
+            qs = parse_qs(parsed.query)
+            target = (qs.get('uddg') or [''])[0]
+            return unquote(target) or url
+    except Exception:
+        return url
+    return url
+
+
+def _display_result_url(url: str) -> str:
+    try:
+        cleaned = _clean_result_url(url)
+        parsed = urlparse(cleaned)
+        path = parsed.path.rstrip('/') or '/'
+        short = f"{parsed.netloc}{path}"
+        return short[:90] + ('…' if len(short) > 90 else '')
+    except Exception:
+        return url
+
+
+def _search_variants(query: str, context: str = 'web') -> list[str]:
+    q = (query or '').strip()
+    if not q:
+        return []
+    base = _remove_search_operators(q)
+    focus = _focus_query(q, context)
+    lower = base.lower()
+    variants = []
+    if _youtube_mode(q, context):
+        core = base or focus
+        variants = [f'"{core}" site:youtube.com', f'{core} site:youtube.com']
+    elif context == 'research':
+        core = base
+        stripped = _strip_known_vendors(base)
+        variants = [f'"{core}"', core]
+        if 'msfs' not in lower and 'flight simulator' not in lower:
+            variants += [f'"{core}" MSFS', f'{core} MSFS']
+        if 'review' not in lower and 'preview' not in lower:
+            variants += [f'"{core}" review', f'{core} addon review']
+        if stripped and stripped.lower() != core.lower():
+            variants += [f'"{stripped}" MSFS', f'{stripped} MSFS review']
+    elif context == 'aircraft':
+        core = focus or base
+        variants = [f'"{core}"', f'{core} aircraft', f'{core} specifications', f'{core} range speed ceiling']
+    elif context == 'airport':
+        core = focus or base
+        icao = guess_icao(base, known_only=True) if 'guess_icao' in globals() else None
+        variants = [f'"{core}" airport', f'{core} airport', f'"{core}" aviation']
+        if icao:
+            variants += [f'{icao} airport', f'{icao} aviation']
+    else:
+        variants = [f'"{base}"', base]
+    seen = set(); out = []
+    for v in variants:
+        v = re.sub(r'\s+', ' ', v).strip()
+        if v and v not in seen:
+            seen.add(v); out.append(v)
+    return out[:6]
+
+def _search_cache_get(query: str, context: str = 'web') -> Optional[dict]:
+    key = (_SEARCH_CACHE_VERSION, (context or 'web').lower(), (query or '').strip().lower())
+    entry = _search_cache.get(key)
+    if not entry:
+        return None
+    if time.time() - entry.get('ts', 0) > _SEARCH_CACHE_TTL:
+        _search_cache.pop(key, None)
+        return None
+    return entry
+
+
+def _search_cache_set(query: str, context: str, payload: dict):
+    key = (_SEARCH_CACHE_VERSION, (context or 'web').lower(), (query or '').strip().lower())
+    _search_cache[key] = {'ts': time.time(), **payload}
+
+
+def _simple_results_html(engine: str, query: str, results: list[dict], page: int = 1, total_pages: int = 1, total_results: int = 0) -> str:
+    rows = []
+    for r in results:
+        title = escape(r.get("title") or r.get("url") or "Result")
+        url = _clean_result_url(r.get("url") or "")
+        host = escape(urlparse(url).netloc or url)
+        display_url = escape(r.get('display_url') or _display_result_url(url))
+        snippet = escape(r.get('snippet') or '')
+        open_url = _safe_browse_url(url)
+        snippet_html = f"<div class='snippet'>{snippet}</div>" if snippet else ""
+        rows.append(f"<div class='card'><a class='title' href='{escape(open_url, quote=True)}' data-final-url='{escape(url, quote=True)}' target='_self'>{title}</a><div class='host'>{host}</div><div class='link'>{display_url}</div>{snippet_html}</div>")
+    body = "".join(rows) if rows else "<div class='empty'>No results found.</div>"
+    pager = f"<div class='pager'>Page {page} of {max(total_pages,1)} • {total_results} results</div>"
+    return f"<html><head><meta charset='utf-8'><style>body{{font-family:Segoe UI,Arial,sans-serif;background:#0A1628;color:#F1F5F9;margin:0;padding:18px}} .top{{margin-bottom:14px}} .eng{{color:#94A3B8;font-size:12px;text-transform:uppercase;letter-spacing:.08em}} .q{{font-size:20px;font-weight:700;margin-top:4px}} .card{{background:#0F1E35;border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:12px 14px;margin-bottom:10px}} .title{{color:#8bd3ff;font-size:16px;font-weight:700;text-decoration:none}} .title:hover{{text-decoration:underline}} .host{{color:#34D399;font-size:12px;margin-top:4px}} .link{{color:#94A3B8;font-size:11px;margin-top:4px;word-break:break-all}} .snippet{{color:#CBD5E1;font-size:12px;margin-top:8px;line-height:1.5}} .pager{{color:#94A3B8;font-size:12px;margin-bottom:10px}} .empty{{color:#94A3B8;font-size:14px}}</style>{_postmessage_script('search:'+query)}</head><body><div class='top'><div class='eng'>{escape(engine)} search</div><div class='q'>{escape(query)}</div></div>{pager}{body}</body></html>"
+
+
+
+
+def _extract_product_meta_from_text(text: str) -> dict:
+    txt = re.sub(r"\s+", " ", text or " ").strip()
+    out: dict[str, object] = {}
+    version_patterns = [
+        r'version\s*([0-9]+(?:\.[0-9A-Za-z]+){0,4})',
+        r'current\s+version\s*[:\-]?\s*([0-9]+(?:\.[0-9A-Za-z]+){0,4})',
+        r'updated\s+to\s+([0-9]+(?:\.[0-9A-Za-z]+){0,4})',
+        r'v\s*([0-9]+(?:\.[0-9A-Za-z]+){0,4})',
+    ]
+    for pat in version_patterns:
+        m = re.search(pat, txt, re.I)
+        if m:
+            out['version'] = m.group(1).strip()
+            break
+    currency_matches = []
+    for pat in [r'USD\s*([0-9]{1,4}(?:[.,][0-9]{2})?)', r'\$\s*([0-9]{1,4}(?:[.,][0-9]{2})?)', r'€\s*([0-9]{1,4}(?:[.,][0-9]{2})?)', r'£\s*([0-9]{1,4}(?:[.,][0-9]{2})?)']:
+        for m in re.finditer(pat, txt, re.I):
+            try:
+                val = float(m.group(1).replace(',', '.'))
+                if 0 < val < 1000:
+                    currency_matches.append(val)
+            except Exception:
+                pass
+    if currency_matches:
+        out['price'] = currency_matches[0]
+    date_patterns = [
+        r'(?:released?|release date|available(?: from)?|published|launch(?:ed)?)\s*[:\-]?\s*([A-Z][a-z]+\s+\d{1,2},\s+\d{4})',
+        r'(?:released?|release date|available(?: from)?|published|launch(?:ed)?)\s*[:\-]?\s*(\d{1,2}\s+[A-Z][a-z]+\s+\d{4})',
+        r'([A-Z][a-z]+\s+\d{1,2},\s+\d{4})',
+        r'(\d{1,2}\s+[A-Z][a-z]+\s+\d{4})',
+        r'(20\d{2}-\d{2}-\d{2})',
+    ]
+    for pat in date_patterns:
+        m = re.search(pat, txt)
+        if m:
+            out['released'] = m.group(1).strip()
+            break
+    return out
+
+
+def _lookup_addon_product_meta_sync(publisher: str, title: str) -> dict:
+    query = ' '.join([publisher or '', title or '']).strip()
+    if not query:
+        return {}
+    variants = [
+        f'"{query}" msfs',
+        f'{query} msfs',
+        f'"{query}" version price release',
+        f'{query} addon version price',
+    ]
+    merged = []
+    seen = set()
+    bad_hosts = {'youtube.com','www.youtube.com','bing.com','www.bing.com','duckduckgo.com','html.duckduckgo.com','lite.duckduckgo.com','google.com','www.google.com'}
+    for variant in variants:
+        for fn in (lambda v=variant: _search_duckduckgo(v, 'research'), lambda v=variant: _search_bing(v, 1, 10, 'research')):
+            try:
+                for r in fn() or []:
+                    url = _clean_result_url(r.get('url') or '')
+                    host = (urlparse(url).netloc or '').lower()
+                    if not url or url in seen or host in bad_hosts:
+                        continue
+                    if host and host.count('.') == 1 and (urlparse(url).path or '/') == '/':
+                        # Skip generic homepages unless the title/snippet already looks like the product page.
+                        text = ' '.join([r.get('title') or '', r.get('snippet') or '']).lower()
+                        if (title or '').lower() not in text and (publisher or '').lower() not in text:
+                            continue
+                    seen.add(url)
+                    merged.append({**r, 'url': url})
+            except Exception:
+                continue
+    ranked = _rank_results(query, merged, 'research')[:8] if merged else []
+    best: dict[str, object] = {}
+    chosen_source = None
+    for r in ranked[:5]:
+        meta = _extract_product_meta_from_text(' '.join([r.get('title') or '', r.get('snippet') or '']))
+        try:
+            html, _ = _fetch_url(r.get('url') or '', timeout=8)
+            soup = BeautifulSoup(html, 'html.parser')
+            for tag in soup(['script','style','noscript']):
+                tag.decompose()
+            page_text = soup.get_text(' ', strip=True)[:50000]
+            page_meta = _extract_product_meta_from_text(page_text)
+            for k, v in page_meta.items():
+                meta.setdefault(k, v)
+        except Exception:
+            pass
+        if meta and not chosen_source:
+            chosen_source = {'source_url': r.get('url') or '', 'source_title': r.get('title') or ''}
+        for k, v in meta.items():
+            best.setdefault(k, v)
+        if {'version', 'released', 'price'}.issubset(best.keys()):
+            break
+    if chosen_source:
+        best.update({k: v for k, v in chosen_source.items() if v})
+    return best
+
+
+
+
+def _extract_json_object(text: str) -> dict:
+    raw = (text or '').strip()
+    if raw.startswith('```'):
+        raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', raw, flags=re.I | re.S).strip()
+    try:
+        val = json.loads(raw)
+        return val if isinstance(val, dict) else {}
+    except Exception:
+        pass
+    start = raw.find('{')
+    end = raw.rfind('}')
+    if start >= 0 and end > start:
+        snippet = raw[start:end+1]
+        try:
+            val = json.loads(snippet)
+            return val if isinstance(val, dict) else {}
+        except Exception:
+            snippet = re.sub(r',\s*([}\]])', r'\1', snippet)
+            try:
+                val = json.loads(snippet)
+                return val if isinstance(val, dict) else {}
+            except Exception:
+                return {}
+    return {}
+
+
+def _gemini_generate_json(prompt: str, api_key: str, *, use_search: bool = True, model: str = 'gemini-2.5-flash') -> tuple[dict, list[str], str]:
+    if not api_key:
+        raise ValueError('Google API key not configured')
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    payload = {
+        'contents': [{'parts': [{'text': prompt}]}],
+        'generationConfig': {'temperature': 0.1, 'topP': 0.9, 'maxOutputTokens': 2048},
+    }
+    if use_search:
+        payload['tools'] = [{'google_search': {}}]
+    resp = requests.post(url, headers={'x-goog-api-key': api_key, 'Content-Type': 'application/json'}, json=payload, timeout=60)
+    resp.raise_for_status()
+    data = resp.json()
+    candidates = data.get('candidates') or []
+    parts = (((candidates[0] if candidates else {}).get('content') or {}).get('parts') or [])
+    text_out = ''.join(part.get('text','') for part in parts if isinstance(part, dict))
+    parsed = _extract_json_object(text_out)
+    sources = []
+    gm = (candidates[0].get('groundingMetadata') if candidates else None) or {}
+    for chunk in gm.get('groundingChunks') or []:
+        web = (chunk or {}).get('web') or {}
+        uri = web.get('uri') or web.get('url')
+        if uri and uri not in sources:
+            sources.append(uri)
+    return parsed, sources, text_out
+
+
+
+
+
+
+def _openai_generate_json(prompt: str, api_key: str, *, model: str = 'gpt-4o-mini') -> tuple[dict, list[str], str]:
+    if not api_key:
+        raise ValueError('OpenAI API key not configured')
+    payload = {
+        'model': model,
+        'response_format': {'type': 'json_object'},
+        'messages': [
+            {'role': 'system', 'content': 'Return only valid JSON matching the requested schema.'},
+            {'role': 'user', 'content': prompt},
+        ],
+        'temperature': 0.1,
+        'max_tokens': 2500,
+    }
+    resp = requests.post('https://api.openai.com/v1/chat/completions', headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}, json=payload, timeout=90)
+    resp.raise_for_status()
+    data = resp.json()
+    text_out = (((data.get('choices') or [{}])[0].get('message') or {}).get('content') or '')
+    parsed = _extract_json_object(text_out)
+    return parsed, [], text_out
+
+
+def _provider_generate_json(provider: str, prompt: str, settings: dict, *, use_search: bool = True) -> tuple[dict, list[str], str]:
+    provider = (provider or '').lower().strip()
+    if provider == 'gemini':
+        return _gemini_generate_json(prompt, settings.get('google_api_key',''), use_search=use_search)
+    return _openai_generate_json(prompt, settings.get('openai_key',''))
+
+
+def _normalize_html_fragment(html: str) -> str:
+    raw = (html or '').strip()
+    if not raw:
+        return ''
+    raw = re.sub(r'(?i)\sstyle\s*=\s*"[^"]*"', '', raw)
+    raw = re.sub(r"(?i)\sstyle\s*=\s*'[^']*'", '', raw)
+    return raw
+
+
+def _addon_sim_label(settings: dict) -> str:
+    sim_name = (settings.get('flight_sim_name') or 'MSFS').strip()
+    sim_version = (settings.get('flight_sim_version') or '').strip()
+    return (' '.join(x for x in [sim_name, sim_version] if x)).strip()
+
+
+def _build_product_prompt(addon, sim_label: str, include_overview: bool = True, include_features: bool = True) -> str:
+    extra = []
+    if include_overview:
+        extra.append('summary_html')
+    if include_features:
+        extra.append('features_html')
+    extra_tail = (', ' + ', '.join(extra)) if extra else ''
+    return f"""Use Google Search grounding to find flight simulator add-on product metadata for the product '{(addon.publisher or '').strip()} {(addon.title or '').strip()}' for '{sim_label}'.
+Return ONLY one valid JSON object with these exact keys: latest_current_version, release_date, list_price, currency, store_name{extra_tail}.
+Rules:
+- Focus on the flight simulator add-on product for {sim_label}, not YouTube videos, generic home pages, or forum chatter.
+- Prefer official store pages or known addon storefronts.
+- list_price must be a number without currency symbols when possible, otherwise null.
+- summary_html should be concise readable HTML for the addon if requested.
+- features_html should be readable HTML of detailed product features if requested.
+- Do not include markdown or code fences.
+- If unknown, use empty strings or null for list_price."""
+
+def _build_aircraft_prompt(mfr: str, model: str) -> str:
+    return f"""Use Google Search grounding to find real-world aircraft specifications for the aircraft '{mfr} {model}'.
+Return ONLY one valid JSON object with these exact keys: manufacturer_full_name, model, category, engine, engine_type, max_speed, cruise_speed, range, range_nm, ceiling, passenger_capacity, mtow, date_introduced, summary_html.
+Rules:
+- Do not include markdown or code fences.
+- range_nm must be an integer number of nautical miles when available.
+- Keep units inside max_speed, cruise_speed, range, ceiling, mtow as readable strings.
+- summary_html should be concise readable HTML for sim pilots.
+- If unknown, use empty strings or null only for range_nm.
+- Prefer official manufacturer, reputable aviation references, and Wikipedia when they agree."""
+
+def _merge_product_into_addon(addon, parsed: dict, sources: list[str], *, include_overview: bool = True, include_features: bool = True):
+    addon.pr.latest_ver = parsed.get('latest_current_version') or addon.pr.latest_ver
+    addon.pr.released = parsed.get('release_date') or addon.pr.released
+    price = _num_or_none(parsed.get('list_price'))
+    if price is not None:
+        addon.pr.price = price
+    if parsed.get('store_name'):
+        addon.pr.source_store = parsed.get('store_name')
+    if include_overview and parsed.get('summary_html'):
+        addon.summary = _normalize_html_fragment(parsed.get('summary_html'))
+    if include_features and parsed.get('features_html'):
+        addon.usr.features = _normalize_html_fragment(parsed.get('features_html'))
+    if sources:
+        addon.rw.source = ' / '.join(sources[:2])
+    return addon
+
+
+def _merge_aircraft_into_addon(addon, parsed: dict, sources: list[str]):
+    rw = addon.rw
+    rw.manufacturer_full_name = parsed.get('manufacturer_full_name') or rw.manufacturer_full_name
+    rw.model = parsed.get('model') or rw.model
+    rw.category = parsed.get('category') or rw.category
+    rw.engine = parsed.get('engine') or rw.engine
+    rw.engine_type = parsed.get('engine_type') or rw.engine_type
+    rw.max_speed = parsed.get('max_speed') or rw.max_speed
+    rw.cruise = parsed.get('cruise_speed') or rw.cruise
+    rw.range = parsed.get('range') or rw.range
+    rn = _int_or_none(parsed.get('range_nm'))
+    if rn is not None:
+        rw.range_nm = rn
+    rw.ceiling = parsed.get('ceiling') or rw.ceiling
+    rw.seats = parsed.get('passenger_capacity') or rw.seats
+    rw.mtow = parsed.get('mtow') or rw.mtow
+    rw.introduced = parsed.get('date_introduced') or rw.introduced
+    if parsed.get('summary_html') and not addon.summary:
+        addon.summary = _normalize_html_fragment(parsed.get('summary_html'))
+    rw.source = ' / '.join(sources[:2]) if sources else rw.source
+    return addon
+
+def _extract_json_pairs_fallback(text: str, keys: list[str]) -> dict:
+    raw = (text or '').strip()
+    out = {}
+    for key in keys:
+        m = re.search(r'"%s"\s*:\s*"((?:\\.|[^"\])*)"' % re.escape(key), raw)
+        if m:
+            try:
+                out[key] = bytes(m.group(1), 'utf-8').decode('unicode_escape')
+            except Exception:
+                out[key] = m.group(1)
+            continue
+        m = re.search(r'"%s"\s*:\s*(-?\d+(?:\.\d+)?)' % re.escape(key), raw)
+        if m:
+            num = m.group(1)
+            out[key] = int(num) if re.fullmatch(r'-?\d+', num) else float(num)
+            continue
+        m = re.search(r'"%s"\s*:\s*(null|true|false)' % re.escape(key), raw, re.I)
+        if m:
+            val = m.group(1).lower()
+            out[key] = None if val == 'null' else (val == 'true')
+    return out
+
+def _num_or_none(v):
+    try:
+        if v is None or v == '':
+            return None
+        return float(v)
+    except Exception:
+        return None
+
+
+def _int_or_none(v):
+    try:
+        if v is None or v == '':
+            return None
+        return int(str(v).strip())
+    except Exception:
+        return None
+
+
+class GeminiAircraftRequest(BaseModel):
+    manufacturer: str = ''
+    manufacturer_full_name: Optional[str] = None
+    model: str
+
+
+@app.post('/api/gemini/populate-aircraft')
+async def gemini_populate_aircraft(body: GeminiAircraftRequest):
+    settings = await storage.get_all_settings()
+    api_key = settings.get('google_api_key', '')
+    if not api_key:
+        raise HTTPException(400, 'Google API key not configured in Settings')
+    lookup_mfr = (body.manufacturer_full_name or body.manufacturer or '').strip()
+    model = (body.model or '').strip()
+    if not lookup_mfr or not model:
+        raise HTTPException(400, 'Manufacturer Full Name and Model are required')
+    prompt = _build_aircraft_prompt(lookup_mfr, model)
+    try:
+        parsed, sources, raw = await asyncio.to_thread(lambda: _gemini_generate_json(prompt, api_key, use_search=True))
+    except requests.HTTPError as e:
+        raise HTTPException(502, f'Gemini request failed: {e.response.text[:400] if e.response is not None else e}')
+    except Exception as e:
+        raise HTTPException(502, f'Gemini request failed: {e}')
+    if not parsed:
+        parsed = _extract_json_pairs_fallback(raw, ['manufacturer_full_name','model','category','engine','engine_type','max_speed','cruise_speed','range','range_nm','ceiling','passenger_capacity','mtow','date_introduced','summary_html'])
+    if not parsed:
+        raise HTTPException(502, f'Gemini returned no structured data: {raw[:300]}')
+    return {
+        'manufacturer_full_name': parsed.get('manufacturer_full_name') or lookup_mfr,
+        'manufacturer': body.manufacturer or lookup_mfr,
+        'model': parsed.get('model') or model,
+        'category': parsed.get('category') or '',
+        'engine': parsed.get('engine') or '',
+        'engine_type': parsed.get('engine_type') or '',
+        'max_speed': parsed.get('max_speed') or '',
+        'cruise': parsed.get('cruise_speed') or '',
+        'range': parsed.get('range') or '',
+        'range_nm': _int_or_none(parsed.get('range_nm')),
+        'ceiling': parsed.get('ceiling') or '',
+        'seats': parsed.get('passenger_capacity') or '',
+        'mtow': parsed.get('mtow') or '',
+        'introduced': parsed.get('date_introduced') or '',
+        'source': 'Gemini + Google Search',
+        'sources': sources,
+        'summary_html': parsed.get('summary_html') or '',
+    }
+
+
+@app.post('/api/gemini/populate-product/{addon_id}')
+async def gemini_populate_product(addon_id: str):
+    addon = await storage.get_addon(addon_id)
+    if not addon:
+        raise HTTPException(404)
+    settings = await storage.get_all_settings()
+    api_key = settings.get('google_api_key', '')
+    if not api_key:
+        raise HTTPException(400, 'Google API key not configured in Settings')
+    prompt = _build_product_prompt(addon, _addon_sim_label(settings), include_overview=True, include_features=True)
+    try:
+        parsed, sources, raw = await asyncio.to_thread(lambda: _gemini_generate_json(prompt, api_key, use_search=True))
+    except requests.HTTPError as e:
+        raise HTTPException(502, f'Gemini request failed: {e.response.text[:400] if e.response is not None else e}')
+    except Exception as e:
+        raise HTTPException(502, f'Gemini request failed: {e}')
+    if not parsed:
+        parsed = _extract_json_pairs_fallback(raw, ['latest_current_version','release_date','list_price','currency','store_name','summary_html','features_html'])
+    if not parsed:
+        raise HTTPException(502, f'Gemini returned no structured data: {raw[:300]}')
+    addon = _merge_product_into_addon(addon, parsed, sources, include_overview=True, include_features=True)
+    await storage.upsert_addon(addon)
+    return {
+        'latest_version': addon.pr.latest_ver or '',
+        'released': addon.pr.released or '',
+        'price': addon.pr.price,
+        'currency': parsed.get('currency') or '',
+        'store_name': addon.pr.source_store or '',
+        'sources': sources,
+        'source_url': sources[0] if sources else '',
+        'source': 'Gemini + Google Search',
+        'summary_html': parsed.get('summary_html') or '',
+        'features_html': parsed.get('features_html') or '',
+    }
+
+@app.post("/api/addons/{addon_id}/overview-lookup")
+async def addon_overview_lookup(addon_id: str):
+    addon = await storage.get_addon(addon_id)
+    if not addon:
+        raise HTTPException(404)
+    payload = await asyncio.to_thread(_lookup_addon_product_meta_sync, addon.publisher or '', addon.title or '')
+    return payload
+
+
+class AIRequest(BaseModel):
+    provider: str = 'openai'
+    mode: str = 'enrich'
+    prompt: Optional[str] = None
+    addon_id: Optional[str] = None
+
+@app.post('/api/ai/enrich')
+async def ai_enrich(body: AIRequest):
+    settings = await storage.get_all_settings()
+    addon = await storage.get_addon(body.addon_id) if body.addon_id else None
+    addon_ctx = ''
+    if addon:
+        addon_ctx = f"Addon: {addon.title} by {addon.publisher}. Type: {addon.type}/{addon.sub or ''}. ICAO: {addon.rw.icao or ''}. Manufacturer: {addon.rw.mfr or ''}. Country: {addon.rw.country or ''}."
+    custom = (body.prompt or '').strip()
+    if body.mode == 'prompt' and custom:
+        prompt = custom + "\n\nUse this addon context: " + addon_ctx + "\n\nReturn ONLY one valid JSON object. Include keys headline, description, realWorldInfo, highlights, pilotBriefing, bestFor, compatibility, suggestedTags, verdict, bodyHtml, featuresHtml."
+    else:
+        prompt = f"You are an expert flight simulator addon curator. For the addon '{addon.title if addon else 'Addon'}' by '{addon.publisher if addon else ''}', return ONLY one valid JSON object with keys: headline, description, realWorldInfo, highlights, pilotBriefing, bestFor, compatibility, suggestedTags, verdict, bodyHtml, featuresHtml. {addon_ctx} Rules: bodyHtml and featuresHtml should be rich readable HTML fragments if useful. Do not include markdown fences."
+    try:
+        parsed, sources, raw = await asyncio.to_thread(lambda: _provider_generate_json(body.provider, prompt, settings, use_search=(body.provider=='gemini')))
+    except requests.HTTPError as e:
+        raise HTTPException(502, f'AI request failed: {e.response.text[:400] if e.response is not None else e}')
+    except Exception as e:
+        raise HTTPException(502, f'AI request failed: {e}')
+    if not parsed:
+        parsed = _extract_json_pairs_fallback(raw, ['headline','description','realWorldInfo','pilotBriefing','bestFor','compatibility','verdict','bodyHtml','featuresHtml'])
+    if not parsed:
+        raise HTTPException(502, f'AI returned no structured data: {raw[:300]}')
+    parsed['sources'] = sources
+    return parsed
+
+class LibraryPopulateRequest(BaseModel):
+    include_overview: bool = True
+    include_features: bool = True
+    include_aircraft_data: bool = True
+    provider: str = 'gemini'
+
+@app.get('/api/gemini/populate-library/status')
+async def populate_library_status():
+    return _enrich_progress
+
+@app.post('/api/gemini/populate-library/start')
+async def populate_library_start(body: LibraryPopulateRequest):
+    global _enrich_running, _enrich_progress
+    if _enrich_running:
+        raise HTTPException(400, 'Library populate already running')
+    settings = await storage.get_all_settings()
+    provider = (body.provider or 'gemini').lower()
+    if provider == 'gemini' and not settings.get('google_api_key'):
+        raise HTTPException(400, 'Google API key not configured in Settings')
+    if provider == 'openai' and not settings.get('openai_key'):
+        raise HTTPException(400, 'OpenAI API key not configured in Settings')
+    addons = list((await storage.get_all_addons()).values())
+    total = len(addons)
+    _enrich_running = True
+    _enrich_progress = {'running': True, 'pct': 0, 'current': 'Preparing...', 'done': 0, 'total': total, 'message': '', 'type': 'running'}
+    async def runner():
+        global _enrich_running, _enrich_progress
+        done = 0
+        try:
+            for addon in addons:
+                _enrich_progress.update({'current': addon.title, 'done': done, 'pct': int((done/max(total,1))*100)})
+                try:
+                    if body.include_overview or body.include_features:
+                        p1 = _build_product_prompt(addon, _addon_sim_label(settings), include_overview=body.include_overview, include_features=body.include_features)
+                        parsed, sources, raw = await asyncio.to_thread(lambda p=p1: _provider_generate_json(provider, p, settings, use_search=(provider=='gemini')))
+                        if not parsed:
+                            parsed = _extract_json_pairs_fallback(raw, ['latest_current_version','release_date','list_price','currency','store_name','summary_html','features_html'])
+                        if parsed:
+                            addon = _merge_product_into_addon(addon, parsed, sources, include_overview=body.include_overview, include_features=body.include_features)
+                    if body.include_aircraft_data and addon.type == 'Aircraft':
+                        lookup_mfr = (addon.rw.manufacturer_full_name or addon.rw.mfr or addon.pr.manufacturer or '').strip()
+                        model = (addon.rw.model or addon.title or '').strip()
+                        if lookup_mfr and model:
+                            p2 = _build_aircraft_prompt(lookup_mfr, model)
+                            parsed, sources, raw = await asyncio.to_thread(lambda p=p2: _provider_generate_json(provider, p, settings, use_search=(provider=='gemini')))
+                            if not parsed:
+                                parsed = _extract_json_pairs_fallback(raw, ['manufacturer_full_name','model','category','engine','engine_type','max_speed','cruise_speed','range','range_nm','ceiling','passenger_capacity','mtow','date_introduced','summary_html'])
+                            if parsed:
+                                addon = _merge_aircraft_into_addon(addon, parsed, sources)
+                    await storage.upsert_addon(addon)
+                except Exception:
+                    pass
+                done += 1
+                _enrich_progress.update({'done': done, 'pct': int((done/max(total,1))*100)})
+            _enrich_progress.update({'running': False, 'pct': 100, 'message': 'Populate complete', 'type': 'done'})
+        finally:
+            _enrich_running = False
+    asyncio.create_task(runner())
+    return {'ok': True}
+
+@app.get("/api/research/search")
+async def research_search(
+    q: str = Query(..., min_length=2),
+    context: str = Query('web'),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=5, le=20),
+):
+    query = (q or '').strip()
+    context = (context or 'web').lower()
+    if not query:
+        return {"query": "", "results": [], "engine": "Web", "errors": [], 'page': 1, 'total_pages': 1, 'total_results': 0}
+
+    cached = _search_cache_get(query, context)
+    if cached is None:
+        variants = _search_variants(query, context)
+        errors = []
+        engine_hits: dict[str, list[dict]] = {}
+
+        async def run_provider(label: str, fn):
+            try:
+                hits = await asyncio.to_thread(fn)
+                return label, hits or []
+            except Exception as e:
+                return label, e
+
+        tasks = []
+        for variant in variants:
+            tasks.append(run_provider('DuckDuckGo', lambda v=variant: _search_duckduckgo(v, context)))
+            tasks.append(run_provider('Bing', lambda v=variant: _search_bing(v, 1, 24, context)))
+            if context not in {'video'}:
+                tasks.append(run_provider('Wikipedia', lambda v=variant: _search_wikipedia(v, context)))
+
+        done = await asyncio.gather(*tasks)
+        for label, value in done:
+            if isinstance(value, Exception):
+                errors.append(f"{label}: {value}")
+            elif value:
+                engine_hits.setdefault(label, []).extend(value)
+
+        merged = []
+        for label in ['DuckDuckGo', 'Bing', 'Wikipedia']:
+            merged.extend(engine_hits.get(label, []))
+        auto_open_url = _youtube_search_url(query) if _youtube_mode(query, context) else ''
+        ranked = _rank_results(query, merged, context)
+        if _youtube_mode(query, context):
+            ranked = [r for r in ranked if ('youtube.com' in (urlparse(r.get('url') or '').netloc.lower()) or 'youtu.be' in (urlparse(r.get('url') or '').netloc.lower()))]
+        if not ranked and merged:
+            # fallback: keep English/raw unique results instead of returning an empty list
+            raw_seen = set(); fallback = []
+            for r in merged:
+                url = _clean_result_url(r.get('url') or '')
+                title = r.get('title') or ''
+                snippet = r.get('snippet') or ''
+                if not url or url in raw_seen:
+                    continue
+                if _youtube_mode(query, context) and not any(dom in urlparse(url).netloc.lower() for dom in ['youtube.com','youtu.be']):
+                    continue
+                if not _is_probably_english_result(title, url, snippet):
+                    continue
+                raw_seen.add(url)
+                fallback.append({**r, 'url': url, 'display_url': _display_result_url(url), 'score': _score_result(query, title, url, snippet, context)})
+            fallback.sort(key=lambda r: (-r.get('score',0), len(r.get('title') or '')))
+            ranked = fallback
+        engine = ' + '.join(engine_hits.keys()) if engine_hits else ('Offline' if errors else 'Web')
+        cached = {'ts': time.time(), 'results_all': ranked, 'engine': engine, 'errors': errors[:3], 'auto_open_url': auto_open_url}
+        _search_cache_set(query, context, cached)
+
+    all_results = cached.get('results_all') or []
+    total_results = len(all_results)
+    total_pages = max(1, (total_results + page_size - 1) // page_size)
+    page = max(1, min(page, total_pages))
+    start_i = (page - 1) * page_size
+    end_i = start_i + page_size
+    return {
+        'query': query,
+        'results': all_results[start_i:end_i],
+        'engine': cached.get('engine') or 'Web',
+        'errors': cached.get('errors') or [],
+        'page': page,
+        'page_size': page_size,
+        'total_pages': total_pages,
+        'total_results': total_results,
+        'auto_open_url': cached.get('auto_open_url') or '',
+    }
+
+
+@app.get("/api/research/searchpage")
+async def research_searchpage(
+    q: str = Query(..., min_length=2),
+    context: str = Query('web'),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=5, le=20),
+):
+    data = await research_search(q=q, context=context, page=page, page_size=page_size)
+    return HTMLResponse(_simple_results_html(data.get("engine") or "Web", q, data.get("results") or [], data.get('page') or 1, data.get('total_pages') or 1, data.get('total_results') or 0))
+
+
+def _framed_page(url: str) -> str:
+    return f"<html><head><meta charset='utf-8'>{_postmessage_script(url)}<style>html,body{{margin:0;height:100%;background:#fff}}iframe{{width:100%;height:100%;border:0}}</style></head><body><iframe src='{escape(url, quote=True)}' referrerpolicy='no-referrer-when-downgrade' allow='clipboard-read; clipboard-write'></iframe></body></html>"
+
+
+@app.get("/api/research/open")
+async def research_open(url: str):
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(400, "Only http/https URLs are allowed")
+    if "google." in parsed.netloc and parsed.path.startswith("/search"):
+        q = parse_qs(parsed.query).get("q", [""])[0]
+        return await research_searchpage(q or url)
+    try:
+        host = parsed.netloc.lower()
+        if any(dom in host for dom in ["skyvector.com", "microsoft.com", "youtube.com", "youtu.be"]):
+            return HTMLResponse(_framed_page(url))
+        html = _proxy_html(url)
+        return HTMLResponse(html)
+    except Exception as e:
+        return HTMLResponse(f"<html><body><h3>Could not open page</h3><p>{escape(str(e))}</p><p><a href='{escape(url)}'>{escape(url)}</a></p></body></html>", status_code=502)
+
+
+@app.get("/api/research/google")
+async def research_google(q: str = Query(..., min_length=2)):
+    return await research_searchpage(q)
+
+
+@app.get("/api/research/title")
+async def research_title(url: str):
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(400, "Only http/https URLs are allowed")
+    try:
+        html, _ = _fetch_url(url)
+        soup = BeautifulSoup(html, "html.parser")
+        title = (soup.title.string or "").strip() if soup.title and soup.title.string else urlparse(url).netloc
+        return {"title": title or url}
+    except Exception:
+        return {"title": urlparse(url).netloc or url}
+
+
+def _readable_article_html(url: str) -> tuple[str, str]:
+    html, _ = _fetch_url(url, timeout=20)
+    soup = BeautifulSoup(html, 'html.parser')
+    title = (soup.title.string or '').strip() if soup.title and soup.title.string else urlparse(url).netloc
+
+    def _meta(*, prop: str = '', name: str = '') -> str:
+        tag = None
+        if prop:
+            tag = soup.find('meta', attrs={'property': prop})
+        if not tag and name:
+            tag = soup.find('meta', attrs={'name': name})
+        return (tag.get('content') or '').strip() if tag else ''
+
+    og_title = _meta(prop='og:title')
+    og_desc = _meta(prop='og:description') or _meta(name='description') or _meta(name='twitter:description')
+    if og_title and len(og_title) > len(title):
+        title = og_title
+
+    for bad in soup(['script','noscript','style','meta','link','svg','canvas','iframe','form','nav','footer','header','aside']):
+        bad.decompose()
+    root = soup.select_one('article') or soup.select_one('main') or soup.select_one('[role=main]')
+    if not root:
+        candidates = sorted([n for n in soup.find_all(['div','section']) if len(n.find_all('p')) >= 2], key=lambda n: len(n.get_text(' ', strip=True)), reverse=True)
+        root = candidates[0] if candidates else (soup.body or soup)
+    keep_tags = {'h1','h2','h3','h4','p','ul','ol','li','blockquote','table','thead','tbody','tr','th','td','img','figure','figcaption','a','strong','em','b','i','hr'}
+    cleaned = BeautifulSoup('<div class="article-body"></div>', 'html.parser')
+    dest = cleaned.div
+    h = cleaned.new_tag('h2')
+    h.string = title or url
+    dest.append(h)
+    if og_desc:
+        lead = cleaned.new_tag('p')
+        lead['style'] = 'font-size:1.02em;opacity:.92'
+        lead.string = og_desc
+        dest.append(lead)
+
+    count = 0
+    seen_text = set()
+    for node in root.find_all(list(keep_tags)):
+        clone = BeautifulSoup(str(node), 'html.parser').find(node.name)
+        if clone is None:
+            continue
+        text_key = clone.get_text(' ', strip=True)[:240]
+        if text_key and text_key in seen_text:
+            continue
+        if text_key:
+            seen_text.add(text_key)
+        for tag in clone.find_all(True):
+            attrs = {}
+            if tag.name == 'a' and tag.get('href'):
+                attrs['href'] = urljoin(url, tag.get('href'))
+                attrs['target'] = '_blank'
+                attrs['rel'] = 'noreferrer'
+            if tag.name == 'img' and tag.get('src'):
+                attrs['src'] = urljoin(url, tag.get('src'))
+                attrs['alt'] = tag.get('alt','')
+            tag.attrs = attrs
+        if clone.name == 'img' and clone.get('src'):
+            clone['src'] = urljoin(url, clone.get('src'))
+        dest.append(clone)
+        count += 1
+        if count >= 120:
+            break
+
+    if len(dest.get_text(' ', strip=True)) < 180:
+        extras = []
+        for sel in ['h1', '[itemprop="description"]', '.product-description', '.description', '.summary', '.content', '.product-details']:
+            for n in soup.select(sel):
+                txt = n.get_text(' ', strip=True)
+                if txt and txt not in extras and len(txt) > 30:
+                    extras.append(txt)
+                if len(extras) >= 5:
+                    break
+            if len(extras) >= 5:
+                break
+        for txt in extras:
+            p = cleaned.new_tag('p')
+            p.string = txt
+            dest.append(p)
+
+    style = "<style>body{font-family:Segoe UI,Arial,sans-serif;line-height:1.6} img{max-width:100%;height:auto;border-radius:8px} table{border-collapse:collapse;width:100%} th,td{border:1px solid #cbd5e1;padding:6px 8px} a{color:#2563eb}</style>"
+    return title, style + str(dest)
+
+
+@app.get('/api/research/readable')
+async def research_readable(url: str):
+    parsed = urlparse(url)
+    if parsed.scheme not in {'http','https'}:
+        raise HTTPException(400, 'Only http/https URLs are allowed')
+    try:
+        title, html = _readable_article_html(url)
+        return {'title': title, 'url': url, 'html': html}
+    except Exception as e:
+        raise HTTPException(502, f'Could not read article: {e}')
+
+
+@app.websocket("/ws/scan")
+async def websocket_scan(ws: WebSocket):
+    global _scan_cancel, _scan_running
+    await ws.accept()
+    try:
+        while True:
+            raw = await ws.receive_text()
+            msg = json.loads(raw)
+            action = msg.get("action")
+            if action == "stop":
+                if _scan_cancel:
+                    _scan_cancel.set()
+                await ws.send_json({"type": "stopping"})
+                continue
+            if action != "start":
+                continue
+            if _scan_running:
+                await ws.send_json({"type": "error", "message": "Scan already in progress"})
+                continue
+            addons_root = await storage.get_setting("addons_root")
+            community = await storage.get_setting("community_dir")
+            selected_paths = msg.get("selected_paths")
+            if not isinstance(selected_paths, list):
+                selected_paths = await storage.get_json_setting("scan_selected_paths", [])
+            if not addons_root:
+                await ws.send_json({"type": "error", "message": "Set Addons Root in Settings first."})
+                continue
+            _scan_cancel = asyncio.Event()
+            _scan_running = True
+            try:
+                existing = await storage.get_all_addons(include_removed=True)
+                async def progress_cb(m: dict):
+                    await ws.send_json(m)
+                activated_only = (await storage.get_setting("scan_activated_only", "0")) == "1"
+                result = await scan_module.scan_addons(addons_root, community, existing, progress_cb, _scan_cancel, selected_paths=selected_paths, activated_only=activated_only)
+                if result.added or result.updated:
+                    await storage.upsert_many(result.added + result.updated)
+                if result.removed:
+                    await storage.mark_removed(result.removed)
+            except Exception as e:
+                log.error("Scan failed: %s", e, exc_info=True)
+                await ws.send_json({"type": "error", "message": str(e)})
+            finally:
+                _scan_running = False
+                _scan_cancel = None
+    except WebSocketDisconnect:
+        if _scan_cancel:
+            _scan_cancel.set()
+        _scan_running = False
+
+@app.get("/api/scan/status")
+async def scan_status():
+    return {"running": _scan_running}
+
+
+@app.get("/api/browser/state")
+async def browser_state():
+    return {**_browser_state, 'shell_mode': os.environ.get('HANGAR_SHELL_MODE', 'browser')}
+
+@app.post("/api/browser/open")
+async def browser_open(body: BrowserOpenRequest):
+    parsed = urlparse(body.url)
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(400, "Only http/https URLs are allowed")
+    _update_browser_state(requested_url=body.url, requested_title=body.title or body.url, visible=True)
+    return {"ok": True, "url": body.url}
+
+@app.post("/api/browser/update")
+async def browser_update(body: BrowserUpdateRequest):
+    _update_browser_state(current_url=body.current_url, current_title=body.current_title, visible=body.visible)
+    return {"ok": True}
+
+@app.post("/api/browser/close")
+async def browser_close():
+    _update_browser_state(
+        visible=False,
+        requested_url="",
+        requested_title="",
+        current_url="",
+        current_title="",
+    )
+    return {"ok": True}
+
+@app.get("/api/app/info")
+async def app_info():
+    return {
+        "user_data_dir": str(USER_DATA_DIR),
+        "settings_file": str(SETTINGS_JSON_PATH),
+        "db_path": str(DB_PATH),
+        "frontend_dir": str(FRONTEND_DIR),
+        "shell_mode": os.environ.get('HANGAR_SHELL_MODE', 'browser'),
+    }
+
+@app.get("/")
+@app.get("/{full_path:path}")
+async def serve_frontend(full_path: str = ""):
+    index = FRONTEND_DIR / "index.html"
+    if not index.exists():
+        return JSONResponse({"error": "Frontend not found."}, status_code=503)
+    headers = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache", "Expires": "0"}
+    return FileResponse(str(index), headers=headers)
