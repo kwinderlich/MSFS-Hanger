@@ -305,7 +305,7 @@ def _merge_existing_addon(old: Addon, scanned: Addon) -> Addon:
         if getattr(merged, attr) in (None, "") and getattr(scanned, attr) not in (None, ""):
             setattr(merged, attr, getattr(scanned, attr))
 
-    for attr in ["icao","name","city","municipality","state","province","region","region_code","country","country_code","continent","elev","lat","lon","scheduled","airport_type","home_link","wiki_url","mfr","manufacturer_full_name","model","category","engine","engine_type","max_speed","cruise","range","range_nm","ceiling","seats","mtow","avionics","introduced","first_opened","scenery_type","coverage","resolution","util_cat","compat","source"]:
+    for attr in ["icao","name","city","municipality","state","province","region","region_code","country","country_code","continent","elev","lat","lon","scheduled","airport_type","home_link","wiki_url","mfr","manufacturer_full_name","model","category","engine","engine_type","max_speed","cruise","range","range_nm","ceiling","seats","mtow","avionics","variants","introduced","first_opened","scenery_type","coverage","resolution","util_cat","compat","source"]:
         if getattr(merged.rw, attr) in (None, "", []):
             setattr(merged.rw, attr, getattr(scanned.rw, attr))
     if not merged.rw.runways and scanned.rw.runways:

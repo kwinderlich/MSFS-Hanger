@@ -104,14 +104,6 @@ async def delete_all_addons(db_path: Path = DB_PATH):
         await db.execute("DELETE FROM addons")
         await db.commit()
 
-async def delete_addons(addon_ids: list[str], db_path: Path = DB_PATH):
-    if not addon_ids:
-        return
-    placeholders = ",".join("?" for _ in addon_ids)
-    async with aiosqlite.connect(str(db_path)) as db:
-        await db.execute(f"DELETE FROM addons WHERE id IN ({placeholders})", addon_ids)
-        await db.commit()
-
 async def get_all_addons(include_removed: bool = False, db_path: Path = DB_PATH) -> dict[str, Addon]:
     out: dict[str, Addon] = {}
     where = "" if include_removed else "WHERE exists_flag=1"
@@ -169,8 +161,6 @@ async def update_addon_core(addon_id: str, fields: dict, db_path: Path = DB_PATH
             addon.pr.ver = value
         elif key == "latest_version":
             addon.pr.latest_ver = value
-        elif key == "latest_version_date":
-            addon.pr.latest_ver_date = value
         elif key == "released":
             addon.pr.released = value
         elif key == "price":

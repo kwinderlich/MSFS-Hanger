@@ -25,7 +25,6 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from models import SUBTYPE_MAP
 import linker
 import scanner as scan_module
 import storage
@@ -53,7 +52,6 @@ _enrich_progress = {"running": False, "pct": 0, "current": "", "done": 0, "total
 _browser_state = {
     'requested_url': '',
     'requested_title': '',
-    'request_id': 0,
     'current_url': '',
     'current_title': '',
     'visible': False,
@@ -197,42 +195,9 @@ async def delete_gallery_image(addon_id: str, index: int):
     await storage.upsert_addon(addon)
     return addon.to_frontend_dict()
 
-async def _sync_enabled_state_from_community(addons: dict[str, object]) -> dict[str, object]:
-    """Refresh stored enabled flags from the actual Community folder state.
-
-    This keeps the Library cards honest after any activation/deactivation action
-    and also after external tools such as Addons Linker change the Community
-    folder behind the scenes. We only persist rows that actually changed.
-    """
-    community_dir = await storage.get_setting('community_dir')
-    if not community_dir:
-        return addons
-    try:
-        enabled_links = linker.get_all_enabled(community_dir)
-    except Exception as e:
-        log.warning('Could not scan Community folder for enabled-state sync: %s', e)
-        return addons
-
-    enabled_targets = {str(Path(target).resolve()) for target in enabled_links.values() if target}
-    enabled_names = {name.lower() for name in enabled_links.keys()}
-    changed = 0
-    for addon in addons.values():
-        addon_target = str(Path(addon.addon_path).resolve()) if getattr(addon, 'addon_path', '') else ''
-        addon_name = Path(addon.addon_path).name.lower() if getattr(addon, 'addon_path', '') else ''
-        actual_enabled = bool(addon_target and (addon_target in enabled_targets or addon_name in enabled_names))
-        if addon.enabled != actual_enabled:
-            addon.enabled = actual_enabled
-            await storage.upsert_addon(addon)
-            changed += 1
-    if changed:
-        log.info('Refreshed Community-link enabled state for %s add-on(s)', changed)
-    return addons
-
-
 @app.get("/api/addons")
 async def list_addons():
     addons = await storage.get_all_addons()
-    addons = await _sync_enabled_state_from_community(addons)
     return [a.to_frontend_dict() for a in addons.values()]
 
 @app.get("/api/addons/{addon_id}")
@@ -240,8 +205,6 @@ async def get_addon(addon_id: str):
     addon = await storage.get_addon(addon_id)
     if not addon:
         raise HTTPException(404)
-    synced = await _sync_enabled_state_from_community({addon.id: addon})
-    addon = synced.get(addon.id, addon)
     return addon.to_frontend_dict()
 
 class UserDataUpdate(BaseModel):
@@ -269,7 +232,6 @@ class ToggleRequest(BaseModel):
 class BrowserOpenRequest(BaseModel):
     url: str
     title: Optional[str] = None
-    request_id: Optional[int] = None
 
 class BrowserUpdateRequest(BaseModel):
     current_url: Optional[str] = None
@@ -291,7 +253,6 @@ class AddonCoreUpdate(BaseModel):
     icao: Optional[str] = None
     version: Optional[str] = None
     latest_version: Optional[str] = None
-    latest_version_date: Optional[str] = None
     released: Optional[str] = None
     price: Optional[float] = None
     package_name: Optional[str] = None
@@ -317,13 +278,8 @@ async def toggle_addon(addon_id: str, body: ToggleRequest):
     ok, msg = linker.toggle_addon(addon.addon_path, community_dir, body.enabled)
     if not ok:
         raise HTTPException(500, msg)
-    # Sync the actual Community-folder state instead of trusting the requested
-    # state blindly. This keeps the visual toggle honest if Windows denied a
-    # symlink operation or if the link already existed in a different form.
-    synced = await _sync_enabled_state_from_community({addon.id: addon})
-    addon = synced.get(addon.id, addon)
-    await storage.set_enabled(addon_id, addon.enabled)
-    return {"ok": True, "message": msg, "enabled": addon.enabled}
+    await storage.set_enabled(addon_id, body.enabled)
+    return {"ok": True, "message": msg, "enabled": body.enabled}
 
 @app.get("/api/settings")
 async def get_settings():
@@ -366,36 +322,6 @@ class ProfilePayload(BaseModel):
 
 class ProfileApplyRequest(BaseModel):
     profile_id: str
-
-
-class VisibleApplyRequest(BaseModel):
-    """Apply the current grid view to the Community folder.
-
-    Any add-on id included here should be enabled. Any add-on not included here
-    should be disabled. This lets the grid itself become a simple activation
-    workspace without requiring the user to build a dedicated collection first.
-    """
-
-    addon_ids: list[str] = []
-
-
-class CommunityActionRequest(BaseModel):
-    """Preview or execute Community-folder linking actions.
-
-    scope:
-      - displayed: use the explicit addon_ids supplied by the current grid view
-      - collections: use the union of addon ids from the selected collections
-      - all: use every add-on in the library
-
-    action:
-      - activate: create/keep links for the scoped add-ons only
-      - deactivate: remove links for the scoped add-ons only
-    """
-
-    scope: str = 'displayed'
-    action: str = 'activate'
-    addon_ids: list[str] = []
-    collection_ids: list[str] = []
 
 
 def _safe_folder_delete(path_str: str) -> tuple[bool, str]:
@@ -469,7 +395,7 @@ async def create_profile(body: ProfilePayload):
     name = (body.name or '').strip()
     if not name:
         raise HTTPException(400, 'Profile name required')
-    profile = {'id': uuid.uuid4().hex[:10], 'name': name, 'addon_ids': list(dict.fromkeys(body.addon_ids or [])), 'created_at': datetime.utcnow().isoformat() + 'Z', 'updated_at': datetime.utcnow().isoformat() + 'Z'}
+    profile = {'id': uuid.uuid4().hex[:10], 'name': name, 'addon_ids': list(dict.fromkeys(body.addon_ids or [])), 'updated_at': datetime.utcnow().isoformat() + 'Z'}
     profiles.append(profile)
     await storage.set_setting('profiles_json', json.dumps(profiles, ensure_ascii=False))
     return {'ok': True, 'profile': profile}
@@ -483,7 +409,6 @@ async def update_profile(profile_id: str, body: ProfilePayload):
         if profile.get('id') == profile_id:
             profile['name'] = (body.name or profile.get('name') or '').strip() or profile.get('name') or 'Profile'
             profile['addon_ids'] = list(dict.fromkeys(body.addon_ids or []))
-            profile['created_at'] = profile.get('created_at') or datetime.utcnow().isoformat() + 'Z'
             profile['updated_at'] = datetime.utcnow().isoformat() + 'Z'
             found = profile
             break
@@ -543,8 +468,6 @@ DEFAULT_DATA_OPTIONS = {
         "Airport": ["Large Commercial","Medium Commercial","General Aviation","Heliport","Seaplane Base","Closed"],
         "Scenery": ["City","Region","Landmark","Mesh","Airport scenery"],
         "Utility": ["Navigation","Tool","Weather","Mission"],
-        "Vehicles": ["Car","Truck","Offroad"],
-        "Boats": ["Pleasure","Military","Cargo"],
         "Mod": ["Livery","Enhancement","Other"],
     },
 }
@@ -660,41 +583,6 @@ async def folder_top(root: Optional[str] = None):
         if p.is_dir() and not p.name.startswith('.'):
             folders.append({"name": p.name, "path": str(p.resolve())})
     return {"root": str(root_path), "folders": folders}
-
-
-@app.get('/api/folders/drives')
-async def folder_drives():
-    """Return local drive roots for the folder-browser modal.
-
-    The desktop app runs on Windows for Keith's workflow, but a safe fallback is
-    included for non-Windows development so the UI can still browse from '/'.
-    """
-
-    drives = []
-    if os.name == 'nt':
-        for letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
-            drive = f'{letter}:\\'
-            if os.path.exists(drive):
-                drives.append({'name': drive, 'path': drive})
-    else:
-        drives.append({'name': '/', 'path': '/'})
-    return {'drives': drives}
-
-
-@app.get('/api/folders/children')
-async def folder_children(root: str = Query(...)):
-    root_path = Path(root)
-    if not root_path.exists():
-        raise HTTPException(404, 'Folder not found')
-    try:
-        folders = []
-        for p in sorted(root_path.iterdir(), key=lambda x: x.name.lower()):
-            if p.is_dir() and not p.name.startswith('.'):
-                folders.append({'name': p.name or str(p), 'path': str(p.resolve())})
-        parent = str(root_path.parent.resolve()) if root_path.parent and root_path.parent != root_path else ''
-        return {'root': str(root_path.resolve()), 'parent': parent, 'folders': folders}
-    except Exception as e:
-        raise HTTPException(500, str(e))
 @app.get("/api/docs/{addon_id}/{index}")
 async def addon_doc(addon_id: str, index: int):
     addon = await storage.get_addon(addon_id)
@@ -1266,16 +1154,6 @@ def _extract_product_meta_from_text(text: str) -> dict:
         if m:
             out['version'] = m.group(1).strip()
             break
-    latest_date_patterns = [
-        r'\b(?:latest\s+version\s+date|current\s+version\s+date|updated\s+on|last\s+updated|version\s+date|update\s+date)\s*[:\-]?\s*([A-Z][a-z]+\s+\d{1,2},\s+\d{4})',
-        r'\b(?:latest\s+version\s+date|current\s+version\s+date|updated\s+on|last\s+updated|version\s+date|update\s+date)\s*[:\-]?\s*(\d{1,2}\s+[A-Z][a-z]+\s+\d{4})',
-        r'\b(?:latest\s+version\s+date|current\s+version\s+date|updated\s+on|last\s+updated|version\s+date|update\s+date)\s*[:\-]?\s*(20\d{2}-\d{2}-\d{2})',
-    ]
-    for pat in latest_date_patterns:
-        m = re.search(pat, txt, re.I)
-        if m:
-            out['latest_version_date'] = m.group(1).strip()
-            break
     currency_matches = []
     for pat in [r'USD\s*([0-9]{1,4}(?:[.,][0-9]{2})?)', r'\$\s*([0-9]{1,4}(?:[.,][0-9]{2})?)', r'€\s*([0-9]{1,4}(?:[.,][0-9]{2})?)', r'£\s*([0-9]{1,4}(?:[.,][0-9]{2})?)']:
         for m in re.finditer(pat, txt, re.I):
@@ -1389,77 +1267,6 @@ def _extract_json_object(text: str) -> dict:
 
 GEMINI_INTERACTIVE_MODEL = 'gemini-2.5-flash'
 GEMINI_BULK_MODEL = 'gemini-2.5-flash-lite'
-OPENAI_DEFAULT_MODEL = 'gpt-5.4-nano'
-CLAUDE_DEFAULT_MODEL = 'claude-haiku-4-5-20251001'
-
-_last_openai_usage: dict[str, object] = {}
-_last_gemini_status: dict[str, object] = {}
-_last_claude_status: dict[str, object] = {}
-
-
-def _selected_ai_provider(settings: dict) -> str:
-    raw = (settings.get('ai_provider') or '').strip().lower()
-    if raw in {'gemini', 'openai', 'claude'}:
-        return raw
-    if settings.get('google_api_key'):
-        return 'gemini'
-    if settings.get('openai_key'):
-        return 'openai'
-    if settings.get('claude_api_key'):
-        return 'claude'
-    return 'openai'
-
-
-def _selected_openai_model(settings: dict) -> str:
-    return (settings.get('openai_model') or OPENAI_DEFAULT_MODEL).strip() or OPENAI_DEFAULT_MODEL
-
-
-def _selected_gemini_interactive_model(settings: dict) -> str:
-    return (settings.get('gemini_interactive_model') or GEMINI_INTERACTIVE_MODEL).strip() or GEMINI_INTERACTIVE_MODEL
-
-
-def _selected_gemini_bulk_model(settings: dict) -> str:
-    return (settings.get('gemini_bulk_model') or GEMINI_BULK_MODEL).strip() or GEMINI_BULK_MODEL
-
-
-def _selected_claude_model(settings: dict) -> str:
-    return (settings.get('claude_model') or CLAUDE_DEFAULT_MODEL).strip() or CLAUDE_DEFAULT_MODEL
-
-
-def _capture_openai_usage_headers(headers) -> None:
-    global _last_openai_usage
-    if not headers:
-        return
-    snap = {
-        'limit_requests': headers.get('x-ratelimit-limit-requests') or '',
-        'limit_tokens': headers.get('x-ratelimit-limit-tokens') or '',
-        'remaining_requests': headers.get('x-ratelimit-remaining-requests') or '',
-        'remaining_tokens': headers.get('x-ratelimit-remaining-tokens') or '',
-        'reset_requests': headers.get('x-ratelimit-reset-requests') or '',
-        'reset_tokens': headers.get('x-ratelimit-reset-tokens') or '',
-    }
-    if any(v for v in snap.values()):
-        _last_openai_usage = snap
-
-
-def _capture_gemini_status(*, model: str, ok: bool, error: str = '') -> None:
-    global _last_gemini_status
-    _last_gemini_status = {
-        'model': model,
-        'ok': ok,
-        'error': error[:400] if error else '',
-        'quota_hit': 'quota' in (error or '').lower() or 'resource exhausted' in (error or '').lower(),
-    }
-
-
-def _capture_claude_status(*, model: str, ok: bool, error: str = '') -> None:
-    global _last_claude_status
-    _last_claude_status = {
-        'model': model,
-        'ok': ok,
-        'error': error[:400] if error else '',
-        'quota_hit': 'rate limit' in (error or '').lower() or 'quota' in (error or '').lower(),
-    }
 
 
 def _gemini_generate_json(prompt: str, api_key: str, *, use_search: bool = True, model: str = GEMINI_INTERACTIVE_MODEL) -> tuple[dict, list[str], str]:
@@ -1473,13 +1280,7 @@ def _gemini_generate_json(prompt: str, api_key: str, *, use_search: bool = True,
     if use_search:
         payload['tools'] = [{'google_search': {}}]
     resp = requests.post(url, headers={'x-goog-api-key': api_key, 'Content-Type': 'application/json'}, json=payload, timeout=60)
-    try:
-        resp.raise_for_status()
-    except Exception as e:
-        detail = e.response.text[:400] if isinstance(e, requests.HTTPError) and e.response is not None else str(e)
-        _capture_gemini_status(model=model, ok=False, error=detail)
-        raise
-    _capture_gemini_status(model=model, ok=True)
+    resp.raise_for_status()
     data = resp.json()
     candidates = data.get('candidates') or []
     parts = (((candidates[0] if candidates else {}).get('content') or {}).get('parts') or [])
@@ -1499,7 +1300,7 @@ def _gemini_generate_json(prompt: str, api_key: str, *, use_search: bool = True,
 
 
 
-def _openai_generate_json(prompt: str, api_key: str, *, model: str = OPENAI_DEFAULT_MODEL) -> tuple[dict, list[str], str]:
+def _openai_generate_json(prompt: str, api_key: str, *, model: str = 'gpt-4o-mini') -> tuple[dict, list[str], str]:
     if not api_key:
         raise ValueError('OpenAI API key not configured')
     payload = {
@@ -1513,7 +1314,6 @@ def _openai_generate_json(prompt: str, api_key: str, *, model: str = OPENAI_DEFA
         'max_tokens': 2500,
     }
     resp = requests.post('https://api.openai.com/v1/chat/completions', headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}, json=payload, timeout=90)
-    _capture_openai_usage_headers(resp.headers)
     resp.raise_for_status()
     data = resp.json()
     text_out = (((data.get('choices') or [{}])[0].get('message') or {}).get('content') or '')
@@ -1521,58 +1321,16 @@ def _openai_generate_json(prompt: str, api_key: str, *, model: str = OPENAI_DEFA
     return parsed, [], text_out
 
 
-def _claude_generate_json(prompt: str, api_key: str, *, model: str = CLAUDE_DEFAULT_MODEL) -> tuple[dict, list[str], str]:
-    if not api_key:
-        raise ValueError('Claude API key not configured')
-    payload = {
-        'model': model,
-        'max_tokens': 2500,
-        'temperature': 0.1,
-        'system': 'Return only valid JSON matching the requested schema.',
-        'messages': [
-            {'role': 'user', 'content': prompt},
-        ],
-    }
-    resp = requests.post(
-        'https://api.anthropic.com/v1/messages',
-        headers={
-            'x-api-key': api_key,
-            'anthropic-version': '2023-06-01',
-            'content-type': 'application/json',
-        },
-        json=payload,
-        timeout=90,
-    )
-    try:
-        resp.raise_for_status()
-    except Exception as e:
-        detail = e.response.text[:400] if isinstance(e, requests.HTTPError) and e.response is not None else str(e)
-        _capture_claude_status(model=model, ok=False, error=detail)
-        raise
-    _capture_claude_status(model=model, ok=True)
-    data = resp.json()
-    parts = data.get('content') or []
-    texts = []
-    for part in parts:
-        if isinstance(part, dict) and part.get('type') == 'text':
-            texts.append(part.get('text') or '')
-    text_out = ''.join(texts)
-    parsed = _extract_json_object(text_out)
-    return parsed, [], text_out
-
-
-def _provider_generate_json(provider: str, prompt: str, settings: dict, *, use_search: bool = True, gemini_model: Optional[str] = None, openai_model: Optional[str] = None, claude_model: Optional[str] = None) -> tuple[dict, list[str], str]:
+def _provider_generate_json(provider: str, prompt: str, settings: dict, *, use_search: bool = True, gemini_model: Optional[str] = None) -> tuple[dict, list[str], str]:
     provider = (provider or '').lower().strip()
     if provider == 'gemini':
         return _gemini_generate_json(
             prompt,
             settings.get('google_api_key',''),
             use_search=use_search,
-            model=(gemini_model or _selected_gemini_interactive_model(settings)),
+            model=(gemini_model or GEMINI_INTERACTIVE_MODEL),
         )
-    if provider == 'claude':
-        return _claude_generate_json(prompt, settings.get('claude_api_key',''), model=(claude_model or _selected_claude_model(settings)))
-    return _openai_generate_json(prompt, settings.get('openai_key',''), model=(openai_model or _selected_openai_model(settings)))
+    return _openai_generate_json(prompt, settings.get('openai_key',''))
 
 
 def _normalize_html_fragment(html: str) -> str:
@@ -1640,79 +1398,6 @@ def _addon_sim_label(settings: dict) -> str:
 
 def _preferred_language(settings: dict) -> str:
     return (settings.get('language') or 'English').strip() or 'English'
-
-def _guess_subtype_for_addon(addon, *, category: str = '', title: str = '') -> str | None:
-    addon_type = ((getattr(addon, 'type', '') or '')).strip()
-    pieces = [
-        str(title or getattr(addon, 'title', '') or ''),
-        str(getattr(addon, 'publisher', '') or ''),
-        str(category or ''),
-        str(getattr(getattr(addon, 'rw', None), 'manufacturer_full_name', '') or ''),
-        str(getattr(getattr(addon, 'rw', None), 'mfr', '') or ''),
-        str(getattr(getattr(addon, 'rw', None), 'model', '') or ''),
-    ]
-    hay = ' '.join(pieces).lower()
-    if addon_type == 'Aircraft':
-        for subtype, keywords in SUBTYPE_MAP.items():
-            if any(k in hay for k in keywords):
-                return subtype
-        category_map = {
-            'airliner': 'Airliner',
-            'airline': 'Airliner',
-            'regional': 'Regional',
-            'business jet': 'Business Jet',
-            'bizjet': 'Business Jet',
-            'helicopter': 'Helicopter',
-            'rotorcraft': 'Helicopter',
-            'military': 'Military',
-            'fighter': 'Military',
-            'general aviation': 'General Aviation',
-            'ga': 'General Aviation',
-        }
-        for key, value in category_map.items():
-            if key in hay:
-                return value
-        return 'General Aviation'
-    if addon_type == 'Airport':
-        mapping = [
-            ('heliport', 'Heliport'),
-            ('seaplane', 'Seaplane Base'),
-            ('closed', 'Closed'),
-            ('large', 'Large Commercial'),
-            ('international', 'Large Commercial'),
-            ('medium', 'Medium Commercial'),
-            ('regional', 'Medium Commercial'),
-            ('general aviation', 'General Aviation'),
-        ]
-        for key, value in mapping:
-            if key in hay:
-                return value
-    if addon_type == 'Scenery':
-        mapping = [('city', 'City'), ('region', 'Region'), ('mesh', 'Mesh'), ('landmark', 'Landmark'), ('airport', 'Airport scenery')]
-        for key, value in mapping:
-            if key in hay:
-                return value
-    if addon_type == 'Utility':
-        mapping = [('weather', 'Weather'), ('mission', 'Mission'), ('navigation', 'Navigation'), ('tool', 'Tool')]
-        for key, value in mapping:
-            if key in hay:
-                return value
-    if addon_type == 'Vehicles':
-        mapping = [('truck', 'Truck'), ('offroad', 'Offroad'), ('car', 'Car')]
-        for key, value in mapping:
-            if key in hay:
-                return value
-    if addon_type == 'Boats':
-        mapping = [('military', 'Military'), ('cargo', 'Cargo'), ('pleasure', 'Pleasure')]
-        for key, value in mapping:
-            if key in hay:
-                return value
-    if addon_type == 'Mod':
-        mapping = [('livery', 'Livery'), ('enhancement', 'Enhancement')]
-        for key, value in mapping:
-            if key in hay:
-                return value
-    return None
 
 
 def _cleanup_name_bits(value: str) -> str:
@@ -1783,22 +1468,6 @@ def _range_nm_from_any(text_value, range_nm):
     return int(round(nm))
 
 
-def _clean_provider_source_label(value: str) -> str:
-    raw = (value or '').strip()
-    if not raw:
-        return raw
-    low = raw.lower()
-    if 'vertexaisearch.cloud.google.com' in low:
-        return 'vertexaisearch.cloud.google.com'
-    try:
-        parsed = urlparse(raw)
-        if parsed.scheme and parsed.netloc:
-            return parsed.netloc
-    except Exception:
-        pass
-    return raw
-
-
 def _gemini_log_context(kind: str, addon_title: str, candidate: str, attempt: int, model: str):
     log.info('Gemini %s attempt=%s model=%s addon=%s candidate=%s', kind, attempt, model, addon_title, candidate)
 
@@ -1812,37 +1481,28 @@ def _build_product_prompt(addon, sim_label: str, include_overview: bool = True, 
     extra_tail = (', ' + ', '.join(extra)) if extra else ''
     lookup = (search_term or f"{(addon.publisher or '').strip()} {(addon.title or '').strip()}").strip()
     return f"""Use Google Search grounding to find flight simulator add-on product metadata for the product '{lookup}' for '{sim_label}'.
-Return ONLY one valid JSON object with these exact keys: latest_current_version, latest_version_date, release_date, list_price, currency, store_name{extra_tail}.
+Return ONLY one valid JSON object with these exact keys: latest_current_version, release_date, list_price, currency, store_name{extra_tail}.
 Rules:
 - Focus on the flight simulator add-on product for {sim_label}, not YouTube videos, generic home pages, forum chatter, or unrelated marketplace listings.
 - Prefer official store pages or known addon storefronts.
 - The prose fields must be written in {response_language}.
-- latest_version_date should be the date the latest/current product version was made available when known.
-- release_date should be the add-on's initial or first public release date when known, not the latest update date.
 - list_price must be a number without currency symbols when possible, otherwise null.
-- summary_html should be a nicely formatted HTML fragment with at least 2 paragraphs that explain the addon purpose, scope, and what it adds to the simulator. Give it a polished product-page feel with a short lead paragraph and a second paragraph that helps a pilot understand what is included.
+- summary_html should be a nicely formatted HTML fragment with at least 2 paragraphs that explain the addon purpose, scope, and what it adds to the simulator.
 - summary_html must not use generic filler such as '<<Type>> addon by <<publisher>>' or similarly vague template wording.
-- features_html should be a richly formatted HTML fragment that mirrors a polished addon product page and describes the addon features in depth.
-- features_html should normally include a short introductory paragraph, at least one <h3> heading, and a <ul> with specific substantial bullets. Add a second section when useful for aircraft systems, airport features, scenery scope, or included content.
-- Keep both HTML fragments readable inside an app: use simple tags like <p>, <ul>, <li>, <strong>, <em>, and <h3> only.
+- features_html should be a nicely formatted HTML fragment that describes the addon features in depth.
+- features_html should normally include a short introductory paragraph followed by a <ul> with specific, substantial feature bullets when reliable details are available.
+- Keep both HTML fragments readable inside an app: use simple tags like <p>, <ul>, <li>, <strong>, and <em> only.
 - Do not include markdown or code fences.
 - If unknown, use empty strings or null for list_price."""
 
 
 def _build_aircraft_prompt(mfr: str, model: str, *, response_language: str = 'English') -> str:
     return f"""Use Google Search grounding to find real-world aircraft specifications for the aircraft '{mfr} {model}'.
-Return ONLY one valid JSON object with these exact keys: manufacturer_full_name, model, category, engine, engine_type, max_speed, cruise_speed, range, range_nm, ceiling, passenger_capacity, mtow, fuel_capacity, wingspan, length, height, avionics, variants, in_production, aircraft_cost, country_of_origin, date_introduced, summary_html.
+Return ONLY one valid JSON object with these exact keys: manufacturer_full_name, model, category, engine, engine_type, max_speed, cruise_speed, range, range_nm, ceiling, passenger_capacity, mtow, date_introduced, summary_html.
 Rules:
 - Do not include markdown or code fences.
 - range_nm must be an integer number of nautical miles when available, converted from any other published unit if needed.
 - Keep units inside max_speed, cruise_speed, range, ceiling, mtow as readable strings.
-- fuel_capacity should be a string with units if known.
-- wingspan, length, and height should be strings with units if known.
-- avionics should be a readable multi-line style string or semicolon-separated string describing notable avionics packages/cockpit options used on this aircraft.
-- variants should be a readable multi-line style string or semicolon-separated string listing notable variants or sub-models.
-- in_production should be 'Yes' or 'No' when known.
-- aircraft_cost should be a readable string with currency and whether it reflects a new-aircraft price or a used-market estimate when the aircraft is out of production.
-- country_of_origin should be the aircraft's country of origin when known.
 - summary_html should be concise readable HTML for sim pilots written in {response_language}.
 - If unknown, use empty strings or null only for range_nm.
 - Prefer official manufacturer, reputable aviation references, and Wikipedia when they agree."""
@@ -1850,13 +1510,12 @@ Rules:
 
 def _merge_product_into_addon(addon, parsed: dict, sources: list[str], *, include_overview: bool = True, include_features: bool = True, override_existing: bool = False):
     addon.pr.latest_ver = parsed.get('latest_current_version') or addon.pr.latest_ver
-    addon.pr.latest_ver_date = parsed.get('latest_version_date') or addon.pr.latest_ver_date
     addon.pr.released = parsed.get('release_date') or addon.pr.released
     price = _num_or_none(parsed.get('list_price'))
     if price is not None:
         addon.pr.price = price
     if parsed.get('store_name'):
-        addon.pr.source_store = _clean_provider_source_label(parsed.get('store_name'))
+        addon.pr.source_store = parsed.get('store_name')
 
     if include_overview:
         incoming_summary = _normalize_html_fragment(parsed.get('summary_html'))
@@ -1897,19 +1556,10 @@ def _merge_aircraft_into_addon(addon, parsed: dict, sources: list[str]):
     rw.ceiling = parsed.get('ceiling') or rw.ceiling
     rw.seats = parsed.get('passenger_capacity') or rw.seats
     rw.mtow = parsed.get('mtow') or rw.mtow
-    rw.fuel_capacity = parsed.get('fuel_capacity') or rw.fuel_capacity
-    rw.wingspan = parsed.get('wingspan') or rw.wingspan
-    rw.length = parsed.get('length') or rw.length
-    rw.height = parsed.get('height') or rw.height
-    rw.avionics = parsed.get('avionics') or rw.avionics
-    rw.variants = parsed.get('variants') or rw.variants
-    rw.in_production = parsed.get('in_production') or rw.in_production
-    rw.aircraft_cost = parsed.get('aircraft_cost') or rw.aircraft_cost
-    rw.country_of_origin = parsed.get('country_of_origin') or rw.country_of_origin
     rw.introduced = parsed.get('date_introduced') or rw.introduced
     if parsed.get('summary_html') and not _has_meaningful_existing_html(addon.summary or '', field='overview', addon=addon):
         addon.summary = _normalize_html_fragment(parsed.get('summary_html'))
-    rw.source = _clean_provider_source_label(' / '.join(sources[:2])) if sources else _clean_provider_source_label(rw.source or '')
+    rw.source = ' / '.join(sources[:2]) if sources else rw.source
     return addon
 
 
@@ -1917,7 +1567,7 @@ def _extract_json_pairs_fallback(text: str, keys: list[str]) -> dict:
     raw = (text or '').strip()
     out = {}
     for key in keys:
-        m = re.search(r'"%s"\s*:\s*"((?:\\.|[^"\\])*)"' % re.escape(key), raw)
+        m = re.search(r'"%s"\s*:\s*"((?:\\.|[^"\])*)"' % re.escape(key), raw)
         if m:
             try:
                 out[key] = bytes(m.group(1), 'utf-8').decode('unicode_escape')
@@ -1959,19 +1609,18 @@ class GeminiAircraftRequest(BaseModel):
     model: str
 
 
-async def _run_gemini_aircraft_lookup(settings: dict, lookup_mfr: str, model: str, *, fallback_title: str = '', gemini_model: Optional[str] = None):
+async def _run_gemini_aircraft_lookup(settings: dict, lookup_mfr: str, model: str, *, fallback_title: str = ''):
     api_key = settings.get('google_api_key', '')
     response_language = _preferred_language(settings)
     attempts = []
     last_error = None
     for idx, (cand_mfr, cand_model) in enumerate(_aircraft_query_candidates(lookup_mfr, model, fallback_title), start=1):
         prompt = _build_aircraft_prompt(cand_mfr, cand_model, response_language=response_language)
-        active_model = gemini_model or _selected_gemini_interactive_model(settings)
-        _gemini_log_context('aircraft', fallback_title or model, f'{cand_mfr} {cand_model}', idx, active_model)
+        _gemini_log_context('aircraft', fallback_title or model, f'{cand_mfr} {cand_model}', idx, GEMINI_INTERACTIVE_MODEL)
         try:
-            parsed, sources, raw = await asyncio.to_thread(lambda p=prompt, m=active_model: _gemini_generate_json(p, api_key, use_search=True, model=m))
+            parsed, sources, raw = await asyncio.to_thread(lambda p=prompt: _gemini_generate_json(p, api_key, use_search=True, model=GEMINI_INTERACTIVE_MODEL))
             if not parsed:
-                parsed = _extract_json_pairs_fallback(raw, ['manufacturer_full_name','model','category','engine','engine_type','max_speed','cruise_speed','range','range_nm','ceiling','passenger_capacity','mtow','fuel_capacity','wingspan','length','height','avionics','variants','in_production','aircraft_cost','country_of_origin','date_introduced','summary_html'])
+                parsed = _extract_json_pairs_fallback(raw, ['manufacturer_full_name','model','category','engine','engine_type','max_speed','cruise_speed','range','range_nm','ceiling','passenger_capacity','mtow','date_introduced','summary_html'])
             if parsed:
                 log.info('Gemini aircraft success addon=%s candidate=%s sources=%s', fallback_title or model, f'{cand_mfr} {cand_model}', len(sources))
                 return parsed, sources, {'candidate': f'{cand_mfr} {cand_model}', 'attempt': idx}
@@ -1995,7 +1644,7 @@ async def _run_gemini_product_lookup(addon, settings: dict, *, model: str = GEMI
         try:
             parsed, sources, raw = await asyncio.to_thread(lambda p=prompt, m=model: _gemini_generate_json(p, api_key, use_search=True, model=m))
             if not parsed:
-                parsed = _extract_json_pairs_fallback(raw, ['latest_current_version','latest_version_date','release_date','list_price','currency','store_name','summary_html','features_html'])
+                parsed = _extract_json_pairs_fallback(raw, ['latest_current_version','release_date','list_price','currency','store_name','summary_html','features_html'])
             if parsed:
                 log.info('Gemini product success addon=%s candidate=%s sources=%s', addon.title, candidate, len(sources))
                 return parsed, sources, {'candidate': candidate, 'attempt': idx}
@@ -2008,179 +1657,19 @@ async def _run_gemini_product_lookup(addon, settings: dict, *, model: str = GEMI
     raise HTTPException(502, f'Gemini product lookup failed after {len(attempts)} attempts. Last error: {last_error or "No structured data"}')
 
 
-
-
-def _lookup_aircraft_source_sync(manufacturer: str, model: str, fallback_title: str = '') -> dict:
-    """Find a likely public web page for an aircraft lookup.
-
-    Gemini can return grounded source URLs directly. OpenAI and Claude do not
-    in this app's lower-cost path, so we do a lightweight search ourselves and
-    keep only the best matching page URL/title. That value is stored as the
-    aircraft Web Data Source so the user sees where the facts most likely came
-    from instead of only seeing the AI provider name.
-    """
-
-    query = ' '.join([manufacturer or '', model or fallback_title or '']).strip()
-    if not query:
-        return {}
-    variants = [
-        f'"{query}" aircraft',
-        f'{query} aircraft specifications',
-        f'{query} performance range ceiling',
-        f'site:wikipedia.org {query}',
-    ]
-    merged = []
-    seen = set()
-    bad_hosts = {'youtube.com','www.youtube.com','bing.com','www.bing.com','duckduckgo.com','html.duckduckgo.com','lite.duckduckgo.com','google.com','www.google.com'}
-    for variant in variants:
-        for fn in (lambda v=variant: _search_duckduckgo(v, 'research'), lambda v=variant: _search_bing(v, 1, 10, 'research')):
-            try:
-                for r in fn() or []:
-                    url = _clean_result_url(r.get('url') or '')
-                    host = (urlparse(url).netloc or '').lower()
-                    if not url or url in seen or host in bad_hosts:
-                        continue
-                    seen.add(url)
-                    merged.append({**r, 'url': url})
-            except Exception:
-                continue
-    ranked = _rank_results(query, merged, 'research')[:5] if merged else []
-    if not ranked:
-        return {}
-    best = ranked[0]
-    return {'source_url': best.get('url') or '', 'source_title': best.get('title') or ''}
-
-
-async def _run_provider_aircraft_lookup(provider: str, settings: dict, lookup_mfr: str, model: str, *, fallback_title: str = '', gemini_model: Optional[str] = None, openai_model: Optional[str] = None, claude_model: Optional[str] = None):
-    provider = (provider or 'gemini').lower().strip()
-    if provider == 'gemini':
-        return await _run_gemini_aircraft_lookup(settings, lookup_mfr, model, fallback_title=fallback_title, gemini_model=(gemini_model or _selected_gemini_interactive_model(settings)))
-
-    # OpenAI/Claude do not return grounded source links in this app's low-cost
-    # path, so we gather a lightweight evidence page ourselves and prepend that
-    # URL to the source list whenever we can identify a likely aircraft page.
-    evidence = await asyncio.to_thread(_lookup_aircraft_source_sync, lookup_mfr, model, fallback_title)
-    attempts = []
-    last_error = ''
-    for idx, (cand_mfr, cand_model) in enumerate(_aircraft_query_candidates(lookup_mfr, model, fallback_title=fallback_title), start=1):
-        prompt = _build_aircraft_prompt(cand_mfr, cand_model, response_language=_preferred_language(settings))
-        if evidence:
-            prompt += "\n\nCurrent web lookup evidence (use it when filling fields if helpful):\n" + json.dumps(evidence, ensure_ascii=False)
-        try:
-            parsed, sources, raw = await asyncio.to_thread(lambda p=prompt, prv=provider: _provider_generate_json(prv, p, settings, use_search=False, openai_model=(openai_model or _selected_openai_model(settings)), claude_model=(claude_model or _selected_claude_model(settings))))
-            if not parsed:
-                parsed = _extract_json_pairs_fallback(raw, ['manufacturer_full_name','model','category','engine','engine_type','max_speed','cruise_speed','range','range_nm','ceiling','passenger_capacity','mtow','fuel_capacity','wingspan','length','height','avionics','variants','in_production','aircraft_cost','country_of_origin','date_introduced','summary_html'])
-            if evidence and parsed is not None:
-                src = evidence.get('source_url')
-                if src and src not in (sources or []):
-                    sources = [src] + list(sources or [])
-            if parsed:
-                return parsed, sources, {'candidate': f'{cand_mfr} {cand_model}', 'attempt': idx}
-            attempts.append({'candidate': f'{cand_mfr} {cand_model}', 'attempt': idx, 'error': f'No structured data: {raw[:180]}'} )
-        except Exception as e:
-            detail = e.response.text[:400] if isinstance(e, requests.HTTPError) and e.response is not None else str(e)
-            attempts.append({'candidate': f'{cand_mfr} {cand_model}', 'attempt': idx, 'error': detail})
-            last_error = detail
-    label = 'OpenAI' if provider == 'openai' else 'Claude'
-    raise HTTPException(502, f'{label} aircraft lookup failed after {len(attempts)} attempts. Last error: {last_error or "No structured data"}')
-
-
-
-async def _run_provider_product_lookup(addon, settings: dict, *, provider: Optional[str] = None, gemini_model: Optional[str] = None, openai_model: Optional[str] = None, claude_model: Optional[str] = None):
-    provider = (provider or _selected_ai_provider(settings)).lower().strip()
-    if provider == 'gemini':
-        return await _run_gemini_product_lookup(addon, settings, model=(gemini_model or _selected_gemini_interactive_model(settings)))
-    attempts = []
-    last_error = ''
-    evidence = _lookup_addon_product_meta_sync(addon.publisher or '', addon.title or '')
-    for idx, candidate in enumerate(_addon_query_candidates(addon), start=1):
-        prompt = _build_product_prompt(
-            addon,
-            _addon_sim_label(settings),
-            include_overview=True,
-            include_features=True,
-            search_term=candidate,
-            response_language=_preferred_language(settings),
-        )
-        if evidence:
-            prompt += "\n\nCurrent web lookup evidence (use it when filling version/release/list_price/store_name if helpful):\n" + json.dumps(evidence, ensure_ascii=False)
-        try:
-            parsed, sources, raw = await asyncio.to_thread(
-                lambda p=prompt, prv=provider: _provider_generate_json(
-                    prv,
-                    p,
-                    settings,
-                    use_search=False,
-                    openai_model=(openai_model or _selected_openai_model(settings)),
-                    claude_model=(claude_model or _selected_claude_model(settings)),
-                )
-            )
-            if not parsed:
-                parsed = _extract_json_pairs_fallback(raw, ['latest_current_version','latest_version_date','release_date','list_price','currency','store_name','summary_html','features_html'])
-            if evidence and parsed is not None:
-                parsed = {**{k: v for k, v in {
-                    'latest_current_version': evidence.get('version'),
-                    'latest_version_date': evidence.get('latest_version_date'),
-                    'release_date': evidence.get('released'),
-                    'list_price': evidence.get('price'),
-                    'store_name': evidence.get('source_title'),
-                }.items() if v not in (None, '')}, **(parsed or {})}
-                src = evidence.get('source_url')
-                if src and src not in sources:
-                    sources = [src] + list(sources or [])
-            if parsed:
-                return parsed, sources, {'candidate': candidate, 'attempt': idx}
-            attempts.append({'candidate': candidate, 'attempt': idx, 'error': f'No structured data: {raw[:180]}'})
-        except Exception as e:
-            detail = e.response.text[:400] if isinstance(e, requests.HTTPError) and e.response is not None else str(e)
-            attempts.append({'candidate': candidate, 'attempt': idx, 'error': detail})
-            last_error = detail
-    label = 'OpenAI' if provider == 'openai' else 'Claude'
-    raise HTTPException(502, f'{label} product lookup failed after {len(attempts)} attempts. Last error: {last_error or "No structured data"}')
-
-
-
-@app.get('/api/ai/usage-status')
-async def ai_usage_status():
+@app.post('/api/gemini/populate-aircraft')
+async def gemini_populate_aircraft(body: GeminiAircraftRequest):
     settings = await storage.get_all_settings()
-    return {
-        'selected_provider': _selected_ai_provider(settings),
-        'openai_model': _selected_openai_model(settings),
-        'claude_model': _selected_claude_model(settings),
-        'gemini_interactive_model': _selected_gemini_interactive_model(settings),
-        'gemini_bulk_model': _selected_gemini_bulk_model(settings),
-        'openai_rate_limits': _last_openai_usage,
-        'gemini_status': _last_gemini_status,
-        'claude_status': _last_claude_status,
-        'gemini_note': 'Gemini remaining quota is not exposed to this app as live remaining headers. Check AI Studio for active rate limits.',
-        'gemini_reset_note': 'Gemini free-tier daily request quotas reset at midnight Pacific time.',
-        'claude_note': 'Claude remaining quota is not exposed to this app as a live remaining balance. Check the Anthropic Console for usage and limits.',
-    }
-
-
-@app.post('/api/ai/populate-aircraft')
-async def ai_populate_aircraft(body: GeminiAircraftRequest):
-    settings = await storage.get_all_settings()
-    provider = _selected_ai_provider(settings)
-    if provider == 'gemini' and not settings.get('google_api_key'):
+    api_key = settings.get('google_api_key', '')
+    if not api_key:
         raise HTTPException(400, 'Google API key not configured in Settings')
-    if provider == 'openai' and not settings.get('openai_key'):
-        raise HTTPException(400, 'OpenAI API key not configured in Settings')
-    if provider == 'claude' and not settings.get('claude_api_key'):
-        raise HTTPException(400, 'Claude API key not configured in Settings')
     lookup_mfr = (body.manufacturer_full_name or body.manufacturer or '').strip()
     model = (body.model or '').strip()
     if not lookup_mfr or not model:
         raise HTTPException(400, 'Manufacturer Full Name and Model are required')
-    parsed, sources, meta = await _run_provider_aircraft_lookup(provider, settings, lookup_mfr, model, fallback_title=body.model)
+    parsed, sources, meta = await _run_gemini_aircraft_lookup(settings, lookup_mfr, model, fallback_title=body.model)
     range_nm = _range_nm_from_any(parsed.get('range'), parsed.get('range_nm'))
-    provider_name = ('Gemini Flash-Lite + Google Search' if provider == 'gemini' else (f'OpenAI ({_selected_openai_model(settings)})' if provider == 'openai' else f'Claude ({_selected_claude_model(settings)})'))
-    # The Web Data Source field is meant to show the likely public source page,
-    # not merely the model name. Only fall back to the provider label when no
-    # useful evidence URL could be identified.
     return {
-        'provider': provider,
-        'provider_name': provider_name,
         'manufacturer_full_name': parsed.get('manufacturer_full_name') or lookup_mfr,
         'manufacturer': body.manufacturer or lookup_mfr,
         'model': parsed.get('model') or model,
@@ -2194,498 +1683,65 @@ async def ai_populate_aircraft(body: GeminiAircraftRequest):
         'ceiling': parsed.get('ceiling') or '',
         'seats': parsed.get('passenger_capacity') or '',
         'mtow': parsed.get('mtow') or '',
-        'fuel_capacity': parsed.get('fuel_capacity') or '',
-        'wingspan': parsed.get('wingspan') or '',
-        'length': parsed.get('length') or '',
-        'height': parsed.get('height') or '',
-        'avionics': parsed.get('avionics') or '',
-        'variants': parsed.get('variants') or '',
-        'in_production': parsed.get('in_production') or '',
-        'aircraft_cost': parsed.get('aircraft_cost') or '',
-        'country_of_origin': parsed.get('country_of_origin') or '',
         'introduced': parsed.get('date_introduced') or '',
-        'source': _clean_provider_source_label(sources[0]) if sources else provider_name,
+        'source': 'Gemini + Google Search',
         'sources': sources,
         'search_candidate': meta.get('candidate'),
         'summary_html': parsed.get('summary_html') or '',
     }
 
 
-@app.post('/api/ai/populate-product/{addon_id}')
-async def ai_populate_product(addon_id: str):
+@app.post('/api/gemini/populate-product/{addon_id}')
+async def gemini_populate_product(addon_id: str):
     addon = await storage.get_addon(addon_id)
     if not addon:
         raise HTTPException(404)
     settings = await storage.get_all_settings()
-    provider = _selected_ai_provider(settings)
-    if provider == 'gemini' and not settings.get('google_api_key'):
+    api_key = settings.get('google_api_key', '')
+    if not api_key:
         raise HTTPException(400, 'Google API key not configured in Settings')
-    if provider == 'openai' and not settings.get('openai_key'):
-        raise HTTPException(400, 'OpenAI API key not configured in Settings')
-    if provider == 'claude' and not settings.get('claude_api_key'):
-        raise HTTPException(400, 'Claude API key not configured in Settings')
-    parsed, sources, meta = await _run_provider_product_lookup(addon, settings, provider=provider)
+    parsed, sources, meta = await _run_gemini_product_lookup(addon, settings, model=GEMINI_INTERACTIVE_MODEL)
     addon = _merge_product_into_addon(addon, parsed, sources, include_overview=True, include_features=True, override_existing=True)
     await storage.upsert_addon(addon)
-    provider_name = ('Gemini Flash-Lite + Google Search' if provider == 'gemini' else (f'OpenAI ({_selected_openai_model(settings)})' if provider == 'openai' else f'Claude ({_selected_claude_model(settings)})'))
     return {
-        'provider': provider,
-        'provider_name': provider_name,
         'latest_version': addon.pr.latest_ver or '',
-        'latest_version_date': addon.pr.latest_ver_date or '',
         'released': addon.pr.released or '',
         'price': addon.pr.price,
         'currency': parsed.get('currency') or '',
         'store_name': addon.pr.source_store or '',
         'sources': sources,
         'source_url': sources[0] if sources else '',
-        'source': provider_name,
+        'source': 'Gemini + Google Search',
         'search_candidate': meta.get('candidate'),
         'summary_html': parsed.get('summary_html') or '',
         'features_html': parsed.get('features_html') or '',
     }
 
 
-@app.post('/api/ai/populate-lite/{addon_id}')
-async def ai_populate_product_lite(addon_id: str):
-    """Populate the selected add-on from the right sidebar using the low-cost path.
-
-    This endpoint intentionally mirrors the bulk-library strategy: one product
-    lookup plus an aircraft follow-up when needed. Unlike earlier builds, the
-    merged result is always persisted and returned so the sidebar and detail tabs
-    stay in sync immediately.
-    """
-
+@app.post('/api/gemini/populate-lite/{addon_id}')
+async def gemini_populate_product_lite(addon_id: str):
     addon = await storage.get_addon(addon_id)
     if not addon:
         raise HTTPException(404)
     settings = await storage.get_all_settings()
-    provider = _selected_ai_provider(settings)
-    if provider == 'gemini' and not settings.get('google_api_key'):
+    api_key = settings.get('google_api_key', '')
+    if not api_key:
         raise HTTPException(400, 'Google API key not configured in Settings')
-    if provider == 'openai' and not settings.get('openai_key'):
-        raise HTTPException(400, 'OpenAI API key not configured in Settings')
-    if provider == 'claude' and not settings.get('claude_api_key'):
-        raise HTTPException(400, 'Claude API key not configured in Settings')
-
-    # Explicit sidebar populate should refresh the visible text, so we allow the
-    # generated overview/features to replace older AI-filled content here.
-    parsed, sources, meta = await _run_provider_product_lookup(addon, settings, provider=provider, gemini_model=_selected_gemini_bulk_model(settings), openai_model=_selected_openai_model(settings), claude_model=_selected_claude_model(settings))
-    addon = _merge_product_into_addon(addon, parsed, sources, include_overview=True, include_features=True, override_existing=True)
-
+    parsed, sources, meta = await _run_gemini_product_lookup(addon, settings, model=GEMINI_BULK_MODEL)
+    addon = _merge_product_into_addon(addon, parsed, sources, include_overview=True, include_features=True, override_existing=False)
     aircraft_meta = None
-    # Sidebar populate is intentionally a full low-cost sync for aircraft: product
-    # data plus the follow-up aircraft-spec lookup so the right sidebar and the
-    # Aircraft Data tab stay consistent after a single click.
     if addon.type == 'Aircraft':
         try:
             lookup_mfr = (addon.rw.manufacturer_full_name or addon.rw.mfr or addon.pr.manufacturer or addon.publisher or '').strip()
             model_name = (addon.rw.model or addon.title or '').strip()
             if lookup_mfr and model_name:
-                ap, asources, ameta = await _run_provider_aircraft_lookup(provider, settings, lookup_mfr, model_name, fallback_title=addon.title, gemini_model=_selected_gemini_bulk_model(settings), openai_model=_selected_openai_model(settings), claude_model=_selected_claude_model(settings))
+                ap, asources, ameta = await _run_gemini_aircraft_lookup(settings, lookup_mfr, model_name, fallback_title=addon.title)
                 addon = _merge_aircraft_into_addon(addon, ap, asources)
                 aircraft_meta = {'candidate': ameta.get('candidate'), 'sources': asources}
         except Exception as e:
-            log.warning('AI lite aircraft follow-up failed addon=%s error=%s', addon.title, e)
-
-    guessed_sub = _guess_subtype_for_addon(addon, category=(addon.rw.category or ''), title=(addon.title or ''))
-    if guessed_sub and guessed_sub != addon.sub:
-        addon.sub = guessed_sub
-
-    # Persist the merged product + aircraft updates every time so the sidebar,
-    # grid, and detail tabs all see the same data after one populate action.
+            log.warning('Gemini lite aircraft follow-up failed addon=%s error=%s', addon.title, e)
     await storage.upsert_addon(addon)
-
-    provider_name = ('Gemini Flash-Lite' if provider == 'gemini' else (f'OpenAI ({_selected_openai_model(settings)})' if provider == 'openai' else f'Claude ({_selected_claude_model(settings)})'))
-
-    # Return product and aircraft sources separately so the UI can explain where
-    # each slice of AI-populated data came from. This is especially helpful when
-    # the sidebar low-cost populate updates both overview/features and aircraft
-    # specifications in one click.
-    product_source = _clean_provider_source_label(sources[0]) if sources else ''
-    aircraft_sources = list((aircraft_meta or {}).get('sources') or [])
-    aircraft_source = _clean_provider_source_label((aircraft_sources[0] if aircraft_sources else addon.rw.source) or '')
-    return {
-        'ok': True,
-        'addon_id': addon_id,
-        'provider': provider,
-        'provider_name': provider_name,
-        'search_candidate': meta.get('candidate'),
-        'sources': sources,
-        'product_sources': sources,
-        'product_source': product_source,
-        'aircraft_meta': aircraft_meta,
-        'aircraft_sources': aircraft_sources,
-        'aircraft_source': aircraft_source,
-        'subtype': addon.sub or '',
-        'latest_version': addon.pr.latest_ver or '',
-        'latest_version_date': addon.pr.latest_ver_date or '',
-        'released': addon.pr.released or '',
-        'price': addon.pr.price,
-        'store_name': addon.pr.source_store or '',
-        'summary_html': addon.summary or '',
-        'features_html': addon.usr.features or '',
-        'manufacturer': addon.rw.mfr or addon.pr.manufacturer or '',
-        'manufacturer_full_name': addon.rw.manufacturer_full_name or addon.rw.mfr or '',
-        'model': addon.rw.model or '',
-        'category': addon.rw.category or '',
-        'engine': addon.rw.engine or '',
-        'engine_type': addon.rw.engine_type or '',
-        'max_speed': addon.rw.max_speed or '',
-        'cruise': addon.rw.cruise or '',
-        'range_nm': addon.rw.range_nm,
-        'ceiling': addon.rw.ceiling or '',
-        'seats': addon.rw.seats or '',
-        'mtow': addon.rw.mtow or '',
-        'fuel_capacity': addon.rw.fuel_capacity or '',
-        'wingspan': addon.rw.wingspan or '',
-        'length': addon.rw.length or '',
-        'height': addon.rw.height or '',
-        'avionics': addon.rw.avionics or '',
-        'variants': addon.rw.variants or '',
-        'in_production': addon.rw.in_production or '',
-        'aircraft_cost': addon.rw.aircraft_cost or '',
-        'country_of_origin': addon.rw.country_of_origin or '',
-        'introduced': addon.rw.introduced or '',
-        'source': aircraft_source or product_source or provider_name,
-    }
-
-
-def _collection_union_ids(collection_ids: list[str], profiles: list[dict]) -> tuple[list[dict], set[str]]:
-    chosen = [p for p in profiles if p.get('id') in set(collection_ids or [])]
-    union_ids: set[str] = set()
-    for profile in chosen:
-        union_ids.update(profile.get('addon_ids') or [])
-    return chosen, union_ids
-
-
-def _plan_community_changes(*, addons, target_ids: set[str], action: str):
-    """Build a preview of which symbolic links would change.
-
-    activate   -> only turn on the scoped add-ons
-    deactivate -> only turn off the scoped add-ons
-    """
-
-    if action not in {'activate', 'deactivate'}:
-        raise HTTPException(400, 'Unsupported community action')
-    to_enable = []
-    to_disable = []
-    already_matching = 0
-    for addon in addons:
-        in_scope = addon.id in target_ids
-        if action == 'activate':
-            if in_scope and not addon.enabled:
-                to_enable.append(addon)
-            elif in_scope and addon.enabled:
-                already_matching += 1
-        else:
-            if in_scope and addon.enabled:
-                to_disable.append(addon)
-            elif in_scope and not addon.enabled:
-                already_matching += 1
-    return {
-        'target_count': len(target_ids),
-        'to_enable': to_enable,
-        'to_disable': to_disable,
-        'already_matching': already_matching,
-    }
-
-
-async def _execute_deactivate_all_from_actual_community(*, addons: dict[str, object], community_dir: str):
-    """Remove every managed link that physically exists in Community right now.
-
-    Why this special-case exists:
-      * Global "Deactivate All" should be based on the *actual* Community
-        folder contents, not just whatever the library currently thinks is
-        enabled.
-      * This is also the safest migration path from older junction-based builds
-        to the newer directory-symlink strategy.
-
-    Matching rules:
-      * first by resolved target path
-      * then by Community entry name == addon folder name
-
-    Only reparse-point links are removed. Normal non-link folders are skipped.
-    """
-    community_path = Path(community_dir)
-    addon_by_target = {}
-    addon_by_name = {}
-    for addon in addons.values():
-        addon_path = getattr(addon, 'addon_path', '')
-        if not addon_path:
-            continue
-        try:
-            resolved = str(Path(addon_path).resolve())
-        except Exception:
-            resolved = ''
-        if resolved:
-            addon_by_target[resolved] = addon
-        addon_by_name[Path(addon_path).name.lower()] = addon
-
-    removed = 0
-    failures = []
-    matched_ids: set[str] = set()
-    for entry in linker.iter_community_links(community_path):
-        target = linker.get_link_target(entry)
-        addon = None
-        if target:
-            addon = addon_by_target.get(str(Path(target).resolve()))
-        if addon is None:
-            addon = addon_by_name.get(entry.name.lower())
-        if addon is None:
-            continue
-        ok, msg = linker.remove_link_entry(entry)
-        if ok:
-            removed += 1
-            matched_ids.add(addon.id)
-        else:
-            failures.append({'addon': addon.title, 'message': msg})
-
-    # After physically removing the links, mark every matched add-on disabled and
-    # perform one final sync against the Community folder so the UI reflects
-    # reality even if some manual folders still exist.
-    for addon_id in matched_ids:
-        addon = addons.get(addon_id)
-        if addon is None:
-            continue
-        addon.enabled = False
-        await storage.upsert_addon(addon)
-
-    addons = await _sync_enabled_state_from_community(addons)
-    return {
-        'ok': True,
-        'scope': 'all',
-        'scope_label': 'entire library',
-        'action': 'deactivate',
-        'enabled': 0,
-        'disabled': removed,
-        'already_matching': 0,
-        'failures': failures,
-        'collection_names': [],
-    }
-
-
-async def _community_scope_payload(body: CommunityActionRequest):
-    addons = await storage.get_all_addons()
-    addons = await _sync_enabled_state_from_community(addons)
-    community_dir = await storage.get_setting('community_dir')
-    profiles = _profile_store(await storage.get_setting('profiles_json', '[]'))
-    scope = (body.scope or 'displayed').strip().lower()
-    action = (body.action or 'activate').strip().lower()
-
-    # Re-check actual Community-folder presence for activation/deactivation
-    # planning. This makes the preview/execute path robust even if older builds
-    # left stale library enabled flags behind, or if junction detection changed.
-    # We intentionally consult the filesystem here so "Deactivate All" can still
-    # find and remove old links even when the Library UI currently says every
-    # add-on is inactive.
-    if community_dir:
-        try:
-            from pathlib import Path as _Path
-            comm_path = _Path(community_dir)
-            for addon in addons.values():
-                addon_path = getattr(addon, 'addon_path', '')
-                addon.enabled = bool(addon_path and linker.find_link_in_community(comm_path, _Path(addon_path)))
-        except Exception as e:
-            log.warning('Community action planning fallback scan failed: %s', e)
-
-    if scope == 'displayed':
-        target_ids = set(body.addon_ids or [])
-        scope_label = 'displayed add-ons'
-        chosen_profiles = []
-    elif scope == 'collections':
-        chosen_profiles, target_ids = _collection_union_ids(body.collection_ids or [], profiles)
-        scope_label = 'selected collections'
-    elif scope == 'all':
-        # `addons` is a dict keyed by add-on id, so for the all-library scope the
-        # ids are simply the dictionary keys. Iterating the dict values would also
-        # work, but the keys are the most direct and avoids the earlier str.id bug.
-        target_ids = set(addons.keys())
-        scope_label = 'entire library'
-        chosen_profiles = []
-    else:
-        raise HTTPException(400, 'Unsupported community scope')
-    plan = _plan_community_changes(addons=addons.values(), target_ids=target_ids, action=action)
-    return {
-        'scope': scope,
-        'scope_label': scope_label,
-        'action': action,
-        'addons': addons,
-        'target_ids': target_ids,
-        'chosen_profiles': chosen_profiles,
-        'plan': plan,
-    }
-
-
-@app.post('/api/community/preview')
-async def preview_community_action(body: CommunityActionRequest):
-    payload = await _community_scope_payload(body)
-    plan = payload['plan']
-
-    # For global deactivate-all, preview from the actual Community folder so the
-    # counts reflect physical links that still exist, not stale library flags.
-    if payload['scope'] == 'all' and payload['action'] == 'deactivate':
-        community_dir = await storage.get_setting('community_dir')
-        sample_remove = []
-        remove_count = 0
-        if community_dir:
-            community_path = Path(community_dir)
-            addon_by_target = {}
-            addon_by_name = {}
-            for addon in payload['addons'].values():
-                addon_path = getattr(addon, 'addon_path', '')
-                if not addon_path:
-                    continue
-                try:
-                    resolved = str(Path(addon_path).resolve())
-                except Exception:
-                    resolved = ''
-                if resolved:
-                    addon_by_target[resolved] = addon
-                addon_by_name[Path(addon_path).name.lower()] = addon
-            for entry in linker.iter_community_links(community_path):
-                target = linker.get_link_target(entry)
-                addon = None
-                if target:
-                    addon = addon_by_target.get(str(Path(target).resolve()))
-                if addon is None:
-                    addon = addon_by_name.get(entry.name.lower())
-                if addon is None:
-                    continue
-                remove_count += 1
-                if len(sample_remove) < 8:
-                    sample_remove.append(addon.title)
-        return {
-            'ok': True,
-            'scope': payload['scope'],
-            'scope_label': payload['scope_label'],
-            'action': payload['action'],
-            'collection_names': [],
-            'target_count': len(payload['addons']),
-            'create_count': 0,
-            'remove_count': remove_count,
-            'already_matching': max(0, len(payload['addons']) - remove_count),
-            'sample_create': [],
-            'sample_remove': sample_remove,
-        }
-
-    return {
-        'ok': True,
-        'scope': payload['scope'],
-        'scope_label': payload['scope_label'],
-        'action': payload['action'],
-        'collection_names': [p.get('name') or 'Collection' for p in payload['chosen_profiles']],
-        'target_count': plan['target_count'],
-        'create_count': len(plan['to_enable']) if payload['action'] == 'activate' else 0,
-        'remove_count': len(plan['to_disable']) if payload['action'] == 'deactivate' else 0,
-        'already_matching': plan['already_matching'],
-        'sample_create': [a.title for a in plan['to_enable'][:8]],
-        'sample_remove': [a.title for a in plan['to_disable'][:8]],
-    }
-
-
-@app.post('/api/community/execute')
-async def execute_community_action(body: CommunityActionRequest):
-    payload = await _community_scope_payload(body)
-    plan = payload['plan']
-    community_dir = await storage.get_setting('community_dir')
-    if not community_dir:
-        raise HTTPException(400, 'Community folder not set')
-
-    # Special-case the migration-safe global deactivate flow. This removes the
-    # links that physically exist in Community right now rather than trusting the
-    # library's current enabled flags.
-    if payload['scope'] == 'all' and payload['action'] == 'deactivate':
-        result = await _execute_deactivate_all_from_actual_community(addons=payload['addons'], community_dir=community_dir)
-        log.info('Community action scope=%s action=%s enabled=%s disabled=%s failures=%s', result['scope'], result['action'], result['enabled'], result['disabled'], len(result['failures']))
-        return result
-
-    enabled_count = 0
-    disabled_count = 0
-    failures = []
-    for addon in plan['to_enable']:
-        ok, msg = linker.toggle_addon(addon.addon_path, community_dir, True)
-        if ok:
-            addon.enabled = True
-            enabled_count += 1
-            await storage.upsert_addon(addon)
-        else:
-            failures.append({'addon': addon.title, 'message': msg})
-    for addon in plan['to_disable']:
-        ok, msg = linker.toggle_addon(addon.addon_path, community_dir, False)
-        if ok:
-            addon.enabled = False
-            disabled_count += 1
-            await storage.upsert_addon(addon)
-        else:
-            failures.append({'addon': addon.title, 'message': msg})
-
-    # One post-action sync keeps the Library cards honest after batch work and
-    # after external tools modify Community between runs.
-    await _sync_enabled_state_from_community(payload['addons'])
-
-    log.info('Community action scope=%s action=%s enabled=%s disabled=%s failures=%s', payload['scope'], payload['action'], enabled_count, disabled_count, len(failures))
-    return {
-        'ok': True,
-        'scope': payload['scope'],
-        'scope_label': payload['scope_label'],
-        'action': payload['action'],
-        'enabled': enabled_count,
-        'disabled': disabled_count,
-        'already_matching': plan['already_matching'],
-        'failures': failures,
-        'collection_names': [p.get('name') or 'Collection' for p in payload['chosen_profiles']],
-    }
-
-
-@app.post('/api/library/apply-visible')
-async def apply_visible_grid(body: VisibleApplyRequest):
-    """Enable exactly the add-ons currently shown on the grid and disable the rest.
-
-    This is intentionally separate from collection editing. The grid is treated as
-    a live activation plan that may be shaped by search, type filters, favorites,
-    and one or more selected collections.
-    """
-
-    community_dir = await storage.get_setting('community_dir')
-    if not community_dir:
-        raise HTTPException(400, 'Community folder not set')
-    selected_ids = {aid for aid in (body.addon_ids or []) if aid}
-    addons = await storage.get_addons()
-    enabled_count = 0
-    disabled_count = 0
-    failures = []
-    for addon in addons:
-        should_enable = addon.id in selected_ids
-        if addon.enabled == should_enable:
-            if should_enable:
-                enabled_count += 1
-            continue
-        ok, msg = linker.toggle_addon(addon.addon_path, community_dir, should_enable)
-        if ok:
-            await storage.set_enabled(addon.id, should_enable)
-            if should_enable:
-                enabled_count += 1
-            else:
-                disabled_count += 1
-        else:
-            failures.append({'addon_id': addon.id, 'title': addon.title, 'message': msg})
-    return {'ok': True, 'enabled': enabled_count, 'disabled': disabled_count, 'failures': failures}
-
-
-@app.post('/api/gemini/populate-aircraft')
-async def gemini_populate_aircraft(body: GeminiAircraftRequest):
-    return await ai_populate_aircraft(body)
-
-
-@app.post('/api/gemini/populate-product/{addon_id}')
-async def gemini_populate_product(addon_id: str):
-    return await ai_populate_product(addon_id)
-
-
-@app.post('/api/gemini/populate-lite/{addon_id}')
-async def gemini_populate_product_lite(addon_id: str):
-    return await ai_populate_product_lite(addon_id)
+    return {'ok': True, 'addon_id': addon_id, 'search_candidate': meta.get('candidate'), 'sources': sources, 'aircraft_meta': aircraft_meta}
 
 
 @app.post("/api/addons/{addon_id}/overview-lookup")
@@ -2698,7 +1754,7 @@ async def addon_overview_lookup(addon_id: str):
 
 
 class AIRequest(BaseModel):
-    provider: str = 'gemini'
+    provider: str = 'openai'
     mode: str = 'enrich'
     prompt: Optional[str] = None
     addon_id: Optional[str] = None
@@ -2712,22 +1768,20 @@ async def ai_enrich(body: AIRequest):
         addon_ctx = f"Addon: {addon.title} by {addon.publisher}. Type: {addon.type}/{addon.sub or ''}. ICAO: {addon.rw.icao or ''}. Manufacturer: {addon.rw.mfr or ''}. Country: {addon.rw.country or ''}."
     custom = (body.prompt or '').strip()
     if body.mode == 'prompt' and custom:
-        prompt = custom + "\n\nUse this addon context: " + addon_ctx + "\n\nReturn ONLY one valid JSON object with keys: answer_title, answer_text, answer_html, bullets, sources_text, bodyHtml, featuresHtml. answer_text, sources_text, bodyHtml, and featuresHtml must be plain strings or HTML strings. bullets may be an array of short strings. Do not return nested objects. Answer the user's question directly instead of generating a generic addon brief."
+        prompt = custom + "\n\nUse this addon context: " + addon_ctx + "\n\nReturn ONLY one valid JSON object. Include keys headline, description, realWorldInfo, highlights, pilotBriefing, bestFor, compatibility, suggestedTags, verdict, bodyHtml, featuresHtml."
     else:
-        prompt = f"You are an expert flight simulator addon curator. For the addon '{addon.title if addon else 'Addon'}' by '{addon.publisher if addon else ''}', return ONLY one valid JSON object with keys: headline, description, realWorldInfo, highlights, pilotBriefing, bestFor, compatibility, suggestedTags, verdict, bodyHtml, featuresHtml. All fields except highlights and suggestedTags must be plain strings or HTML strings, not nested objects. {addon_ctx} Rules: bodyHtml and featuresHtml should be rich readable HTML fragments if useful. Do not include markdown fences."
+        prompt = f"You are an expert flight simulator addon curator. For the addon '{addon.title if addon else 'Addon'}' by '{addon.publisher if addon else ''}', return ONLY one valid JSON object with keys: headline, description, realWorldInfo, highlights, pilotBriefing, bestFor, compatibility, suggestedTags, verdict, bodyHtml, featuresHtml. {addon_ctx} Rules: bodyHtml and featuresHtml should be rich readable HTML fragments if useful. Do not include markdown fences."
     try:
-        parsed, sources, raw = await asyncio.to_thread(lambda: _provider_generate_json(body.provider, prompt, settings, use_search=(body.provider=='gemini'), claude_model=_selected_claude_model(settings)))
+        parsed, sources, raw = await asyncio.to_thread(lambda: _provider_generate_json(body.provider, prompt, settings, use_search=(body.provider=='gemini')))
     except requests.HTTPError as e:
         raise HTTPException(502, f'AI request failed: {e.response.text[:400] if e.response is not None else e}')
     except Exception as e:
         raise HTTPException(502, f'AI request failed: {e}')
     if not parsed:
-        fallback_keys = ['headline','description','realWorldInfo','pilotBriefing','bestFor','compatibility','verdict','bodyHtml','featuresHtml','answer_title','answer_text','answer_html','sources_text']
-        parsed = _extract_json_pairs_fallback(raw, fallback_keys)
+        parsed = _extract_json_pairs_fallback(raw, ['headline','description','realWorldInfo','pilotBriefing','bestFor','compatibility','verdict','bodyHtml','featuresHtml'])
     if not parsed:
         raise HTTPException(502, f'AI returned no structured data: {raw[:300]}')
     parsed['sources'] = sources
-    parsed['mode'] = body.mode
     return parsed
 
 class LibraryPopulateRequest(BaseModel):
@@ -2735,7 +1789,7 @@ class LibraryPopulateRequest(BaseModel):
     include_features: bool = True
     include_aircraft_data: bool = True
     override_existing: bool = False
-    provider: Optional[str] = None
+    provider: str = 'gemini'
     addon_ids: Optional[list[str]] = None
 
 @app.get('/api/gemini/populate-library/status')
@@ -2748,16 +1802,12 @@ async def populate_library_start(body: LibraryPopulateRequest):
     if _enrich_running:
         raise HTTPException(400, 'Library populate already running')
     settings = await storage.get_all_settings()
-    provider = (body.provider or _selected_ai_provider(settings)).lower()
-    gemini_model = _selected_gemini_bulk_model(settings)
-    openai_model = _selected_openai_model(settings)
-    claude_model = _selected_claude_model(settings)
+    provider = (body.provider or 'gemini').lower()
+    gemini_model = GEMINI_BULK_MODEL
     if provider == 'gemini' and not settings.get('google_api_key'):
         raise HTTPException(400, 'Google API key not configured in Settings')
     if provider == 'openai' and not settings.get('openai_key'):
         raise HTTPException(400, 'OpenAI API key not configured in Settings')
-    if provider == 'claude' and not settings.get('claude_api_key'):
-        raise HTTPException(400, 'Claude API key not configured in Settings')
     addons = list((await storage.get_all_addons()).values())
     if body.addon_ids:
         wanted = set(body.addon_ids)
@@ -2770,10 +1820,10 @@ async def populate_library_start(body: LibraryPopulateRequest):
         'current': 'Preparing...',
         'done': 0,
         'total': total,
-        'message': ('Bulk populate will use Gemini Flash-Lite. Existing overview/features are preserved unless Override Existing is enabled.' if provider == 'gemini' else (f'Bulk populate will use OpenAI {openai_model}. Existing overview/features are preserved unless Override Existing is enabled.' if provider == 'openai' else f'Bulk populate will use Claude {claude_model}. Existing overview/features are preserved unless Override Existing is enabled.')),
+        'message': 'Bulk populate will use free Gemini Flash-Lite. Existing overview/features are preserved unless Override Existing is enabled.',
         'type': 'running',
         'provider': provider,
-        'model': gemini_model if provider == 'gemini' else (openai_model if provider == 'openai' else claude_model),
+        'model': gemini_model if provider == 'gemini' else 'openai',
     }
     async def runner():
         global _enrich_running, _enrich_progress
@@ -2784,14 +1834,14 @@ async def populate_library_start(body: LibraryPopulateRequest):
                 _enrich_progress.update({'current': addon.title, 'done': done, 'pct': int((done/max(total,1))*100)})
                 try:
                     if provider == 'gemini' and (body.include_overview or body.include_features):
-                        parsed, sources, meta = await _run_provider_product_lookup(addon, settings, provider=provider, gemini_model=gemini_model, openai_model=openai_model, claude_model=claude_model)
+                        parsed, sources, meta = await _run_gemini_product_lookup(addon, settings, model=gemini_model)
                         addon = _merge_product_into_addon(addon, parsed, sources, include_overview=body.include_overview, include_features=body.include_features, override_existing=body.override_existing)
                         log.info('Bulk populate product addon=%s candidate=%s', addon.title, meta.get('candidate'))
                     elif body.include_overview or body.include_features:
                         p1 = _build_product_prompt(addon, _addon_sim_label(settings), include_overview=body.include_overview, include_features=body.include_features, response_language=_preferred_language(settings))
-                        parsed, sources, raw = await asyncio.to_thread(lambda p=p1: _provider_generate_json(provider, p, settings, use_search=(provider=='gemini'), gemini_model=gemini_model, openai_model=openai_model, claude_model=claude_model))
+                        parsed, sources, raw = await asyncio.to_thread(lambda p=p1: _provider_generate_json(provider, p, settings, use_search=(provider=='gemini'), gemini_model=gemini_model))
                         if not parsed:
-                            parsed = _extract_json_pairs_fallback(raw, ['latest_current_version','latest_version_date','release_date','list_price','currency','store_name','summary_html','features_html'])
+                            parsed = _extract_json_pairs_fallback(raw, ['latest_current_version','release_date','list_price','currency','store_name','summary_html','features_html'])
                         if parsed:
                             addon = _merge_product_into_addon(addon, parsed, sources, include_overview=body.include_overview, include_features=body.include_features, override_existing=body.override_existing)
                     if body.include_aircraft_data and addon.type == 'Aircraft':
@@ -2799,32 +1849,29 @@ async def populate_library_start(body: LibraryPopulateRequest):
                         model_name = (addon.rw.model or addon.title or '').strip()
                         if lookup_mfr and model_name:
                             if provider == 'gemini':
-                                parsed, sources, meta = await _run_provider_aircraft_lookup(provider, settings, lookup_mfr, model_name, fallback_title=addon.title, gemini_model=gemini_model, openai_model=openai_model, claude_model=claude_model)
+                                parsed, sources, meta = await _run_gemini_aircraft_lookup(settings, lookup_mfr, model_name, fallback_title=addon.title)
                                 log.info('Bulk populate aircraft addon=%s candidate=%s', addon.title, meta.get('candidate'))
                             else:
                                 p2 = _build_aircraft_prompt(lookup_mfr, model_name, response_language=_preferred_language(settings))
-                                parsed, sources, raw = await asyncio.to_thread(lambda p=p2: _provider_generate_json(provider, p, settings, use_search=(provider=='gemini'), gemini_model=gemini_model, openai_model=openai_model, claude_model=claude_model))
+                                parsed, sources, raw = await asyncio.to_thread(lambda p=p2: _provider_generate_json(provider, p, settings, use_search=(provider=='gemini'), gemini_model=gemini_model))
                                 if not parsed:
-                                    parsed = _extract_json_pairs_fallback(raw, ['manufacturer_full_name','model','category','engine','engine_type','max_speed','cruise_speed','range','range_nm','ceiling','passenger_capacity','mtow','fuel_capacity','wingspan','length','height','avionics','variants','in_production','aircraft_cost','country_of_origin','date_introduced','summary_html'])
+                                    parsed = _extract_json_pairs_fallback(raw, ['manufacturer_full_name','model','category','engine','engine_type','max_speed','cruise_speed','range','range_nm','ceiling','passenger_capacity','mtow','date_introduced','summary_html'])
                             if parsed:
                                 addon = _merge_aircraft_into_addon(addon, parsed, sources)
-                    guessed_sub = _guess_subtype_for_addon(addon, category=(addon.rw.category or ''), title=(addon.title or ''))
-                    if guessed_sub:
-                        addon.sub = guessed_sub
                     await storage.upsert_addon(addon)
                 except Exception as e:
                     failures.append({'addon': addon.title, 'error': str(e)})
                     log.error('Bulk populate failed addon=%s error=%s', addon.title, e, exc_info=True)
                 done += 1
                 _enrich_progress.update({'done': done, 'pct': int((done/max(total,1))*100)})
-            msg = ('Populate complete using Gemini Flash-Lite.' if provider == 'gemini' else (f'Populate complete using OpenAI {openai_model}.' if provider == 'openai' else f'Populate complete using Claude {claude_model}.'))
+            msg = 'Populate complete using free Gemini Flash-Lite.'
             if failures:
                 msg += f' {len(failures)} addon(s) had errors. Check the log for details.'
             _enrich_progress.update({'running': False, 'pct': 100, 'message': msg, 'type': 'done', 'failures': failures})
         finally:
             _enrich_running = False
     asyncio.create_task(runner())
-    return {'ok': True, 'provider': provider, 'model': gemini_model if provider == 'gemini' else (openai_model if provider == 'openai' else claude_model)}
+    return {'ok': True, 'provider': provider, 'model': gemini_model if provider == 'gemini' else 'openai'}
 
 @app.get("/api/research/search")
 async def research_search(
@@ -3124,8 +2171,8 @@ async def browser_open(body: BrowserOpenRequest):
     parsed = urlparse(body.url)
     if parsed.scheme not in {"http", "https"}:
         raise HTTPException(400, "Only http/https URLs are allowed")
-    _update_browser_state(requested_url=body.url, requested_title=body.title or body.url, request_id=(body.request_id or time.time_ns()), visible=True)
-    return {"ok": True, "url": body.url, "request_id": _browser_state.get('request_id', 0)}
+    _update_browser_state(requested_url=body.url, requested_title=body.title or body.url, visible=True)
+    return {"ok": True, "url": body.url}
 
 @app.post("/api/browser/update")
 async def browser_update(body: BrowserUpdateRequest):

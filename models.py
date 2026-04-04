@@ -64,7 +64,15 @@ class RealWorld:
     ceiling: Optional[str] = None
     seats: Optional[str] = None
     mtow: Optional[str] = None
+    fuel_capacity: Optional[str] = None
+    wingspan: Optional[str] = None
+    length: Optional[str] = None
+    height: Optional[str] = None
     avionics: Optional[str] = None
+    variants: Optional[str] = None
+    in_production: Optional[str] = None
+    aircraft_cost: Optional[str] = None
+    country_of_origin: Optional[str] = None
     introduced: Optional[str] = None
     first_opened: Optional[str] = None
     scenery_type: Optional[str] = None
@@ -78,6 +86,7 @@ class RealWorld:
 class ProductInfo:
     ver: Optional[str] = None
     latest_ver: Optional[str] = None
+    latest_ver_date: Optional[str] = None
     released: Optional[str] = None
     price: Optional[float] = None
     source_store: Optional[str] = None
@@ -177,13 +186,14 @@ class Addon:
                 "mfr": rw.mfr, "manufacturer_full_name": rw.manufacturer_full_name, "model": rw.model, "category": rw.category, "engine": rw.engine,
                 "engine_type": rw.engine_type, "max_speed": rw.max_speed, "cruise": rw.cruise,
                 "range": rw.range, "range_nm": rw.range_nm, "ceiling": rw.ceiling,
-                "seats": rw.seats, "mtow": rw.mtow, "avionics": rw.avionics, "introduced": rw.introduced, "first_opened": rw.first_opened,
+                "seats": rw.seats, "mtow": rw.mtow, "fuel_capacity": rw.fuel_capacity, "wingspan": rw.wingspan,
+                "length": rw.length, "height": rw.height, "avionics": rw.avionics, "variants": rw.variants, "in_production": rw.in_production, "aircraft_cost": rw.aircraft_cost, "country_of_origin": rw.country_of_origin, "introduced": rw.introduced, "first_opened": rw.first_opened,
                 "scenery_type": rw.scenery_type, "coverage": rw.coverage,
                 "resolution": rw.resolution, "util_cat": rw.util_cat,
                 "compat": rw.compat, "source": rw.source,
             },
             "pr": {
-                "ver": pr.ver, "latest_ver": pr.latest_ver, "released": pr.released, "price": pr.price,
+                "ver": pr.ver, "latest_ver": pr.latest_ver, "latest_ver_date": pr.latest_ver_date, "released": pr.released, "price": pr.price,
                 "source_store": pr.source_store, "size_mb": pr.size_mb,
                 "package_name": pr.package_name, "manufacturer": pr.manufacturer,
             },

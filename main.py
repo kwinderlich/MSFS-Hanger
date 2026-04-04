@@ -11,6 +11,11 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
 sys.path.insert(0, str(BASE_DIR))
+os.environ.setdefault('QT_OPENGL', 'software')
+_flags = os.environ.get('QTWEBENGINE_CHROMIUM_FLAGS', '').strip()
+_extra_flags = '--disable-gpu-compositing --disable-features=UseSkiaRenderer,CanvasOopRasterization'
+if _extra_flags not in _flags:
+    os.environ['QTWEBENGINE_CHROMIUM_FLAGS'] = (_flags + ' ' + _extra_flags).strip()
 from paths import initialize_user_data, PID_FILE, CACHE_ROOT, USER_DATA_DIR, SETTINGS_JSON_PATH, DB_PATH
 _backend_proc = None
 _shell_proc = None
@@ -72,8 +77,13 @@ def _terminate_pid(pid: int):
 
 def clear_browser_cache():
     CACHE_ROOT.mkdir(parents=True, exist_ok=True)
-    for name in CACHE_DIRS:
-        target = CACHE_ROOT / name
+    # Clean legacy cache folders from earlier builds plus current profile cache folders.
+    targets = [CACHE_ROOT / name for name in CACHE_DIRS]
+    for profile_cache in [CACHE_ROOT / 'app_cache', CACHE_ROOT / 'native_cache']:
+        targets.append(profile_cache)
+        for child in profile_cache.glob('old_*'):
+            targets.append(child)
+    for target in targets:
         if target.exists():
             shutil.rmtree(target, ignore_errors=True)
 

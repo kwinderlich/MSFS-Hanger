@@ -1,13 +1,13 @@
 """
 MSFS Hangar — Community Link Manager
 ====================================
-Creates and removes Windows directory links in the MSFS Community folder.
+Creates and removes Windows *directory symbolic links* in the MSFS Community
+folder so MSFS Hangar behaves the same way Addons Linker does.
 
-Current strategy:
-  - New activations are created as *directory symbolic links* so MSFS Hangar
-    matches Addons Linker more closely.
-  - Deactivation removes older junctions as well as newer symlinks so the app
-    can normalize an existing Community folder during migration.
+Why symbolic links now?
+  - The user wants MSFS Hangar and Addons Linker to interoperate cleanly.
+  - Mixed link types (junctions + symlinks) can confuse backup workflows.
+  - Directory symbolic links are the closest match to Addons Linker behavior.
 
 Safety rules for this module:
   - Activation creates only directory symbolic links.
@@ -27,42 +27,25 @@ from typing import Tuple
 # ── Detection ──────────────────────────────────────────────────────────────
 
 def is_junction(path: Path) -> bool:
-    """Return True if *path itself* is a Windows directory reparse-point link.
+    """Return True if path is any Windows reparse-point directory link.
 
-    Important implementation detail: we must inspect the link entry itself, not
-    the resolved target. Earlier builds used ``Path.stat()``, which follows the
-    link/junction and therefore often reports attributes for the *target*
-    folder. That made old Community-folder junctions look like normal folders,
-    so "Deactivate All" could claim everything was already inactive while the
-    junctions still physically remained in Community.
-
-    ``Path.lstat()`` inspects the directory entry itself. Combined with
-    ``is_symlink()`` this lets us correctly recognize both classic junctions and
-    true directory symbolic links on Windows.
+    The historic helper name is kept because other modules already import it,
+    but this now means both junctions and directory symbolic links.
     """
     try:
         if path.is_symlink():
             return True
-        if not path.exists() and not path.is_dir():
-            return False
-        # FILE_ATTRIBUTE_REPARSE_POINT (0x400) on the entry itself.
-        attrs = path.lstat().st_file_attributes
+        # Check FILE_ATTRIBUTE_REPARSE_POINT (0x400)
+        attrs = path.stat().st_file_attributes
         return bool(attrs & 0x400)
     except Exception:
         return False
 
 
 def get_link_target(path: Path) -> str:
-    """Return the resolved target of a junction/symlink, or empty string.
-
-    Why not use ``os.readlink``? Directory symbolic links work with readlink, but
-    classic Windows junctions often do not. ``Path.resolve()`` follows both and
-    gives us a consistent physical target path for status sync and safe removal.
-    """
+    """Return the target of a junction/symlink, or empty string."""
     try:
-        if not is_junction(path):
-            return ""
-        return str(path.resolve())
+        return str(Path(os.readlink(str(path))).resolve())
     except Exception:
         return ""
 
@@ -124,39 +107,6 @@ def _candidate_links(community_dir: Path, addon_path: Path) -> list[Path]:
     return candidates
 
 
-def iter_community_links(community_dir: Path) -> list[Path]:
-    """Return every junction/symlink entry currently present in Community.
-
-    This is used by the global "Deactivate All" workflow. Relying only on the
-    library's stored enabled flags is not enough because older builds could
-    leave stale flags behind. For the all-library deactivate path we want the
-    *actual* reparse-point entries that physically exist in Community right now.
-    """
-    items: list[Path] = []
-    try:
-        if not community_dir.exists():
-            return items
-        for entry in community_dir.iterdir():
-            if is_junction(entry):
-                items.append(entry)
-    except Exception:
-        pass
-    return items
-
-
-def remove_link_entry(link: Path) -> Tuple[bool, str]:
-    """Remove a single Community link entry safely.
-
-    Only reparse-point links are removed. Normal folders are intentionally left
-    alone because they may be manual installs the user never asked the tool to
-    delete.
-    """
-    if not is_junction(link):
-        return False, f'Not a removable link: {link}'
-    ok = _remove_windows_link(link)
-    return (True, f'Removed link: {link.name}') if ok else (False, f'Could not remove community link: {link}')
-
-
 def _remove_windows_link(link: Path) -> bool:
     win_link = str(link).replace("/", "\\")
     commands = [
@@ -211,28 +161,25 @@ def enable_addon(addon_path: str, community_dir: str) -> Tuple[bool, str]:
         except Exception as e:
             return False, str(e)
 
-    # Windows: use a *directory symbolic link* (mklink /D) so Community entries
-    # match Addons Linker behavior. Windows may require Developer Mode or an
-    # elevated process for symlink creation, so we surface a helpful message.
+    # Windows: use junction (mklink /J) — no admin needed with Developer Mode
     try:
         result = subprocess.run(
-            ["cmd", "/c", "mklink", "/D",
+            ["cmd", "/c", "mklink", "/J",
              str(link).replace("/", "\\"),
              str(src).replace("/", "\\")],
             capture_output=True, text=True, timeout=10
         )
         if result.returncode == 0:
-            return True, f"Directory symbolic link created: {link.name}"
+            return True, f"Junction created: {link.name}"
         else:
             err = result.stderr.strip() or result.stdout.strip()
-            lower = err.lower()
-            if 'privilege' in lower or 'you do not have sufficient privilege' in lower:
-                err += ' — enable Windows Developer Mode or run MSFS Hangar elevated once to allow directory symbolic links.'
             return False, f"mklink failed: {err}"
     except subprocess.TimeoutExpired:
         return False, "mklink timed out"
     except Exception as e:
         return False, str(e)
+
+
 def disable_addon(addon_path: str, community_dir: str) -> Tuple[bool, str]:
     """Remove the Community link for this add-on.
 

@@ -1,0 +1,2219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover"/>
+<title>MSFS Hangar v9</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700;800&family=Orbitron:wght@700;800&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+:root{
+  --bg0:#050C18;--bg1:#0A1628;--bg2:#0F1E35;--bg3:#152540;
+  --card:#192A45;--cardH:#1F3254;
+  --bdr:rgba(255,255,255,0.07);--bdrH:rgba(255,255,255,0.18);
+  --acc:#38BDF8;--accD:rgba(56,189,248,0.12);--accB:rgba(56,189,248,0.3);
+  --grn:#34D399;--grnD:rgba(52,211,153,0.12);
+  --amb:#FBBF24;--ambD:rgba(251,191,36,0.1);
+  --red:#F87171;
+  --vio:#A78BFA;--vioD:rgba(167,139,250,0.1);
+  --t0:#F1F5F9;--t1:#AFC0D6;--t2:#8EA3BD;--t3:#7087A3;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;width:100%;overflow:hidden;}
+#root{height:100vh;width:100vw;overflow:hidden;display:flex;flex-direction:column;}
+body{font-family:'DM Sans',sans-serif;background:var(--bg0);color:var(--t0);}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:3px}
+input,button,select,textarea{font-family:inherit;}
+/* Responsive scaling — app content scales with window size */
+:root{--fs-base:13px;--fs-sm:11px;--fs-xs:10px;}
+@media(min-width:1600px){:root{--fs-base:14px;--fs-sm:12px;--fs-xs:11px;}}
+@media(min-width:2000px){:root{--fs-base:15px;--fs-sm:13px;--fs-xs:12px;}}
+@media(max-width:1100px){:root{--fs-base:12px;--fs-sm:10px;--fs-xs:9px;}}
+.card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(280px,100%),1fr));gap:12px;}
+@keyframes fadeUp{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
+.fadeUp{animation:fadeUp .22s ease both;}
+.spin{animation:spin 1.3s linear infinite;display:inline-block;}
+.shimmer{background:linear-gradient(90deg,var(--bg2) 25%,var(--bg3) 50%,var(--bg2) 75%);background-size:200%;animation:shimmer 1.5s infinite;}
+.qp-wrap{display:flex;flex-direction:column;height:100%;overflow:hidden;}
+.qp-body{flex:1;overflow-y:auto;min-height:0;padding:12px 14px;}
+.qp-foot{flex-shrink:0;padding:10px 14px;border-top:1px solid var(--bdr);display:flex;gap:7px;}
+.card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;}
+.cb-item{display:flex;align-items:center;gap:7px;padding:5px 8px;border-radius:6px;cursor:pointer;font-size:12px;color:var(--t1);}
+.cb-item:hover{background:var(--bg3);}
+.cb-item input[type=checkbox]{width:14px;height:14px;accent-color:var(--acc);}
+.leaflet-container{background:#050C18!important;}
+.leaflet-popup-content-wrapper{background:var(--bg2);color:var(--t0);border:1px solid var(--bdr);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,.5);}
+.leaflet-popup-tip{background:var(--bg2);}
+.leaflet-control-zoom a{background:var(--bg2)!important;color:var(--t0)!important;border:1px solid var(--bdr)!important;}
+.leaflet-control-attribution{background:rgba(5,12,24,.8)!important;color:var(--t2)!important;font-size:9px!important;}
+.theme-html, .theme-html *{color:var(--t0)!important;}
+.theme-html *{background-image:none!important;box-shadow:none!important;}
+.theme-html [style*='background'], .theme-html [style*='background-color']{background:transparent!important;}
+.theme-html a{color:var(--acc)!important;text-decoration:underline!important;}
+.theme-html mark{background:rgba(251,191,36,0.18)!important;color:var(--t0)!important;padding:0 2px;border-radius:3px;}
+.theme-html table{width:100%;border-collapse:collapse;}
+.theme-html th,.theme-html td{border:1px solid var(--bdr)!important;padding:6px 8px;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useRef,useMemo,useCallback}=React;
+/* Restore saved theme on load */
+(function(){
+  const t=localStorage.getItem("hangar-theme");
+  if(t==="light"){const r=document.documentElement;r.style.setProperty("--bg0","#F8FAFC");r.style.setProperty("--bg1","#FFFFFF");r.style.setProperty("--bg2","#F1F5F9");r.style.setProperty("--bg3","#E2E8F0");r.style.setProperty("--card","#FFFFFF");r.style.setProperty("--cardH","#F1F5F9");r.style.setProperty("--bdr","rgba(0,0,0,0.1)");r.style.setProperty("--bdrH","rgba(0,0,0,0.2)");r.style.setProperty("--t0","#0F172A");r.style.setProperty("--t1","#334155");r.style.setProperty("--t2","#64748B");r.style.setProperty("--t3","#94A3B8");}
+})();
+
+const CC={Airport:"#38BDF8",Aircraft:"#34D399",Scenery:"#FBBF24",Utility:"#A78BFA",Mod:"#FB923C"};
+const CI={Airport:"[A]",Aircraft:"[P]",Scenery:"[S]",Utility:"[U]",Mod:"[M]"};
+const CABBR={"United States":"US","United Kingdom":"UK","Australia":"AUS","Canada":"CAN","Germany":"GER","France":"FRA","Japan":"JPN","Netherlands":"NLD","United Arab Emirates":"UAE","Singapore":"SGP","New Zealand":"NZL","Spain":"ESP","Italy":"ITA","Switzerland":"CHE"};
+function abbr(c){return CABBR[c]||c;}
+
+const DEMO_PDF="https://mozilla.github.io/pdf.js/web/compressed.tracemonkey-pldi-09.pdf";
+const PDF_PHAK="https://www.faa.gov/regulations_policies/handbooks_manuals/aviation/phak/media/pilot_handbook.pdf";
+const PDF_AFH="https://www.faa.gov/regulations_policies/handbooks_manuals/aviation/airplane_handbook/media/airplane_flying_handbook.pdf";
+const PDF_IPH="https://www.faa.gov/regulations_policies/handbooks_manuals/aviation/media/instrument_procedures_handbook.pdf";
+const PDF={SAMPLE:DEMO_PDF,PHAK:PDF_PHAK,AFH:PDF_AFH,IPH:PDF_IPH};
+function mkUsr(){return {fav:false,rating:0,notes:"",tags:[],paid:0,source_store:"",features:"",resources:[],research_resources:[],data_resources:[]};}
+const U="https://images.unsplash.com/photo-";
+const IMGS={
+  KJFK:[U+"1436491865332-7a61a109cc05?w=900&q=80",U+"1529074963764-98f45c47344b?w=900&q=80"],
+  EGLL:[U+"1526182879730-c4f8cf4b2fd7?w=900&q=80",U+"1570710891565-69d3df3e2ae6?w=900&q=80"],
+  KSFO:[U+"1501594907352-04cda38ebc29?w=900&q=80"],
+  KORD:[U+"1474302770737-173ee21bab63?w=900&q=80"],
+  A320:[U+"1540979388789-6cee28a1cdc9?w=900&q=80",U+"1569629743817-70d8db6c323b?w=900&q=80"],
+  B737:[U+"1583373834259-46cc92173cb7?w=900&q=80"],
+  C172:[U+"1559674145-e9aed5b9a773?w=900&q=80"],
+  PNW: [U+"1464822759023-fed622ff2c3b?w=900&q=80"],
+};
+const PICSUMS={KJFK:"https://picsum.photos/seed/kjfk/900/500",EGLL:"https://picsum.photos/seed/lhr/900/500",KSFO:"https://picsum.photos/seed/sfo/900/500",KORD:"https://picsum.photos/seed/ord/900/500",A320:"https://picsum.photos/seed/a320/900/500",B737:"https://picsum.photos/seed/b737/900/500",C172:"https://picsum.photos/seed/c172/900/500",PNW:"https://picsum.photos/seed/pnw/900/500"};
+const ADDONS=[];  // populated from backend API
+
+function locDisplay(a){
+  const r=a.rw||{};
+  if(a.type==="Airport"||a.type==="Scenery"){
+    const c=r.country||"",ca=abbr(c);
+    if(c==="United States") return (r.state?r.state+", ":"")+ca;
+    if(c==="Canada") return (r.province?r.province+", ":"")+ca;
+    return (r.region?r.region+", ":"")+ca;
+  }
+  return "";
+}
+function useIsMobile(){
+  const [m,setM]=useState(()=>window.innerWidth<=900);
+  useEffect(()=>{const h=()=>setM(window.innerWidth<=900);window.addEventListener("resize",h);return ()=>window.removeEventListener("resize",h);},[]);
+  return m;
+}
+
+const ARTICLE_CATEGORIES=["Product Info","Reviews","Reference","Videos"];
+function ensureArticleCategory(item){
+  if(!item) return item;
+  if(item.category) return item;
+  const u=String(item.url||""), t=(String(item.title||"")+" "+u).toLowerCase();
+  let category="Reference";
+  if(t.includes("youtube.com")||t.includes("youtu.be")||t.includes(" video")||t.includes(" trailer")) category="Videos";
+  else if(t.includes("review")||t.includes("preview")||t.includes("first look")) category="Reviews";
+  else if(t.includes("store")||t.includes("product")||t.includes("flightsim.to")||t.includes("justflight")||t.includes("inibuilds")||t.includes("aerosoft")) category="Product Info";
+  return {...item,category};
+}
+function sanitizeHtmlForTheme(html){
+  if(!html) return "";
+  const tmp=document.createElement('div');
+  tmp.innerHTML=String(html);
+  tmp.querySelectorAll('script,style,meta,link,head,nav,footer,header,aside,noscript').forEach(el=>el.remove());
+  tmp.querySelectorAll('*').forEach(el=>{
+    [...el.attributes].forEach(attr=>{
+      const n=attr.name.toLowerCase();
+      if(n.startsWith('on')) el.removeAttribute(attr.name);
+    });
+    const s=(el.getAttribute('style')||'')
+      .replace(/color\s*:[^;]+;?/gi,'')
+      .replace(/background(?:-color)?\s*:[^;]+;?/gi,'')
+      .replace(/border(?:-color)?\s*:[^;]+;?/gi,'')
+      .replace(/caret-color\s*:[^;]+;?/gi,'')
+      .replace(/text-decoration-color\s*:[^;]+;?/gi,'')
+      .replace(/-webkit-text-fill-color\s*:[^;]+;?/gi,'')
+      .replace(/font-family\s*:[^;]+;?/gi,'');
+    if(s.trim()) el.setAttribute('style', s); else el.removeAttribute('style');
+    if(el.tagName==='FONT'){
+      const span=document.createElement('span');
+      span.innerHTML=el.innerHTML;
+      el.replaceWith(span);
+    }
+  });
+  return tmp.innerHTML;
+}
+function applyThemedHtml(el, html){
+  if(!el) return;
+  el.innerHTML=sanitizeHtmlForTheme(html||'');
+}
+function groupArticleResources(items){
+  const groups={}; ARTICLE_CATEGORIES.forEach(c=>groups[c]=[]);
+  (items||[]).map(ensureArticleCategory).forEach(it=>{ groups[it.category||"Reference"]=(groups[it.category||"Reference"]||[]).concat([it]); });
+  return groups;
+}
+function currentLanguage(){ return localStorage.getItem('hangar_language')||'English'; }
+function currentCurrency(){ return localStorage.getItem('hangar_currency')||'$'; }
+function currentCalendarFormat(){ return localStorage.getItem('hangar_calendar_format')||localStorage.getItem('hangar_calendar')||'MM/DD/YYYY'; }
+function googleLocaleParams(){
+  const lang=currentLanguage();
+  const table={English:{hl:'en',gl:'us'},Spanish:{hl:'es',gl:'es'},French:{hl:'fr',gl:'fr'},German:{hl:'de',gl:'de'},Italian:{hl:'it',gl:'it'},Portuguese:{hl:'pt',gl:'pt'},Dutch:{hl:'nl',gl:'nl'}};
+  return table[lang]||table.English;
+}
+function googleSearchUrl(term, opts={}){
+  const {hl,gl}=googleLocaleParams();
+  const q=(opts.images?('tbm=isch '+(term||'')):(term||'')).trim();
+  let url='https://www.google.com/search?hl='+encodeURIComponent(hl)+'&gl='+encodeURIComponent(gl)+'&pws=0&q='+encodeURIComponent(term||'');
+  if(opts.images) url += '&tbm=isch';
+  return url;
+}
+function formatCurrencyValue(value){
+  if(value===null||value===undefined||value==="") return '—';
+  const num=Number(value);
+  if(Number.isNaN(num)) return String(value);
+  const symbol=currentCurrency();
+  try{
+    if(symbol==='€') return new Intl.NumberFormat(undefined,{style:'currency',currency:'EUR'}).format(num);
+    if(symbol==='£') return new Intl.NumberFormat(undefined,{style:'currency',currency:'GBP'}).format(num);
+    return new Intl.NumberFormat(undefined,{style:'currency',currency:'USD'}).format(num).replace('$',symbol);
+  }catch(e){ return symbol+num.toFixed(2); }
+}
+function formatDateValue(value){
+  if(!value) return '';
+  const s=String(value).trim();
+  const m=s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const fmt=currentCalendarFormat();
+  if(!m) return s;
+  const [,y,mo,d]=m;
+  if(fmt==='DD/MM/YYYY') return `${d}/${mo}/${y}`;
+  if(fmt==='YYYY-MM-DD') return `${y}-${mo}-${d}`;
+  return `${mo}/${d}/${y}`;
+}
+async function fetchJsonSafe(url, options){
+  const res=await fetch(url, options);
+  const raw=await res.text();
+  let data={};
+  try{ data=raw?JSON.parse(raw):{}; }catch(e){ data={detail:raw||res.statusText||'Request failed'}; }
+  if(!res.ok){ throw new Error(data.detail||raw||('HTTP '+res.status)); }
+  return data;
+}
+function NotificationOverlay({notice,onDismiss}){
+  if(!notice) return null;
+  const color=notice.kind==='error'?'var(--red)':notice.kind==='success'?'var(--grn)':'var(--acc)';
+  return <div style={{position:'fixed',right:18,bottom:18,zIndex:99999,maxWidth:420,width:'min(420px, calc(100vw - 28px))'}}><div style={{background:'var(--bg1)',border:'1px solid '+color,borderRadius:14,boxShadow:'0 22px 60px rgba(0,0,0,.55)',padding:'14px 16px'}}><div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:10}}><div style={{flex:1,minWidth:0}}><div style={{fontSize:12,fontWeight:800,color,marginBottom:4}}>{notice.title||'Notification'}</div><div style={{fontSize:12,color:'var(--t1)',lineHeight:1.65,whiteSpace:'pre-wrap'}}>{notice.message}</div></div><button onClick={onDismiss} style={{background:'none',border:'none',color:'var(--t2)',fontSize:18,cursor:'pointer',lineHeight:1}}>×</button></div></div></div>;
+}
+
+function Stars({v,sz,edit,onChange}){
+  const s=sz||12,[hov,setHov]=useState(null),d=hov!=null?hov:(v||0);
+  return <span style={{display:"inline-flex",gap:2}}>
+    {[1,2,3,4,5].map(i=>(
+      <svg key={i} width={s} height={s} viewBox="0 0 20 20" fill={i<=d?"#FBBF24":"#1E2D3D"}
+        style={{cursor:edit?"pointer":"default"}}
+        onMouseEnter={()=>edit&&setHov(i)} onMouseLeave={()=>edit&&setHov(null)}
+        onClick={()=>edit&&onChange&&onChange(i)}>
+        <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
+      </svg>
+    ))}
+  </span>;
+}
+function Chip({label,color,sm,onClick}){
+  const c=color||"var(--acc)";
+  return <span onClick={onClick} style={{background:c+"1A",color:c,border:"1px solid "+c+"35",borderRadius:5,padding:sm?"1px 7px":"3px 10px",fontSize:sm?10:11,fontWeight:600,letterSpacing:"0.04em",textTransform:"uppercase",whiteSpace:"nowrap",cursor:onClick?"pointer":"default",userSelect:"none",display:"inline-block"}}>{label}</span>;
+}
+function Btn({label,color,onClick,style:sx,sm,full,disabled}){
+  const c=color||"var(--acc)",[h,setH]=useState(false);
+  return <button disabled={disabled} onClick={onClick} onMouseEnter={()=>setH(true)} onMouseLeave={()=>setH(false)}
+    style={{background:h?c+"30":c+"18",border:"1px solid "+c+(h?"55":"35"),color:c,borderRadius:8,padding:sm?"5px 11px":"9px 18px",fontSize:sm?11:12,fontWeight:600,transition:"all 0.15s",width:full?"100%":"auto",opacity:disabled?0.5:1,display:"inline-flex",alignItems:"center",gap:6,cursor:disabled?"not-allowed":"pointer",...(sx||{})}}>
+    {label}
+  </button>;
+}
+function FavBtn({on,onChange,sz}){
+  return <span onClick={e=>{e.stopPropagation();onChange(!on);}} style={{cursor:"pointer",fontSize:sz||16,lineHeight:1,userSelect:"none",color:on?"#FBBF24":"var(--t3)",transition:"all 0.15s",display:"inline-block"}}>{on?"★":"☆"}</span>;
+}
+function DL({label,color}){
+  return <div style={{fontSize:9,color,textTransform:"uppercase",letterSpacing:"0.1em",fontWeight:700,marginBottom:8,display:"flex",alignItems:"center",gap:7}}>
+    <span style={{width:14,height:1,background:color,display:"inline-block",flexShrink:0}}/>
+    {label}
+    <span style={{flex:1,height:1,background:color+"25",display:"inline-block"}}/>
+  </div>;
+}
+function KVG({pairs,cols}){
+  const nc=cols||2,valid=(pairs||[]).filter(p=>p[1]!=null&&p[1]!=="");
+  if(!valid.length) return null;
+  return <div style={{display:"grid",gridTemplateColumns:"repeat("+nc+",1fr)",gap:5}}>
+    {valid.map(([k,v,c])=>(
+      <div key={k} style={{background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:7,padding:"8px 10px"}}>
+        <div style={{fontSize:10,color:"var(--t3)",textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:2}}>{k}</div>
+        <div style={{fontSize:12,color:c||"var(--t0)",fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={String(v||"")}>{v}</div>
+      </div>
+    ))}
+  </div>;
+}
+function AddonImg({a,h,style:sx}){
+  const ht=h||155,cc=CC[a.type]||"#64748B";
+  // API mode: use /thumb/{id} served by backend; standalone: use IMGS[]
+  const apiSrc=a.thumbnail_path?("/thumb/"+a.id+"?v="+encodeURIComponent(a.thumbnail_path||"")):null;
+  const srcs=apiSrc?[apiSrc]:((IMGS&&IMGS[a.imgKey])||[]);
+  const [idx,setIdx]=useState(0),[failed,setFailed]=useState(false),[loaded,setLoaded]=useState(false);
+  useEffect(()=>{setIdx(0);setFailed(false);setLoaded(false);},[a.id,a.thumbnail_path]);
+  const src=srcs[idx]||(!apiSrc&&a.imgKey&&PICSUMS&&PICSUMS[a.imgKey])||null;
+  if(!src||failed){
+    return <div style={{height:ht,background:"linear-gradient(140deg,"+cc+"22,var(--bg0) 65%)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",position:"relative",overflow:"hidden",...(sx||{})}}>
+      <div style={{position:"absolute",inset:0,opacity:0.05,backgroundImage:"linear-gradient("+cc+" 1px,transparent 1px),linear-gradient(90deg,"+cc+" 1px,transparent 1px)",backgroundSize:"24px 24px"}}/>
+      <div style={{fontSize:32,opacity:0.15,fontFamily:"monospace",color:cc}}>{a.rw&&a.rw.icao||a.type}</div>
+    </div>;
+  }
+  return <div style={{height:ht,overflow:"hidden",position:"relative",...(sx||{})}}>
+    {!loaded&&<div className="shimmer" style={{position:"absolute",inset:0}}/>}
+    <img src={src} crossOrigin="anonymous" alt={a.title}
+      onLoad={()=>setLoaded(true)}
+      onError={()=>{if(idx<srcs.length-1){setIdx(i=>i+1);setLoaded(false);}else setFailed(true);}}
+      style={{width:"100%",height:"100%",objectFit:"cover",display:"block",opacity:loaded?1:0,transition:"opacity 0.35s"}}/>
+  </div>;
+}
+function CardData({a}){
+  const cc=CC[a.type]||"#64748B";
+  const G=({pairs})=><div style={{display:"grid",gridTemplateColumns:"auto 1fr",gap:"3px 9px",background:"var(--bg2)",borderRadius:8,padding:"7px 10px",border:"1px solid var(--bdr)"}}>
+    {(pairs||[]).filter(([,v])=>v!=null&&v!=="").map(([k,v,c])=>[
+      <span key={k+"k"} style={{fontSize:10,color:"var(--t2)"}}>{k}</span>,
+      <span key={k+"v"} style={{fontSize:11,color:c||"var(--t1)",fontWeight:c?"600":"400",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={String(v||"")}>{v}</span>
+    ])}
+  </div>;
+  if(a.type==="Airport") return <G pairs={[["ICAO",a.rw&&a.rw.icao,cc],["Municipality",(a.rw&&a.rw.municipality)||(a.rw&&a.rw.city)],["Runways",a.rw&&a.rw.runways&&a.rw.runways.length+" rwys"],["Elev",a.rw&&a.rw.elev]]}/>;
+  if(a.type==="Aircraft") return <G pairs={[["Manufacturer",a.rw&&a.rw.mfr,cc],["Model",a.rw&&a.rw.model],["Range (NM)",a.rw&&a.rw.range_nm],["Cruise",a.rw&&a.rw.cruise]]}/>;
+  if(a.type==="Scenery") return <G pairs={[["Region",a.rw&&(a.rw.region||locDisplay(a))],["Country",a.rw&&a.rw.country&&abbr(a.rw.country),cc],["Type",a.sub||(a.rw&&a.rw.scenery_type)]]}/>;
+  if(a.type==="Utility") return <G pairs={[["Category",(a.rw&&a.rw.util_cat)||a.sub,cc],["Version",a.pr&&a.pr.ver&&"v"+a.pr.ver]]}/>;
+  return null;
+}
+
+function EnableToggle({addon,onChange}){
+  const [on,setOn]=useState(addon.enabled||false);
+  const [busy,setBusy]=useState(false);
+  useEffect(()=>{setOn(addon.enabled||false);},[addon.enabled, addon.id]);
+  function toggle(e){
+    e.stopPropagation();
+    if(busy) return;
+    const next=!on;
+    setBusy(true);
+    fetch("/api/addons/"+addon.id+"/toggle",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({enabled:next})
+    }).then(r=>r.json()).then(d=>{if(d.ok){setOn(next);onChange&&onChange(next);}})
+    .catch(()=>{setOn(next);onChange&&onChange(next);})  // standalone: just toggle
+    .finally(()=>setBusy(false));
+  }
+  return <div onClick={toggle} title={on?"Activated in Community folder":"Not in Community folder"}
+    style={{display:"inline-flex",alignItems:"center",gap:5,cursor:busy?"wait":"pointer",userSelect:"none"}}>
+    <div style={{width:34,height:18,borderRadius:9,background:on?"var(--acc)":"var(--t3)",position:"relative",transition:"background 0.2s",flexShrink:0,opacity:busy?0.6:1}}>
+      <div style={{position:"absolute",top:2,left:on?16:2,width:14,height:14,borderRadius:"50%",background:"white",transition:"left 0.18s",boxShadow:"0 1px 3px rgba(0,0,0,0.3)"}}/>
+    </div>
+    <span style={{fontSize:9,color:on?"var(--acc)":"var(--t3)",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",whiteSpace:"nowrap"}}>{on?"Active":"Off"}</span>
+  </div>;
+}
+function AddonCard({a,selected,onClick,onFav,onTogglePick,picked}){
+  const [hov,setHov]=useState(false),cc=CC[a.type]||"#64748B";
+  return <div id={"addon-card-"+a.id} onClick={()=>onClick(a)} onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}
+    style={{background:selected?cc+"0D":hov?"var(--cardH)":"var(--card)",border:"1px solid "+(selected?cc+"50":hov?"var(--bdrH)":"var(--bdr)"),borderRadius:13,cursor:"pointer",overflow:"hidden",transition:"all 0.18s",transform:hov&&!selected?"translateY(-2px)":"none",boxShadow:selected?"0 0 0 1px "+cc+"40,0 8px 24px rgba(0,0,0,.4)":hov?"0 8px 28px rgba(0,0,0,.35)":"none"}}>
+    <div style={{position:"relative"}}>
+      <AddonImg a={a} h={148}/>
+      <div style={{position:"absolute",top:8,left:9,display:"flex",gap:5,alignItems:"center"}}>
+        <label onClick={e=>e.stopPropagation()} style={{display:'inline-flex',alignItems:'center',gap:6,background:'rgba(0,0,0,.72)',backdropFilter:'blur(8px)',borderRadius:20,padding:'4px 9px',fontSize:10,color:'var(--t0)',border:'1px solid var(--bdr)',cursor:'pointer'}}>
+          <input type='checkbox' checked={!!picked} onChange={()=>onTogglePick&&onTogglePick(a.id)} style={{accentColor:cc}}/>
+          Pick
+        </label>
+        <div style={{background:"rgba(0,0,0,.72)",backdropFilter:"blur(8px)",borderRadius:20,padding:"3px 8px",fontSize:10,color:cc,fontWeight:700,border:"1px solid "+cc+"40"}}>{a.type}</div>
+        {a.hasUpdate&&<div style={{background:"#FBBF24",color:"#000",borderRadius:20,padding:"2px 7px",fontSize:10,fontWeight:700}}>UPDATE</div>}
+      </div>
+      <div style={{position:"absolute",top:8,right:42,zIndex:2}} onClick={e=>e.stopPropagation()}><div style={{background:"rgba(0,0,0,.65)",backdropFilter:"blur(8px)",borderRadius:20,padding:"3px 7px"}}><EnableToggle addon={a} onChange={v=>onFav&&(a.enabled=v)}/></div></div>
+      <div style={{position:"absolute",top:8,right:9}} onClick={e=>e.stopPropagation()}><div style={{background:"rgba(0,0,0,.7)",backdropFilter:"blur(8px)",borderRadius:20,padding:"4px 9px"}}><FavBtn on={a.usr.fav} onChange={v=>onFav(a.id,v)}/></div></div>
+      {a.sub&&<div style={{position:"absolute",bottom:0,left:0,right:0,background:"linear-gradient(transparent,rgba(5,12,24,.95))",padding:"18px 10px 7px"}}><Chip label={a.sub} color={cc} sm/></div>}
+    </div>
+    <div style={{padding:"10px 12px 12px"}}>
+      <div style={{fontSize:13,fontWeight:700,color:"var(--t0)",lineHeight:1.3,marginBottom:2,overflow:"hidden",display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical"}}>{a.title}</div>
+      <div style={{fontSize:11,color:"var(--t2)",marginBottom:4}}>{a.publisher}</div>
+      {a.addon_path&&<div title={a.addon_path} style={{fontSize:10,color:"var(--t3)",marginBottom:8,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontFamily:"monospace"}}>{a.addon_path}</div>}
+      <CardData a={a}/>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginTop:9}}>
+        <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>{(a.usr.tags||[]).slice(0,2).map(t=><Chip key={t} label={t} color="var(--t3)" sm/>)}</div>
+        {a.usr.rating>0&&<Stars v={a.usr.rating} sz={11}/>}
+      </div>
+    </div>
+  </div>;
+}
+
+function QuickPanel({a,onOpen,onFav,onNote,onLitePopulate}){
+  const cc=CC[a.type]||"#64748B",pr=a.pr||{};
+  const priceStr=pr.price===0?"Free":pr.price?formatCurrencyValue(pr.price):"—";
+  return <div className="qp-wrap">
+    <div style={{position:"relative",flexShrink:0}}>
+      <AddonImg a={a} h={140}/>
+      <div style={{position:"absolute",bottom:9,right:9}} onClick={e=>e.stopPropagation()}>
+        <div style={{background:"rgba(0,0,0,.72)",backdropFilter:"blur(8px)",borderRadius:20,padding:"5px 11px"}}>
+          <FavBtn on={a.usr.fav} onChange={v=>onFav(a.id,v)} sz={18}/>
+        </div>
+      </div>
+    </div>
+    <div style={{padding:"12px 14px 10px",flexShrink:0,borderBottom:"1px solid var(--bdr)"}}>
+      <div style={{display:"flex",gap:5,marginBottom:5,flexWrap:"wrap"}}><Chip label={a.type} color={cc} sm/>{a.sub&&<Chip label={a.sub} color={cc} sm/>}</div>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:2}}>
+        <div style={{fontSize:14,fontWeight:800,color:"var(--t0)",lineHeight:1.25}}>{a.title}</div>
+      </div>
+      <div style={{fontSize:11,color:"var(--t2)",marginBottom:4}}>{a.publisher}</div>{a.addon_path&&<div title={a.addon_path} style={{fontSize:10,color:"var(--t3)",marginBottom:8,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontFamily:"monospace"}}>{a.addon_path}</div>}
+      <div style={{fontSize:12,color:"var(--t1)",lineHeight:1.6,margin:"0 0 10px",maxHeight:240,overflowY:"auto",paddingRight:4}} dangerouslySetInnerHTML={{__html:sanitizeHtmlForTheme(a.summary||"")}}/>
+      <div style={{display:"flex",gap:7,flexWrap:'wrap'}}>
+        <Btn label="Open Full Detail" color="var(--acc)" onClick={()=>onOpen(a)} style={{flex:1,justifyContent:"center",fontWeight:700}}/>
+        <Btn label="Notes" color="var(--amb)" onClick={()=>onNote(a)} sm/>
+        <Btn label="Gemini Lite Test" color="var(--vio)" onClick={()=>onLitePopulate&&onLitePopulate(a)} sm/>
+      </div>
+    </div>
+    <div className="qp-body">
+      <div style={{marginBottom:12}}><DL label="Product" color="var(--grn)"/>
+        <KVG pairs={[["Publisher",a.publisher],["Version",pr.ver?"v"+pr.ver:null],["Price",priceStr,pr.price===0?"var(--grn)":null],["Store",pr.source_store],["Release",formatDateValue(pr.released||'')]]}/>
+      </div>
+      <div style={{marginBottom:12}}><DL label="Key Details" color="var(--acc)"/>
+        {a.type==="Airport"&&<KVG pairs={[["ICAO",a.rw&&a.rw.icao,cc],["Location",locDisplay(a)],["Runways",a.rw&&a.rw.runways&&a.rw.runways.length+" runways"],["Elevation",a.rw&&a.rw.elev]]}/>}
+        {a.type==="Aircraft"&&<KVG pairs={[["Manufacturer",a.rw&&a.rw.mfr],["Model",a.rw&&a.rw.model],["Range (NM)",a.rw&&a.rw.range_nm],["Cruise",a.rw&&a.rw.cruise]]}/> }
+        {a.type==="Scenery"&&<KVG pairs={[["Region",a.rw&&(a.rw.region||locDisplay(a))],["Country",a.rw&&a.rw.country&&abbr(a.rw.country),cc]]}/>}
+        {a.type==="Utility"&&<KVG pairs={[["Category",(a.rw&&a.rw.util_cat)||a.sub]]}/>}
+      </div>
+      <div style={{marginTop:10}}><DL label="Path" color="var(--t2)"/><div style={{fontSize:11,color:"var(--t1)",wordBreak:"break-all",marginBottom:10}}>{a.addon_path}</div></div><div><DL label="Your Data" color="var(--amb)"/>
+        {a.usr.rating>0&&<div style={{display:"flex",gap:6,marginBottom:6}}><Stars v={a.usr.rating} sz={13}/><span style={{fontSize:11,color:"var(--t1)"}}>{a.usr.rating}/5</span></div>}
+        {a.usr.tags&&a.usr.tags.length>0&&<div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:6}}>{a.usr.tags.map(t=><Chip key={t} label={t} color="var(--amb)" sm/>)}</div>}
+        {a.usr.notes&&<div style={{background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:8,padding:"8px 10px",fontSize:12,color:"var(--t1)",lineHeight:1.6,fontStyle:"italic",display:"-webkit-box",WebkitLineClamp:3,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{a.usr.notes}</div>}
+      </div>
+    </div>
+
+  </div>;
+}
+
+function MultiSelectPanel({items,removeFolders,setRemoveFolders,onRemove,onCreateProfile}){
+  const [profileName,setProfileName]=useState('');
+  return <div className='qp-wrap'>
+    <div style={{padding:'14px 16px',borderBottom:'1px solid var(--bdr)'}}>
+      <div style={{fontSize:15,fontWeight:800,color:'var(--t0)',marginBottom:4}}>Selected Add-ons</div>
+      <div style={{fontSize:12,color:'var(--t2)'}}>{items.length} add-on(s) selected for batch actions.</div>
+    </div>
+    <div className='qp-body'>
+      <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:12}}>
+        {items.map(it=><div key={it.id} style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:10,padding:'10px 12px'}}><div style={{fontSize:12,fontWeight:700,color:'var(--t0)'}}>{it.title}</div><div style={{fontSize:11,color:'var(--t2)'}}>{it.publisher}</div></div>)}
+      </div>
+      <label style={{display:'inline-flex',alignItems:'center',gap:8,fontSize:12,color:'var(--t1)',marginBottom:12}}><input type='checkbox' checked={removeFolders} onChange={e=>setRemoveFolders(e.target.checked)}/> Also remove local add-on folders</label>
+      <div style={{display:'flex',gap:8,marginBottom:12}}>
+        <Btn label='Remove Selected Add-ons from Library' color='var(--red)' onClick={onRemove} style={{flex:1,justifyContent:'center',fontWeight:700}}/>
+      </div>
+      <div style={{borderTop:'1px solid var(--bdr)',paddingTop:12}}>
+        <div style={{fontSize:11,fontWeight:700,color:'var(--vio)',marginBottom:6}}>Profiles</div>
+        <div style={{fontSize:11,color:'var(--t2)',lineHeight:1.6,marginBottom:8}}>Save the current selection as a profile. Applying a profile will enable only its selected add-ons in the Community folder.</div>
+        <input value={profileName} onChange={e=>setProfileName(e.target.value)} placeholder='New profile name' style={{width:'100%',background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:8,padding:'8px 10px',color:'var(--t0)',fontSize:12,marginBottom:8}}/>
+        <Btn label='Create Profile from Selection' color='var(--vio)' onClick={()=>{ if(profileName.trim()) onCreateProfile&&onCreateProfile(profileName.trim()); }} full style={{justifyContent:'center',fontWeight:700}}/>
+      </div>
+    </div>
+  </div>;
+}
+
+function NotesModal({a,onSave,onClose}){
+  const [txt,setTxt]=useState(a.usr.notes||"");
+  return <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.8)",backdropFilter:"blur(6px)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={onClose}>
+    <div onClick={e=>e.stopPropagation()} style={{background:"var(--bg1)",border:"1px solid var(--bdr)",borderRadius:14,width:500,maxWidth:"94vw",boxShadow:"0 24px 64px rgba(0,0,0,.6)"}}>
+      <div style={{padding:"16px 20px",borderBottom:"1px solid var(--bdr)",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div><div style={{fontSize:14,fontWeight:700,color:"var(--t0)"}}>Edit Notes</div><div style={{fontSize:11,color:"var(--t2)"}}>{a.title}</div></div>
+        <button onClick={onClose} style={{background:"none",border:"none",color:"var(--t2)",fontSize:20,cursor:"pointer",lineHeight:1}}>x</button>
+      </div>
+      <div style={{padding:20}}>
+        <textarea value={txt} onChange={e=>setTxt(e.target.value)} placeholder="Tips, impressions, settings, known issues..."
+          style={{width:"100%",height:160,background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:8,padding:"10px 12px",color:"var(--t0)",fontSize:13,resize:"vertical",outline:"none",lineHeight:1.65}}/>
+        <div style={{display:"flex",gap:8,marginTop:12}}>
+          <Btn label="Save Notes" color="var(--grn)" onClick={()=>onSave(a.id,txt)} style={{flex:1,justifyContent:"center"}}/>
+          <Btn label="Cancel" color="var(--t2)" onClick={onClose}/>
+        </div>
+      </div>
+    </div>
+  </div>;
+}
+
+function OverviewTab({a,onSave,injected,onInjected}){
+  const editorRef=useRef(null);
+  const fieldStyle={width:"100%",background:"var(--bg0)",border:"1px solid var(--bdr)",borderRadius:7,padding:"8px 11px",color:"var(--t0)",fontSize:12,outline:"none"};
+  const [title,setTitle]=useState(a.title||"");
+  const [publisher,setPublisher]=useState(a.publisher||"");
+  const [version,setVersion]=useState((a.pr&&a.pr.ver)||"");
+  const [latestVersion,setLatestVersion]=useState((a.pr&&a.pr.latest_ver)||"");
+  const [released,setReleased]=useState((a.pr&&a.pr.released)||"");
+  const [listPrice,setListPrice]=useState((a.pr&&a.pr.price)!==undefined && (a.pr&&a.pr.price)!==null ? String(a.pr.price) : "");
+  const [packageName,setPackageName]=useState(a.package_name||"");
+  const [manufacturer,setManufacturer]=useState((a.rw&&a.rw.mfr)||(a.pr&&a.pr.manufacturer)||"");
+  const [icao,setIcao]=useState((a.rw&&a.rw.icao)||"");
+  const [saved,setSaved]=useState(false);
+  const [lookuping,setLookuping]=useState(false);
+  const [lookupMsg,setLookupMsg]=useState("");
+  useEffect(()=>{
+    setTitle(a.title||""); setPublisher(a.publisher||""); setVersion((a.pr&&a.pr.ver)||""); setLatestVersion((a.pr&&a.pr.latest_ver)||""); setReleased((a.pr&&a.pr.released)||""); setListPrice((a.pr&&a.pr.price)!==undefined && (a.pr&&a.pr.price)!==null ? String(a.pr.price) : ""); setPackageName(a.package_name||"");
+    setManufacturer((a.rw&&a.rw.mfr)||(a.pr&&a.pr.manufacturer)||""); setIcao((a.rw&&a.rw.icao)||""); setLookupMsg("");
+    if(editorRef.current) applyThemedHtml(editorRef.current,a.summary||"");
+  },[a.id]);
+  useEffect(()=>{ if(injected&&editorRef.current){ applyThemedHtml(editorRef.current,injected); if(onInjected)onInjected(); } },[injected]);
+  async function populateWithGemini(){
+    try{
+      setLookuping(true); setLookupMsg("");
+      const data=await fetchJsonSafe('/api/gemini/populate-product/'+a.id,{method:'POST'});
+      if(data.latest_version) setLatestVersion(String(data.latest_version));
+      if(data.released) setReleased(String(data.released));
+      if(data.price!==undefined && data.price!==null) setListPrice(String(data.price));
+      if(data.summary_html && editorRef.current) applyThemedHtml(editorRef.current,data.summary_html);
+      const sourceTxt=(data.sources&&data.sources.length)?(' from '+data.sources[0]):'';
+      const retryTxt=data.search_candidate?(' Using search: '+data.search_candidate):'';
+      setLookupMsg('Gemini populate complete'+sourceTxt+'.'+retryTxt);
+    }catch(e){ setLookupMsg((e&&e.message)||'Lookup failed.'); }
+    finally{ setLookuping(false); }
+  }
+  function save(){
+    const payload={summary:editorRef.current?sanitizeHtmlForTheme(editorRef.current.innerHTML):"",title,publisher,version,latest_version:latestVersion,released,package_name:packageName};
+    const parsedPrice=String(listPrice||"").trim()==="" ? undefined : Number(String(listPrice).replace(/[^0-9.]/g,''));
+    if(parsedPrice!==undefined && !Number.isNaN(parsedPrice)) payload.price=parsedPrice;
+    if(a.type==="Aircraft") payload.manufacturer=manufacturer;
+    if(a.type==="Airport") payload.rw_override={icao};
+    onSave&&onSave(a.id,payload);
+    setSaved(true); setTimeout(()=>setSaved(false),1800);
+  }
+  return <div style={{display:"flex",flexDirection:"column",gap:14,minHeight:0}}>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:14}}>
+      <div><DL label="Product Data" color="var(--grn)"/><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+        <div style={{gridColumn:"1 / -1"}}><div style={{fontSize:10,color:"var(--t2)",marginBottom:4}}>Title</div><input value={title} onChange={e=>setTitle(e.target.value)} style={fieldStyle}/></div>
+        {a.type==="Aircraft"&&<div><div style={{fontSize:10,color:"var(--t2)",marginBottom:4}}>Manufacturer</div><input value={manufacturer} onChange={e=>setManufacturer(e.target.value)} style={fieldStyle}/></div>}
+        {a.type==="Airport"&&<div><div style={{fontSize:10,color:"var(--t2)",marginBottom:4}}>ICAO</div><input value={icao} onChange={e=>setIcao(e.target.value.toUpperCase())} style={fieldStyle}/></div>}
+        <div><div style={{fontSize:10,color:"var(--t2)",marginBottom:4}}>Publisher</div><input value={publisher} onChange={e=>setPublisher(e.target.value)} style={fieldStyle}/></div>
+        <div><div style={{fontSize:10,color:"var(--t2)",marginBottom:4}}>Addon Version</div><input value={version} onChange={e=>setVersion(e.target.value)} style={fieldStyle}/></div>
+        <div><div style={{fontSize:10,color:"var(--t2)",marginBottom:4}}>Latest Current Version</div><input value={latestVersion} onChange={e=>setLatestVersion(e.target.value)} style={fieldStyle}/></div>
+        <div><div style={{fontSize:10,color:"var(--t2)",marginBottom:4}}>Add-on Release Date</div><input value={released} onChange={e=>setReleased(e.target.value)} style={fieldStyle}/></div>
+        <div><div style={{fontSize:10,color:"var(--t2)",marginBottom:4}}>List Price</div><input value={listPrice} onChange={e=>setListPrice(e.target.value)} style={fieldStyle}/></div>
+        <div style={{gridColumn:"1 / -1"}}><div style={{fontSize:10,color:"var(--t2)",marginBottom:4}}>Package Name</div><input value={packageName} onChange={e=>setPackageName(e.target.value)} style={fieldStyle}/></div>
+        <div style={{gridColumn:"1 / -1"}}><div style={{fontSize:10,color:"var(--t2)",marginBottom:4}}>Addon Path</div><input value={a.addon_path||""} readOnly style={{...fieldStyle,color:"var(--t2)"}}/></div>
+      </div></div>
+      <div><DL label="Current Classification" color="var(--amb)"/><KVG pairs={[["Type",a.type],["Subtype",a.sub],["Your Source",a.usr&&a.usr.source_store],["Rating",a.usr&&a.usr.rating?`${a.usr.rating}/5`:""]]} cols={1}/><div style={{marginTop:12,fontSize:11,color:"var(--t2)",lineHeight:1.6}}>Type, subtype, notes, tags, rating, and your source are editable in <strong style={{color:"var(--t1)"}}>Your Data</strong> so those changes stay in one place.</div></div>
+    </div>
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}><Btn label={lookuping?"Populating with Gemini…":"Populate with Gemini"} color="var(--vio)" onClick={populateWithGemini} disabled={lookuping}/><Btn label={saved?"Saved!":"Save Overview"} color={saved?"var(--grn)":"var(--acc)"} onClick={save}/>{lookupMsg&&<span style={{fontSize:11,color:"var(--t2)"}}>{lookupMsg}</span>}</div>
+    <div><DL label="Overview Summary" color="var(--acc)"/><style>{".overview-editor:empty:before{content:attr(data-placeholder);color:var(--t3);pointer-events:none;}"}</style><div ref={editorRef} className="overview-editor theme-html" contentEditable suppressContentEditableWarning data-placeholder="Paste HTML-enabled summary here..." style={{width:"100%",minHeight:"48vh",height:"58vh",maxHeight:"82vh",overflowY:"auto",resize:"vertical",background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:8,padding:"12px 14px",color:"var(--t0)",fontSize:13,outline:"none",lineHeight:1.7}}/></div>
+  </div>;
+}
+
+function DocsTab({a}){
+  const docs=(a.docs||[]);
+  const [sel,setSel]=useState(0);
+  useEffect(()=>{setSel(0);},[a.id]);
+  if(!docs.length) return <div style={{textAlign:"center",padding:"40px 0",color:"var(--t2)",fontSize:13}}>No documentation files were found for this addon.</div>;
+  const current=docs[Math.min(sel,docs.length-1)]||docs[0];
+  const url="/api/docs/"+a.id+"/"+Math.min(sel,docs.length-1);
+  const isPdf=((current&&current.name)||"").toLowerCase().endsWith(".pdf");
+  return <div style={{display:"grid",gridTemplateColumns:"320px 1fr",gap:14,height:"calc(100vh - 220px)",minHeight:420}}>
+    <div style={{background:"var(--bg1)",border:"1px solid var(--bdr)",borderRadius:12,overflow:"hidden",display:"flex",flexDirection:"column",minHeight:0}}>
+      <div style={{padding:"12px 14px",borderBottom:"1px solid var(--bdr)",fontSize:12,fontWeight:700,color:"var(--t0)"}}>Documentation</div>
+      <div style={{flex:1,overflowY:"auto",padding:10}}>
+        {docs.map((d,i)=><div key={d.path||i} onClick={()=>setSel(i)} style={{background:i===sel?"var(--accD)":"transparent",border:"1px solid "+(i===sel?"var(--accB)":"var(--bdr)"),borderRadius:10,padding:"10px 12px",marginBottom:8,cursor:"pointer"}}><div style={{fontSize:12,color:i===sel?"var(--t0)":"var(--t1)",fontWeight:600,wordBreak:"break-word"}}>{d.name}</div><div style={{fontSize:10,color:"var(--t3)",marginTop:4,wordBreak:"break-all"}}>{d.path}</div></div>)}
+      </div>
+    </div>
+    <div style={{background:"var(--bg1)",border:"1px solid var(--bdr)",borderRadius:12,overflow:"hidden",display:"flex",flexDirection:"column",minHeight:0}}>
+      <div style={{padding:"12px 14px",borderBottom:"1px solid var(--bdr)",display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,flexWrap:"wrap"}}>
+        <div><div style={{fontSize:12,fontWeight:700,color:"var(--t0)"}}>{current&&current.name}</div><div style={{fontSize:10,color:"var(--t3)"}}>{isPdf?"PDF preview":"Document preview"}</div></div>
+        <a href={url} target="_blank" rel="noreferrer" style={{color:"var(--acc)",fontSize:11,fontWeight:600,textDecoration:"none"}}>Open externally</a>
+      </div>
+      <div style={{flex:1,minHeight:0,background:"var(--bg2)"}}>
+        <object key={url} data={url+"#view=FitH"} type={isPdf?"application/pdf":"text/html"} style={{width:"100%",height:"100%",border:"none",display:"block",background:"#fff"}}><iframe src={url} title={current&&current.name||"Document"} style={{width:"100%",height:"100%",border:"none",display:"block",background:"#fff"}}/></object>
+      </div>
+    </div>
+  </div>;
+}
+
+function RealWorldTab({a,onSave}){
+  const cc=CC[a.type]||"#64748B", rw=a.rw||{};
+  const [fetching,setFetching]=useState(false),[fetchMsg,setFetchMsg]=useState("");
+  const [manufacturer,setManufacturer]=useState(rw.mfr||"");
+  const [manufacturerFull,setManufacturerFull]=useState(rw.manufacturer_full_name||rw.mfr||"");
+  const [model,setModel]=useState(rw.model||"");
+  const [category,setCategory]=useState(rw.category||a.sub||"");
+  const [icao,setIcao]=useState(rw.icao||"");
+  const [shellMode,setShellMode]=useState(null);
+  const [mode,setMode]=useState('web');
+  const [nativeState,setNativeState]=useState({current_url:'',current_title:'',visible:false});
+  const desktopNative=shellMode==='qt';
+  const saved=useMemo(()=>((a.usr&&a.usr.data_resources)||[]).map(ensureArticleCategory),[a.id,a.usr&&a.usr.data_resources]);
+  useEffect(()=>{fetch('/api/app/info').then(r=>r.json()).then(d=>setShellMode(d.shell_mode||'browser')).catch(()=>setShellMode('browser'));},[]);
+  useEffect(()=>{setManufacturer(rw.mfr||"");setManufacturerFull(rw.manufacturer_full_name||rw.mfr||"");setModel(rw.model||"");setCategory(rw.category||a.sub||"");setIcao(rw.icao||"");setFetchMsg("");setMode('web'); if(desktopNative){ const initial=(a.type==='Airport'?(a.title||'').trim():[rw.manufacturer_full_name||rw.mfr||'',rw.model||''].filter(Boolean).join(' ').trim()); const url='https://www.google.com/search?hl=en&gl=us&pws=0&q='+encodeURIComponent(initial||a.title||''); fetch('/api/browser/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,title:'Google Search'})}).catch(()=>{});} },[a.id,desktopNative]);
+  useEffect(()=>{ function onMsg(ev){ const d=ev&&ev.data; if(d&&d.type==='hangar-native-browser-state'){ setNativeState({current_url:String(d.url||''), current_title:String(d.title||''), visible:!!d.visible}); } } window.addEventListener('message',onMsg); return ()=>window.removeEventListener('message',onMsg); },[]);
+  useEffect(()=>{ if(!desktopNative) return; if(mode==='saved' && (!nativeState.current_url || nativeState.current_url==='about:blank')){ fetch('/api/browser/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:googleSearchUrl(''),title:'Google'})}).catch(()=>{}); } },[mode,desktopNative,nativeState.current_url]);
+  const aircraftQ=[manufacturerFull||manufacturer,model].filter(Boolean).join(' ').trim();
+  const airportQ=(a.title||"").trim();
+  const defaultQ=(a.type==='Airport'?airportQ:(aircraftQ||a.title||'')).trim();
+  const defaultUrl=googleSearchUrl(defaultQ);
+  async function fetchSpecs(){
+    try{
+      setFetching(true); setFetchMsg("");
+      if(a.type==="Aircraft"){
+        const data=await fetchJsonSafe('/api/gemini/populate-aircraft',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({manufacturer,manufacturer_full_name:manufacturerFull||manufacturer,model})});
+        const nextRw={...rw, manufacturer_full_name:data.manufacturer_full_name||manufacturerFull, category:category||data.category||"", engine:data.engine||rw.engine, engine_type:data.engine_type||rw.engine_type, max_speed:data.max_speed||rw.max_speed, cruise:data.cruise||rw.cruise, range:(data.range_nm?String(data.range_nm)+' nm':(data.range||rw.range)), range_nm:data.range_nm??rw.range_nm, ceiling:data.ceiling||rw.ceiling, seats:data.seats||rw.seats, mtow:data.mtow||rw.mtow, introduced:data.introduced||rw.introduced, source:data.source||'Gemini + Google Search', wiki_url:data.wiki_url||rw.wiki_url};
+        onSave&&onSave(a.id,{manufacturer,manufacturer_full_name:manufacturerFull||data.manufacturer_full_name||manufacturer,model,category:category||data.category||"",rw_override:nextRw});
+        setFetchMsg('Gemini populated aircraft specifications.'+(data.search_candidate?(' Search used: '+data.search_candidate):''));
+      } else if(a.type==="Airport"){
+        const data=await fetchJsonSafe('/api/airport/fetch-data',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({icao})});
+        const nextRw={...rw, icao, name:data.name||rw.name, city:data.city||rw.city, municipality:data.city||rw.municipality, country:data.country||rw.country, state:data.state||rw.state, province:data.province||rw.province, region:data.region||rw.region, continent:data.continent||rw.continent, elev:data.elev||rw.elev, lat:data.lat??rw.lat, lon:data.lon??rw.lon, scheduled:data.scheduled??(data.airport_type?(data.airport_type.includes('Commercial')?'yes':'no'):rw.scheduled), airport_type:data.airport_type||rw.airport_type, runways:data.runways||rw.runways, source:data.source||'OurAirports + Wikipedia', wiki_url:data.wiki_url||rw.wiki_url, home_link:data.home_link||rw.home_link, first_opened:data.first_opened||rw.first_opened};
+        onSave&&onSave(a.id,{sub:data.airport_type||a.sub,rw_override:nextRw});
+        setFetchMsg('Fetched airport details.');
+      }
+    }catch(e){setFetchMsg((e&&e.message)||'Fetch failed.');}
+    finally{setFetching(false);}
+  }
+  function saveCore(){
+    if(a.type==='Aircraft'){ onSave&&onSave(a.id,{manufacturer,manufacturer_full_name:manufacturerFull,model,category,rw_override:{mfr:manufacturer,manufacturer_full_name:manufacturerFull,model,category}}); }
+    if(a.type==='Airport'){ onSave&&onSave(a.id,{rw_override:{icao}}); }
+    setFetchMsg('Saved.');
+  }
+  async function openBrowserUrl(url,title){ if(!desktopNative) return; await fetch('/api/browser/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,title:title||url})}).catch(()=>{}); }
+  function persistResources(next){ onSave&&onSave(a.id,{data_resources:next}); }
+  function saveCurrentArticle(){ const url=nativeState.current_url||''; const title=(nativeState.current_title||url||'Article').trim(); if(!url || url==='about:blank' || String(url).startsWith('search:')) return; persistResources([...(saved||[]),ensureArticleCategory({id:'r'+Date.now(),type:'link',title,url,saved:new Date().toISOString().slice(0,10)})]); }
+  function updateCategory(item,categoryLabel){ persistResources(saved.map(r=>(r.id===item.id?{...r,category:categoryLabel}:r))); }
+  function removeSaved(item){ persistResources(saved.filter(r=>r.id!==item.id)); }
+  function openSaved(r){ openBrowserUrl(r.url,r.title||r.url); }
+  const airportSiteLinks=[
+    icao?{label:'SkyVector',url:`https://skyvector.com/airport/${icao}`} : null,
+    icao?{label:'Airportdata.com',url:`https://www.airportdata.com/search-data/airport-details/${icao}`} : null,
+    icao?{label:'AVIPages',url:`https://aviapages.com/airport/${icao.toLowerCase()}/`} : null,
+    icao?{label:'FAA Diagram',url:`https://aeronav.faa.gov/d-tpp/2603/00257ad.pdf#nameddest=(${icao})`} : null,
+    icao&&icao.startsWith('K')?{label:'FAA-ADIP',url:`https://adip.faa.gov/agis/public/#/simpleAirportMap/${icao.slice(1)}`} : null,
+    icao&&icao.startsWith('K')?{label:'AIRNAV',url:`https://www.airnav.com/airport/${icao}`} : null,
+  ].filter(Boolean);
+  const aircraftSiteLinks=[
+    aircraftQ?{label:'Wikipedia',url:googleSearchUrl(`site:wikipedia.org ${manufacturerFull||manufacturer||''} ${model||''}`)}:null,
+    aircraftQ?{label:'PlaneSpotters',url:googleSearchUrl(`site:planespotters.net "${aircraftQ}"`)}:null,
+    aircraftQ?{label:'SKYbrary',url:googleSearchUrl(`site:skybrary.aero "${aircraftQ}"`)}:null,
+    aircraftQ?{label:'Airliners.net',url:googleSearchUrl(`site:airliners.net "${aircraftQ}"`)}:null,
+    aircraftQ?{label:'Simple Flying',url:googleSearchUrl(`site:simpleflying.com "${aircraftQ}"`)}:null,
+    aircraftQ?{label:'FlightGlobal',url:googleSearchUrl(`site:flightglobal.com "${aircraftQ}"`)}:null,
+  ].filter(Boolean);
+  const left = a.type==='Airport' ? <div><div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:10,flexWrap:'wrap'}}><DL label='Airport Information' color='var(--acc)'/><div style={{display:'flex',gap:8,flexWrap:'wrap'}}><Btn label={fetching?'Populating...':'Populate with Gemini'} color='var(--acc)' sm onClick={fetchSpecs} disabled={fetching}/><Btn label='Reset Search' color='var(--acc)' sm onClick={()=>openBrowserUrl(defaultUrl,'Google Search')}/><Btn label='Save' color='var(--grn)' sm onClick={saveCore}/></div></div>{fetchMsg&&<div style={{fontSize:11,color:'var(--t2)',marginBottom:10}}>{fetchMsg}</div>}<div style={{display:'grid',gridTemplateColumns:'1fr',gap:8,marginBottom:12}}><div><div style={{fontSize:10,color:'var(--t2)',marginBottom:4}}>ICAO</div><input value={icao} onChange={e=>setIcao(e.target.value.toUpperCase())} style={{width:'100%',background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:7,padding:'8px 11px',color:'var(--t0)',fontSize:12,outline:'none'}}/></div></div><KVG pairs={[['ICAO',icao,cc],['Full Name',rw.name],['Municipality',rw.municipality||rw.city],['Coordinates',(rw.lat&&rw.lon)?`${rw.lat.toFixed?rw.lat.toFixed(4):rw.lat}, ${rw.lon.toFixed?rw.lon.toFixed(4):rw.lon}`:''],['Elevation',rw.elev],['Continent',rw.continent],['Country',rw.country],['Region',rw.region],['State',rw.state],['Province',rw.province],['Airport Type',rw.airport_type],['Scheduled',rw.scheduled],['Date First Opened',rw.first_opened],['Data Source',rw.source]]}/>{rw.runways&&rw.runways.length>0&&<div style={{marginTop:14}}><DL label='Runways' color='var(--acc)'/>{rw.runways.map(r=>(<div key={r.id} style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:8,padding:'9px 12px',marginBottom:6,display:'grid',gridTemplateColumns:'90px 1fr auto',gap:10,alignItems:'center'}}><span style={{fontSize:13,color:cc,fontWeight:800,fontFamily:'monospace'}}>{r.id}</span><span style={{fontSize:12,color:'var(--t1)'}}>{r.len}</span><span style={{fontSize:11,color:'var(--t3)'}}>ILS: {r.ils}</span></div>))}</div>}</div> : a.type==='Aircraft' ? <div><div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:10,flexWrap:'wrap'}}><DL label='Aircraft Specifications' color='var(--grn)'/><div style={{display:'flex',gap:8,flexWrap:'wrap'}}><Btn label={fetching?'Populating...':'Populate with Gemini'} color='var(--grn)' sm onClick={fetchSpecs} disabled={fetching}/><Btn label='Reset Search' color='var(--acc)' sm onClick={()=>openBrowserUrl(defaultUrl,'Google Search')}/><Btn label='Save' color='var(--grn)' sm onClick={saveCore}/></div></div>{fetchMsg&&<div style={{fontSize:11,color:'var(--t2)',marginBottom:10}}>{fetchMsg}</div>}<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}}><div><div style={{fontSize:10,color:'var(--t2)',marginBottom:4}}>Manufacturer</div><input value={manufacturer} onChange={e=>setManufacturer(e.target.value)} style={{width:'100%',background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:7,padding:'8px 11px',color:'var(--t0)',fontSize:12,outline:'none'}}/></div><div><div style={{fontSize:10,color:'var(--t2)',marginBottom:4}}>Model</div><input value={model} onChange={e=>setModel(e.target.value)} style={{width:'100%',background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:7,padding:'8px 11px',color:'var(--t0)',fontSize:12,outline:'none'}}/></div><div><div style={{fontSize:10,color:'var(--t2)',marginBottom:4}}>Manufacturer Full Name</div><input value={manufacturerFull} onChange={e=>setManufacturerFull(e.target.value)} style={{width:'100%',background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:7,padding:'8px 11px',color:'var(--t0)',fontSize:12,outline:'none'}}/></div><div><div style={{fontSize:10,color:'var(--t2)',marginBottom:4}}>Category</div><input value={category} onChange={e=>setCategory(e.target.value)} style={{width:'100%',background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:7,padding:'8px 11px',color:'var(--t0)',fontSize:12,outline:'none'}}/></div></div><KVG pairs={[['Category',category],['Date Introduced',rw.introduced],['Engine',rw.engine],['Engine Type',rw.engine_type],['Max Speed',rw.max_speed],['Cruise Speed',rw.cruise],['Range (NM)',rw.range_nm],['Ceiling',rw.ceiling],['Passenger Capacity',rw.seats],['MTOW',rw.mtow],['Avionics',(a.usr&&a.usr.avionics)||rw.avionics],['Data Source',rw.source]]}/></div> : <div style={{fontSize:13,color:'var(--t2)'}}>No real-world data available for this addon type.</div>;
+  if(desktopNative){
+    const siteLinks=a.type==='Airport'?airportSiteLinks:aircraftSiteLinks;
+    return (
+      <div style={{display:'flex',flexDirection:'column',gap:12,height:'calc(100vh - 220px)',minHeight:560}}>
+        <div style={{overflowY:'auto',paddingRight:4,minWidth:0,display:'flex',flexDirection:'column',gap:12}}>
+          {left}
+          <div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:12,padding:12,display:'flex',flexDirection:'column',gap:10}}>
+            <div style={{display:'flex',gap:6,flexShrink:0}}>
+              {[['web','Web Search'],['saved',`Saved (${saved.length})`]].map(([id,l]) => (
+                <button
+                  key={id}
+                  onClick={() => {
+                    setMode(id);
+                    if(id==='saved' && (!nativeState.current_url || nativeState.current_url==='about:blank')){
+                      openBrowserUrl('https://www.google.com/?hl=en&gl=us','Google');
+                    }
+                  }}
+                  style={{background:mode===id?'var(--accD)':'transparent',border:'1px solid '+(mode===id?'var(--accB)':'var(--bdr)'),color:mode===id?'var(--acc)':'var(--t2)',borderRadius:7,padding:'6px 12px',cursor:'pointer',fontSize:11,fontWeight:600,fontFamily:'inherit'}}
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+              <Btn label='Reset Search' color='var(--acc)' sm onClick={()=>{ fetch('/api/browser/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:defaultUrl,title:'Google Search'})}).catch(()=>{}); setMode('web'); }}/>
+              {nativeState.current_url && nativeState.current_url!=='about:blank' && !String(nativeState.current_url).startsWith('search:') && (
+                <Btn label='Save Current Article' color='var(--grn)' sm onClick={saveCurrentArticle}/>
+              )}
+            </div>
+          </div>
+          {mode==='web' ? (
+            <div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:12,padding:12}}>
+              <div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:8}}>
+                {a.type==='Airport'?'Recommended Airport Sites':'Recommended Aircraft Sites'}
+              </div>
+              <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                {siteLinks.map((site,i)=>(
+                  <Btn key={i} label={site.label} color={a.type==='Airport'?'var(--acc)':'var(--grn)'} sm onClick={()=>openBrowserUrl(site.url,site.label)}/>
+                ))}
+              </div>
+              <div style={{fontSize:10,color:'var(--t3)',marginTop:10}}>
+                Use the browser on the right for direct Google searches. These site buttons open focused aviation references.
+              </div>
+            </div>
+          ) : (
+            <SavedResourcesPanel
+              items={saved}
+              onOpen={openSaved}
+              onDelete={removeSaved}
+              onCategoryChange={updateCategory}
+              emptyText='No saved articles yet. Open a page in the browser and click Save Current Article.'
+            />
+          )}
+        </div>
+      </div>
+    );
+  }
+  return <div style={{display:'flex',flexDirection:'column',gap:16}}>{left}</div>;
+}
+
+function FeaturesTab({a,injected,onInjected,onSave}){
+  const editorRef=useRef(null);
+  const [saved,setSaved]=useState(false);
+  useEffect(()=>{if(editorRef.current){applyThemedHtml(editorRef.current,a.usr.features||"");}},[a.id]);
+  useEffect(()=>{if(injected&&editorRef.current){applyThemedHtml(editorRef.current,injected);if(onInjected)onInjected();editorRef.current.style.border="2px solid var(--grn)";setTimeout(()=>{if(editorRef.current)editorRef.current.style.border="1px solid var(--bdr)";},1500);}},[injected]);
+  function save(){const html=editorRef.current?sanitizeHtmlForTheme(editorRef.current.innerHTML):""; if(onSave) onSave(a.id,{features:html}); else if(a.usr) a.usr.features=html; setSaved(true);setTimeout(()=>setSaved(false),1800);}
+  function handlePaste(e){
+    e.preventDefault();
+    const items=e.clipboardData&&e.clipboardData.items;
+    let html="", plain="";
+    if(items){
+      for(let i=0;i<items.length;i++){
+        if(items[i].type==="text/html"){
+          html=e.clipboardData.getData("text/html");
+          break;
+        }
+      }
+      if(!html) plain=e.clipboardData.getData("text/plain");
+    }
+    if(html){
+      document.execCommand("insertHTML", false, sanitizeHtmlForTheme(html));
+    }else if(plain){
+      const lines=plain.split(/\r?\n/);
+      const html2=lines.map(l=>l.trim()?`<p>${l}</p>`:"").join("");
+      document.execCommand("insertHTML", false, html2 || `<p>${plain}</p>`);
+    }
+  }
+  return <div style={{display:"flex",flexDirection:"column",height:"calc(100vh - 220px)",minHeight:400,gap:10}}>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}><div style={{fontSize:12,color:"var(--t1)"}}>Paste text from any web page — formatting is preserved automatically. You can also type notes directly.</div><div style={{display:"flex",gap:7}}><Btn label="Clear" color="var(--red)" sm onClick={()=>{if(editorRef.current)editorRef.current.innerHTML="";}}/><Btn label={saved?"Saved!":"Save"} color={saved?"var(--grn)":"var(--acc)"} sm onClick={save}/></div></div>
+    <div ref={editorRef} contentEditable={true} className="theme-html features-editor" suppressContentEditableWarning={true} onPaste={handlePaste} style={{flex:1,background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:10,padding:"14px 16px",color:"var(--t0)",fontSize:13,outline:"none",lineHeight:1.75,overflowY:"auto",cursor:"text",minHeight:0}} data-placeholder="Paste any web page content here or type feature notes..."/>
+    <style>{".features-editor:empty:before{content:attr(data-placeholder);color:var(--t3);pointer-events:none;}"}</style>
+  </div>;
+}
+
+function GalleryTab({a,onSaveMeta}){
+  const cc=CC[a.type]||"#64748B";
+  const apiImgs=(a.gallery_paths||[]).map((_,i)=>"/gallery/"+a.id+"/"+i);
+  const imgs=apiImgs;
+  const defaultImageSearch=((a.publisher?a.publisher+' ':'')+a.title+' msfs').trim();
+  const defaultImageUrl=googleSearchUrl(defaultImageSearch,{images:true});
+  const [sel,setSel]=useState(0),[loaded,setLoaded]=useState({}),[failed,setFailed]=useState({}),[busy,setBusy]=useState(false),[msg,setMsg]=useState("");
+  const [browserSeed,setBrowserSeed]=useState(0);
+  const [shellMode,setShellMode]=useState(null);
+  const desktopNative=shellMode==='qt';
+  const fileRef=useRef(null), pasteRef=useRef(null);
+  useEffect(()=>{setSel(0);setLoaded({});setFailed({});},[a.id,(a.gallery_paths||[]).join("|")]);
+  useEffect(()=>{fetch('/api/app/info').then(r=>r.json()).then(d=>setShellMode(d.shell_mode||'browser')).catch(()=>setShellMode('browser'));},[]);
+  useEffect(()=>{
+    if(desktopNative){
+      fetch('/api/browser/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:defaultImageUrl,title:'Google Images'})}).catch(()=>{});
+    }
+  },[a.id,desktopNative]);
+  async function syncFromResponse(res){
+    const data=await res.json();
+    if(onSaveMeta) onSaveMeta(a.id,{thumbnail_path:data.thumbnail_path,gallery_paths:data.gallery_paths});
+    setMsg("Updated gallery"); setTimeout(()=>setMsg(""),1800);
+  }
+  async function uploadFiles(files){
+    if(!files||!files.length) return;
+    setBusy(true);
+    try{
+      for(const file of files){
+        const fd=new FormData(); fd.append("file",file,file.name||"image.png");
+        const res=await fetch("/api/addons/"+a.id+"/gallery/upload",{method:"POST",body:fd});
+        if(!res.ok) throw new Error("Upload failed");
+        await syncFromResponse(res);
+      }
+    }catch(e){setMsg(e.message||"Upload failed");}finally{setBusy(false); if(fileRef.current) fileRef.current.value="";}
+  }
+  async function deleteCurrent(){
+    if(!imgs.length) return;
+    if(!window.confirm("Delete selected image from gallery?")) return;
+    setBusy(true);
+    try{
+      const res=await fetch("/api/addons/"+a.id+"/gallery/"+sel,{method:"DELETE"});
+      if(!res.ok) throw new Error("Delete failed");
+      await syncFromResponse(res);
+      setSel(s=>Math.max(0,s-1));
+    }catch(e){setMsg(e.message||"Delete failed");}finally{setBusy(false);}
+  }
+  async function setDefault(){
+    if(!imgs.length) return;
+    setBusy(true);
+    try{
+      const res=await fetch("/api/addons/"+a.id+"/gallery/set-default",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({index:sel})});
+      if(!res.ok) throw new Error("Set default failed");
+      await syncFromResponse(res);
+    }catch(e){setMsg(e.message||"Set default failed");}finally{setBusy(false);}
+  }
+  async function pasteFromClipboard(){
+    try{
+      if(navigator.clipboard && navigator.clipboard.read){
+        const items=await navigator.clipboard.read();
+        const files=[];
+        for(const item of items){
+          for(const type of item.types){
+            if(type.startsWith("image/")){
+              const blob=await item.getType(type);
+              files.push(new File([blob],"clipboard."+(type.split("/")[1]||"png"),{type}));
+            }
+          }
+        }
+        if(files.length){ await uploadFiles(files); return; }
+      }
+      setMsg("Click the large paste box and press Ctrl+V.");
+      pasteRef.current&&pasteRef.current.focus();
+    }catch(e){setMsg("Clipboard access was blocked. Click the paste box and press Ctrl+V."); pasteRef.current&&pasteRef.current.focus();}
+  }
+  function onPaste(e){
+    const items=[...(e.clipboardData&&e.clipboardData.items||[])].filter(it=>it.type&&it.type.startsWith("image/"));
+    if(!items.length) return;
+    e.preventDefault();
+    const files=items.map((it,i)=>it.getAsFile()).filter(Boolean);
+    uploadFiles(files);
+  }
+  function resetSearch(){
+    if(desktopNative){
+      fetch('/api/browser/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:defaultImageUrl,title:'Google Images'})}).catch(()=>{});
+    }
+    setBrowserSeed(s=>s+1);
+  }
+  const leftPane=<div onPaste={onPaste}><div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:12,alignItems:"center"}}>
+    <Btn label="Add Image From Folder" color="var(--acc)" sm onClick={()=>fileRef.current&&fileRef.current.click()} disabled={busy}/>
+    <Btn label="Paste Clipboard Image" color="var(--vio)" sm onClick={pasteFromClipboard} disabled={busy}/>
+    <Btn label="Set Selected As Default" color="var(--grn)" sm onClick={setDefault} disabled={busy||!imgs.length}/>
+    <Btn label="Delete Selected" color="var(--red)" sm onClick={deleteCurrent} disabled={busy||!imgs.length}/>
+    <Btn label="Reset Search" color="var(--acc)" sm onClick={resetSearch}/>
+    {msg&&<span style={{fontSize:11,color:"var(--t2)"}}>{msg}</span>}
+    <input ref={fileRef} type="file" accept="image/*" multiple style={{display:"none"}} onChange={e=>uploadFiles([...e.target.files||[]])}/>
+  </div>
+  <div ref={pasteRef} tabIndex={0} style={{marginBottom:12,background:'linear-gradient(135deg,var(--vioD),transparent)',border:'1px dashed var(--vio)',borderRadius:12,padding:'14px 16px',fontSize:12,color:'var(--t1)',outline:'none'}}>
+    <div style={{fontSize:13,fontWeight:800,color:'var(--t0)',marginBottom:4}}>Paste image from clipboard</div>
+    <div>Click here and press <strong>Ctrl+V</strong>, or use the <strong>Paste Clipboard Image</strong> button above.</div>
+  </div>
+  {!imgs.length ? <div style={{textAlign:"center",padding:"40px 0",color:"var(--t2)",fontSize:13}}>No gallery images found for this addon.</div> : <div><div style={{position:"relative",borderRadius:12,overflow:"hidden",border:"1px solid var(--bdr)",marginBottom:10,background:"var(--bg2)",height:"58vh",minHeight:320}}>{!loaded[sel]&&!failed[sel]&&<div className="shimmer" style={{position:"absolute",inset:0}}/>}{!failed[sel]?<img src={imgs[sel]} crossOrigin="anonymous" onLoad={()=>setLoaded(l=>({...l,[sel]:true}))} onError={()=>setFailed(f=>({...f,[sel]:true}))} alt="" style={{width:"100%",height:"100%",objectFit:"contain",display:"block",opacity:loaded[sel]?1:0,transition:"opacity 0.35s",background:"var(--bg2)"}}/>:<div style={{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",color:"var(--t2)"}}>Image unavailable</div>}<div style={{position:"absolute",bottom:0,left:0,right:0,background:"linear-gradient(transparent,rgba(5,12,24,.88))",padding:"22px 12px 10px",display:"flex",alignItems:"center",justifyContent:"space-between"}}><div style={{display:"flex",gap:8,alignItems:"center"}}><Chip label={(sel+1)+" / "+imgs.length} color={cc} sm/>{a.thumbnail_path===a.gallery_paths[sel]&&<Chip label="Default" color="var(--grn)" sm/>}</div><div style={{display:"flex",gap:6,alignItems:"center"}}><button onClick={()=>setSel(s=>Math.max(0,s-1))} disabled={sel===0} style={{background:"rgba(0,0,0,.6)",border:"1px solid var(--bdr)",color:sel===0?"var(--t3)":"var(--t0)",borderRadius:6,width:30,height:30,fontSize:15,cursor:sel===0?"not-allowed":"pointer"}}>{"<"}</button><button onClick={()=>setSel(s=>Math.min(imgs.length-1,s+1))} disabled={sel===imgs.length-1} style={{background:"rgba(0,0,0,.6)",border:"1px solid var(--bdr)",color:sel===imgs.length-1?"var(--t3)":"var(--t0)",borderRadius:6,width:30,height:30,fontSize:15,cursor:sel===imgs.length-1?"not-allowed":"pointer"}}>{">"}</button></div></div></div><div style={{display:"flex",gap:7,marginBottom:12,overflowX:"auto",paddingBottom:4}}>{imgs.map((src,i)=>(<div key={i} onClick={()=>setSel(i)} style={{width:96,height:68,flexShrink:0,borderRadius:8,overflow:"hidden",border:"2px solid "+(i===sel?cc:"var(--bdr)"),cursor:"pointer",opacity:i===sel?1:0.72,background:"var(--bg2)"}}><img src={src} alt="" style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/></div>))}</div></div>}
+  </div>;
+  if(desktopNative){
+    return <div style={{display:'grid',gridTemplateColumns:'1fr',gap:12,minHeight:520}}>{leftPane}<div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:12,padding:12,fontSize:12,color:'var(--t2)',lineHeight:1.7}}>The native browser on the right is set to Google Images for this add-on. Use <strong style={{color:'var(--t0)'}}>Reset Search</strong> to jump back to the default image search at any time.</div></div>;
+  }
+  return <div style={{display:'grid',gridTemplateColumns:'minmax(0,1fr) minmax(620px,0.95fr)',gap:12,minHeight:520}}>{leftPane}<div style={{display:'flex',flexDirection:'column',gap:10}}><div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:12,padding:12,fontSize:12,color:'var(--t2)',lineHeight:1.7}}>Google Images is shown on the right for quick image hunting. Use <strong style={{color:'var(--t0)'}}>Reset Search</strong> to jump back to the default search for this add-on.</div><EmbeddedBrowserPane key={a.id+'|images|'+browserSeed} initialUrl={defaultImageUrl} titleHint='Google Images' searchContext='images' height='calc(100vh - 280px)' layout='stack' browserMin='620px'/></div></div>;
+}
+
+function EmbeddedBrowserPane({initialQuery,initialUrl,titleHint,onSavePage,saveEnabled,shortcuts=[],height="520px",layout="split",browserMin="760px",searchContext='web'}){
+  const [query,setQuery]=useState(initialUrl||initialQuery||"");
+  const [results,setResults]=useState([]);
+  const [loading,setLoading]=useState(false);
+  const [msg,setMsg]=useState("");
+  const [iframeUrl,setIframeUrl]=useState(initialUrl?('/api/research/open?url='+encodeURIComponent(initialUrl)):"");
+  const [pageUrl,setPageUrl]=useState(initialUrl||"");
+  const [pageTitle,setPageTitle]=useState(titleHint||"");
+  const [shellMode,setShellMode]=useState(null);
+  const [nativeState,setNativeState]=useState({current_url:'',current_title:'',visible:false});
+  const [page,setPage]=useState(1);
+  const [totalPages,setTotalPages]=useState(1);
+  const [totalResults,setTotalResults]=useState(0);
+  const [jumpPage,setJumpPage]=useState('1');
+  const desktopNative=shellMode==='qt';
+
+  useEffect(()=>{ fetch('/api/app/info').then(r=>r.json()).then(d=>setShellMode(d.shell_mode||'browser')).catch(()=>{}); },[]);
+
+  useEffect(()=>{
+    function onMsg(ev){
+      const d=ev&&ev.data;
+      if(!d) return;
+      if(d.type==='hangar-browser-state'){
+        if(d.url) setPageUrl(String(d.url));
+        if(d.title) setPageTitle(String(d.title));
+        return;
+      }
+      if(d.type==='hangar-native-browser-state'){
+        const next={current_url:String(d.url||''), current_title:String(d.title||''), visible:!!d.visible};
+        setNativeState(next);
+        setPageUrl(next.current_url||'');
+        setPageTitle(next.current_title||'');
+      }
+    }
+    window.addEventListener('message', onMsg);
+    return ()=>window.removeEventListener('message', onMsg);
+  },[]);
+
+  useEffect(()=>{
+    if(!desktopNative) return;
+    fetch('/api/browser/close',{method:'POST'}).catch(()=>{});
+    return ()=>{ fetch('/api/browser/close',{method:'POST'}).catch(()=>{}); };
+  },[desktopNative]);
+
+  useEffect(()=>{
+    if(shellMode===null) return;
+    setQuery(initialUrl||initialQuery||"");
+    setPage(1); setJumpPage('1');
+    if(initialUrl){ openUrl(initialUrl, titleHint||initialUrl); }
+    else if(initialQuery){ doSearch(initialQuery,1); }
+    else { setIframeUrl(''); setPageUrl(''); setPageTitle(''); setResults([]); setTotalPages(1); setTotalResults(0); }
+  }, [initialQuery, initialUrl, titleHint, shellMode, searchContext]);
+
+  function normalizeUrl(raw){ const v=(raw||'').trim(); if(!v) return ''; if(/^https?:/i.test(v)) return v; if(/^[\w.-]+\.[a-z]{2,}(\/.*)?$/i.test(v)) return 'https://'+v; return ''; }
+  function prettyUrl(u){ try{ const x=new URL(u); const path=(x.pathname||'/').replace(/\/$/,'')||'/'; const s=x.hostname+path; return s.length>90?s.slice(0,90)+'…':s; }catch(e){ return u; } }
+  function isYoutubeQuery(v){ const q=String(v||'').toLowerCase(); return q.includes('site:youtube.com') || q.includes('site:youtu.be') || q.startsWith('youtube '); }
+  function youtubeSearchUrl(v){ const cleaned=String(v||'').replace(/site:youtube\.com/ig,'').replace(/site:youtu\.be/ig,'').replace(/\byoutube\b/ig,'').trim(); return 'https://www.youtube.com/results?search_query='+encodeURIComponent(cleaned); }
+  function googleSearchUrl(v){ const cleaned=String(v||'').trim(); return 'https://www.google.com/search?hl=en&gl=us&pws=0&q='+encodeURIComponent(cleaned); }
+
+  async function openNative(url,title){
+    const clean=normalizeUrl(url)||url.trim();
+    if(!clean) return;
+    setResults([]); setTotalPages(1); setTotalResults(0);
+    setPageUrl(clean); setPageTitle(title||clean);
+    try{
+      await fetch('/api/browser/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:clean,title:title||clean})});
+      setMsg('Opened in native browser panel.');
+    }catch(e){ setMsg('Could not open the native browser panel.'); }
+  }
+
+  function openUrl(url,title){
+    const clean=normalizeUrl(url)||url.trim(); if(!clean) return;
+    setResults([]); setTotalPages(1); setTotalResults(0);
+    if(desktopNative){ openNative(clean,title||clean); return; }
+    setPageUrl(clean); setPageTitle(title||clean); setIframeUrl('/api/research/open?url='+encodeURIComponent(clean));
+  }
+
+  async function doSearch(q,nextPage){
+    const term=(q||query||'').trim(); if(!term) return;
+    const usePage=Math.max(1, Number(nextPage||page||1));
+    setLoading(true); setMsg(''); setQuery(term); setPage(usePage); setJumpPage(String(usePage)); setPageTitle('Search: '+term); setPageUrl('search:'+term);
+    if(desktopNative){ try{ await fetch('/api/browser/close',{method:'POST'}); }catch(e){} }
+    if(isYoutubeQuery(term)){
+      const yt=youtubeSearchUrl(term);
+      if(desktopNative){ await openNative(yt,'YouTube Search'); }
+      else { setIframeUrl('/api/research/open?url='+encodeURIComponent(yt)); setPageUrl(yt); setPageTitle('YouTube Search'); }
+      setResults([]); setTotalPages(1); setTotalResults(0); setMsg('Opened YouTube results in the browser.'); setLoading(false); return;
+    }
+    if(desktopNative){
+      const g=googleSearchUrl(term);
+      await openNative(g,'Google Search');
+      setResults([]); setTotalPages(1); setTotalResults(0); setMsg('Opened Google search results in the browser panel.');
+      setLoading(false); return;
+    }
+    setIframeUrl('/api/research/searchpage?q='+encodeURIComponent(term)+'&context='+encodeURIComponent(searchContext)+'&page='+usePage);
+    try{
+      const res=await fetch('/api/research/search?q='+encodeURIComponent(term)+'&context='+encodeURIComponent(searchContext)+'&page='+usePage);
+      const data=await res.json();
+      if(data.auto_open_url){
+        setIframeUrl('/api/research/open?url='+encodeURIComponent(data.auto_open_url)); setPageUrl(data.auto_open_url); setPageTitle('YouTube Search');
+        setResults([]); setTotalPages(1); setTotalResults(0); setMsg('Opened YouTube results in the browser.');
+      } else {
+        const hits=data.results||[];
+        setResults(hits);
+        setTotalPages(data.total_pages||1);
+        setTotalResults(data.total_results||hits.length||0);
+        if(!hits.length) setMsg('No results found.');
+      }
+    }catch(e){ setResults([]); setTotalPages(1); setTotalResults(0); setMsg('Search failed.'); }
+    finally{ setLoading(false); }
+  }
+
+  function go(){ const raw=(query||'').trim(); if(!raw) return; const u=normalizeUrl(raw); if(u){ openUrl(u,u); } else { doSearch(raw,1); } }
+  function handleSave(){ const saveUrl=desktopNative?(nativeState.current_url||pageUrl):pageUrl; const saveTitle=desktopNative?(nativeState.current_title||pageTitle):pageTitle; if(!saveEnabled || !onSavePage || !saveUrl || String(saveUrl).startsWith('search:') || String(saveUrl).includes('/api/research/searchpage')) return; onSavePage({url:saveUrl, title:saveTitle||saveUrl}); }
+  const canSave=desktopNative ? !!(nativeState.current_url && !String(nativeState.current_url).startsWith('search:') && !String(nativeState.current_url).includes('/api/research/searchpage')) : (!!pageUrl && !String(pageUrl).startsWith('search:') && !String(pageUrl).includes('/api/research/searchpage'));
+
+  const resultList=(loading
+    ? <div style={{fontSize:12,color:'var(--t2)',padding:12}}>Searching for <span style={{color:'var(--acc)',fontWeight:700}}>{query}</span>…</div>
+    : results.length===0
+    ? <div style={{fontSize:12,color:'var(--t2)',padding:12}}>{msg|| (desktopNative?'Type a query or URL. Search results will appear here; pages open in the native browser panel.':'Type a query or URL to begin.')}</div>
+    : <div style={{padding:10,overflowY:'auto',display:'flex',flexDirection:'column',gap:8}}>{results.map((r,i)=><div key={(r.url||'')+i} style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:10,padding:'10px 12px'}}><a href='#' onClick={e=>{e.preventDefault();openUrl(r.url,r.title);}} style={{display:'block',fontSize:13,fontWeight:700,color:'var(--acc)',textDecoration:'none',marginBottom:4}}>{r.title}</a><div style={{fontSize:10,color:'var(--t3)',marginBottom:6,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.display_url||prettyUrl(r.url)}</div>{r.snippet&&<div style={{fontSize:11,color:'var(--t1)',lineHeight:1.5}}>{r.snippet}</div>}</div>)}</div>
+  );
+
+  const pager = <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,padding:'8px 12px',borderTop:'1px solid var(--bdr)',flexWrap:'wrap'}}><div style={{fontSize:11,color:'var(--t2)'}}>{totalResults?`${totalResults} results • Page ${page} of ${totalPages}`:(loading?'Searching…':'')}</div><div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}><Btn label='Prev' color='var(--t2)' sm disabled={loading||page<=1} onClick={()=>doSearch(query,Math.max(1,page-1))}/><Btn label='Next' color='var(--t2)' sm disabled={loading||page>=totalPages} onClick={()=>doSearch(query,Math.min(totalPages,page+1))}/><input value={jumpPage} onChange={e=>setJumpPage(e.target.value.replace(/[^0-9]/g,''))} style={{width:52,background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:7,padding:'5px 8px',color:'var(--t0)',fontSize:11}}/><Btn label='Go to Page' color='var(--acc)' sm disabled={loading} onClick={()=>doSearch(query,Math.max(1,Math.min(totalPages,Number(jumpPage||1))))}/></div></div>;
+
+  const leftPane=<div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:12,overflow:'hidden',display:'flex',flexDirection:'column',minHeight:0}}><div style={{padding:12,borderBottom:'1px solid var(--bdr)',display:'flex',flexDirection:'column',gap:8}}><div style={{display:'flex',gap:8}}><input value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==='Enter') go();}} placeholder='Enter a search query or URL' style={{flex:1,background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:8,padding:'10px 12px',color:'var(--t0)',fontSize:13,outline:'none'}}/><Btn label={loading?'Searching…':'Go'} color='var(--acc)' onClick={go} disabled={loading}/><Btn label='Save Article' color='var(--grn)' onClick={handleSave} disabled={!canSave}/></div>{shortcuts.length>0&&<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>{shortcuts.map((s,i)=><Btn key={i} label={s.label} color='var(--t2)' sm onClick={()=>{setQuery(s.value); setPage(1); setJumpPage('1'); const maybeUrl=normalizeUrl(s.value); if(maybeUrl){ openUrl(maybeUrl, s.label||maybeUrl); } else { doSearch(s.value,1); }}}/>)}</div>}{msg&&<div style={{fontSize:11,color:'var(--t2)'}}>{msg}</div>}</div><div style={{flex:1,minHeight:0,overflowY:'auto'}}>{resultList}</div>{pager}</div>;
+
+  if(desktopNative){
+    return <div style={{display:'grid',gridTemplateColumns:'1fr',gap:12,height,minHeight:420}}>{leftPane}</div>;
+  }
+
+  return <div style={{display:'grid',gridTemplateColumns:layout==='stack'?'1fr':`300px minmax(${browserMin},1fr)`,gap:12,height,minHeight:420}}>{leftPane}<div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:12,overflow:'hidden',display:'flex',flexDirection:'column',minHeight:0,minWidth:0}}><div style={{padding:'10px 12px',borderBottom:'1px solid var(--bdr)',display:'flex',alignItems:'center',justifyContent:'space-between',gap:8}}><div style={{minWidth:0}}><div style={{fontSize:12,fontWeight:700,color:'var(--t0)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{pageTitle||'Embedded Browser'}</div><div style={{fontSize:10,color:'var(--t3)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{pageUrl&&String(pageUrl).startsWith('search:')?String(pageUrl).slice(7):pageUrl||'Use search or open a URL.'}</div></div>{pageUrl&&!String(pageUrl).startsWith('search:')&&<a href={pageUrl} target='_blank' rel='noreferrer' style={{color:'var(--acc)',fontSize:11,fontWeight:600,textDecoration:'none',flexShrink:0}}>Open externally</a>}</div><div style={{flex:1,minHeight:0,background:'#fff'}}>{iframeUrl?<iframe name='research_frame' src={iframeUrl} title='EmbeddedBrowser' referrerPolicy='no-referrer-when-downgrade' allow='clipboard-read; clipboard-write' style={{width:'100%',height:'100%',border:'none',display:'block',background:'#fff'}}/>:<div style={{height:'100%',display:'flex',alignItems:'center',justifyContent:'center',color:'#64748B',fontSize:13}}>Choose a result to view it here.</div>}</div></div></div>;
+}
+
+function SavedResourcesPanel({items,onOpen,onDelete,onCategoryChange,extraButtons,emptyText}){
+  const groups=useMemo(()=>groupArticleResources(items||[]),[items]);
+  const total=(items||[]).length;
+  if(!total) return <div style={{textAlign:'center',padding:'40px 0',color:'var(--t2)',fontSize:13}}>{emptyText||'No saved articles yet.'}</div>;
+  return <div style={{display:'flex',flexDirection:'column',gap:12}}>{ARTICLE_CATEGORIES.map(cat=>{
+    const list=groups[cat]||[];
+    if(!list.length) return null;
+    return <div key={cat} style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:12,overflow:'hidden'}}>
+      <div style={{padding:'10px 12px',borderBottom:'1px solid var(--bdr)',fontSize:11,fontWeight:700,color:'var(--t1)',textTransform:'uppercase',letterSpacing:'0.06em'}}>{cat} ({list.length})</div>
+      <div style={{padding:10,display:'flex',flexDirection:'column',gap:8}}>{list.map((r,i)=><div key={r.id||i} style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:10,padding:12}}><div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:10}}><div style={{flex:1,minWidth:0}}><a href='#' onClick={e=>{e.preventDefault();onOpen&&onOpen(r);}} style={{display:'inline-block',fontSize:13,fontWeight:700,color:'var(--acc)',textDecoration:'none',marginBottom:4}}>{r.title||r.url}</a><div style={{fontSize:10,color:'var(--t3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.url}</div><div style={{fontSize:10,color:'var(--t3)',marginTop:4}}>Saved {r.saved||''}</div></div><div style={{display:'flex',flexDirection:'column',gap:6,alignItems:'flex-end',flexShrink:0}}><select value={(r.category||cat)} onChange={e=>onCategoryChange&&onCategoryChange(r,e.target.value)} style={{background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:7,padding:'6px 8px',color:'var(--t0)',fontSize:11,fontFamily:'inherit'}}>{ARTICLE_CATEGORIES.map(opt=><option key={opt} value={opt}>{opt}</option>)}</select><div style={{display:'flex',gap:6,flexWrap:'wrap',justifyContent:'flex-end'}}>{extraButtons?extraButtons(r):null}<Btn label='x' color='var(--red)' sm onClick={()=>onDelete&&onDelete(r)}/></div></div></div></div>)}</div>
+    </div>;
+  })}</div>;
+}
+
+function ResearchTab({a,apiKey,onSendToFeatures,onSendToOverview,onSaveResources}){
+  const defaultQ=((a.publisher?a.publisher+" ":"")+a.title).trim();
+  const defaultUrl=googleSearchUrl(defaultQ);
+  const [mode,setMode]=useState("web");
+  const [extracting,setExtracting]=useState(null);
+  const [shellMode,setShellMode]=useState(null);
+  const [nativeState,setNativeState]=useState({current_url:'',current_title:'',visible:false});
+  const desktopNative=shellMode==='qt';
+  const saved=useMemo(()=>((a.usr&&a.usr.research_resources)||(a.usr&&a.usr.resources)||[]).map(ensureArticleCategory),[a.id,a.usr&&a.usr.research_resources,a.usr&&a.usr.resources]);
+
+  useEffect(()=>{
+    fetch('/api/app/info').then(r=>r.json()).then(d=>setShellMode(d.shell_mode||'browser')).catch(()=>setShellMode('browser'));
+  },[]);
+
+  useEffect(()=>{
+    function onMsg(ev){
+      const d=ev&&ev.data;
+      if(d&&d.type==='hangar-native-browser-state'){
+        setNativeState({current_url:String(d.url||''), current_title:String(d.title||''), visible:!!d.visible});
+      }
+    }
+    window.addEventListener('message',onMsg);
+    return ()=>window.removeEventListener('message',onMsg);
+  },[]);
+
+  useEffect(()=>{
+    setMode('web');
+    if(desktopNative){
+      fetch('/api/browser/open',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({url:defaultUrl,title:'Google Search'})
+      }).catch(()=>{});
+    }
+  },[a.id,defaultQ,desktopNative]);
+
+  useEffect(()=>{
+    if(!desktopNative) return;
+    if(mode==='saved' && (!nativeState.current_url || nativeState.current_url==='about:blank')){
+      fetch('/api/browser/open',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({url:googleSearchUrl(''),title:'Google'})
+      }).catch(()=>{});
+    }
+  },[mode,desktopNative,nativeState.current_url]);
+
+  function persist(next){
+    if(onSaveResources) onSaveResources(a.id,{research_resources:next});
+  }
+
+  function savePage(info){
+    const title=(info.title||info.url||'Article').trim();
+    const url=(info.url||'').trim();
+    if(!url) return;
+    persist([...(saved||[]), ensureArticleCategory({id:'r'+Date.now(),type:'link',title,url,saved:new Date().toISOString().slice(0,10)})]);
+  }
+
+  function saveCurrentArticle(){
+    const url=nativeState.current_url||'';
+    const title=(nativeState.current_title||url||'Article').trim();
+    if(!url || url==='about:blank' || String(url).startsWith('search:')) return;
+    savePage({title,url});
+  }
+
+  function openSaved(r){
+    if(desktopNative){
+      fetch('/api/browser/open',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({url:r.url,title:r.title||r.url})
+      }).catch(()=>{});
+    }
+  }
+
+  function updateCategory(item,category){
+    persist(saved.map(r=>(r.id===item.id?{...r,category}:r)));
+  }
+
+  function removeSaved(item){
+    persist(saved.filter(r=>r.id!==item.id));
+  }
+
+  async function extractToTarget(r,target){
+    const send=target==='overview'?onSendToOverview:onSendToFeatures;
+    if(!send) return;
+    setExtracting((r.id||r.url)+':'+target);
+    try{
+      const res=await fetch('/api/research/readable?url='+encodeURIComponent(r.url));
+      if(!res.ok) throw new Error(await res.text());
+      const data=await res.json();
+      send(data.html||`<h3>${r.title||r.url}</h3><p><a href="${r.url}" target="_blank">${r.url}</a></p>`);
+    }catch(e){
+      send(`<h3>${r.title||r.url}</h3><p><a href="${r.url}" target="_blank">${r.url}</a></p>`);
+    } finally {
+      setExtracting(null);
+    }
+  }
+
+  const extraButtons = (r) => (
+    <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+      <Btn
+        label={extracting===(r.id||r.url)+':features'?'Extracting…':'→ Features'}
+        color='var(--vio)'
+        sm
+        disabled={!!extracting}
+        onClick={()=>extractToTarget(r,'features')}
+      />
+      {onSendToOverview ? (
+        <Btn
+          label={extracting===(r.id||r.url)+':overview'?'Extracting…':'→ Overview'}
+          color='var(--acc)'
+          sm
+          disabled={!!extracting}
+          onClick={()=>extractToTarget(r,'overview')}
+        />
+      ) : null}
+    </div>
+  );
+
+  if(!desktopNative){
+    return (
+      <div style={{display:'flex',flexDirection:'column',gap:8,height:'calc(100vh - 220px)',minHeight:520}}>
+        <div style={{display:'flex',gap:6,flexShrink:0}}>
+          {[['web','Web Search'],['saved','Saved ('+saved.length+')']].map(([id,l])=>(
+            <button
+              key={id}
+              onClick={()=>setMode(id)}
+              style={{background:mode===id?'var(--accD)':'transparent',border:'1px solid '+(mode===id?'var(--accB)':'var(--bdr)'),color:mode===id?'var(--acc)':'var(--t2)',borderRadius:7,padding:'6px 12px',cursor:'pointer',fontSize:11,fontWeight:600,fontFamily:'inherit'}}
+            >
+              {l}
+            </button>
+          ))}
+        </div>
+        {mode==='web' ? (
+          <EmbeddedBrowserPane
+            key={a.id+'|'+mode+'|'+defaultQ}
+            initialQuery={defaultQ}
+            saveEnabled
+            onSavePage={savePage}
+            shortcuts={[]}
+            searchContext='research'
+            height='calc(100vh - 280px)'
+          />
+        ) : (
+          <SavedResourcesPanel
+            items={saved}
+            onOpen={()=>{}}
+            onDelete={removeSaved}
+            onCategoryChange={updateCategory}
+            extraButtons={extraButtons}
+            emptyText='No saved resources yet.'
+          />
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:12,height:'calc(100vh - 220px)',minHeight:560}}>
+      <div style={{overflowY:'auto',paddingRight:4,minWidth:0,display:'flex',flexDirection:'column',gap:12}}>
+        <div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:12,padding:12,display:'flex',flexDirection:'column',gap:10}}>
+          <div style={{display:'flex',gap:6,flexShrink:0}}>
+            {[['web',`Web Search`],['saved',`Saved (${saved.length})`]].map(([id,l])=>(
+              <button
+                key={id}
+                onClick={()=>{
+                  setMode(id);
+                  if(id==='web'){
+                    fetch('/api/browser/open',{
+                      method:'POST',
+                      headers:{'Content-Type':'application/json'},
+                      body:JSON.stringify({url:defaultUrl,title:'Google Search'})
+                    }).catch(()=>{});
+                  }
+                  if(id==='saved' && (!nativeState.current_url || nativeState.current_url==='about:blank')){
+                    fetch('/api/browser/open',{
+                      method:'POST',
+                      headers:{'Content-Type':'application/json'},
+                      body:JSON.stringify({url:googleSearchUrl(''),title:'Google'})
+                    }).catch(()=>{});
+                  }
+                }}
+                style={{background:mode===id?'var(--accD)':'transparent',border:'1px solid '+(mode===id?'var(--accB)':'var(--bdr)'),color:mode===id?'var(--acc)':'var(--t2)',borderRadius:7,padding:'6px 12px',cursor:'pointer',fontSize:11,fontWeight:600,fontFamily:'inherit'}}
+              >
+                {l}
+              </button>
+            ))}
+          </div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            <Btn label='Reset Search' color='var(--acc)' sm onClick={()=>{ fetch('/api/browser/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:defaultUrl,title:'Google Search'})}).catch(()=>{}); setMode('web'); }}/>
+            {nativeState.current_url && nativeState.current_url!=='about:blank' && !String(nativeState.current_url).startsWith('search:') ? (
+              <Btn label='Save Current Article' color='var(--grn)' sm onClick={saveCurrentArticle}/>
+            ) : null}
+          </div>
+          <div style={{fontSize:11,color:'var(--t2)'}}>The browser on the right keeps the active page open. Use Google directly there for refined searching.</div>
+          {nativeState.current_title ? (
+            <div style={{fontSize:10,color:'var(--t3)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{nativeState.current_title}</div>
+          ) : null}
+        </div>
+        {mode==='saved' ? (
+          <SavedResourcesPanel
+            items={saved}
+            onOpen={openSaved}
+            onDelete={removeSaved}
+            onCategoryChange={updateCategory}
+            extraButtons={extraButtons}
+            emptyText='No saved resources yet. Open a page in the browser and click Save Current Article.'
+          />
+        ) : (
+          <div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:12,padding:14,fontSize:12,color:'var(--t2)',lineHeight:1.7}}>
+            Use the browser on the right exactly like a normal Google search tab. The left side keeps your saved article library, current page context, and quick article actions without duplicating the browser itself.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MapTab({a,allAddons}){
+  const cc=CC[a.type]||"#38BDF8",mapRef=useRef(null),leafRef=useRef(null);
+  const [layer,setLayer]=useState("satellite"),[zoom,setZoom]=useState("airport");
+  const [ready,setReady]=useState(false),[radius,setRadius]=useState(0);
+  const [inRange,setInRange]=useState([]),[selAc,setSelAc]=useState(null);
+  const LAYERS={satellite:{l:"Satellite",tile:"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",attr:"Esri"},road:{l:"Road",tile:"https://tile.openstreetmap.org/{z}/{x}/{y}.png",attr:"OSM"}};
+  const ZOOMS={region:{l:"Region",z:9},airport:{l:"Airport",z:14},runway:{l:"Runway",z:17}};
+  useEffect(()=>{
+    if(!a.lat||!mapRef.current) return;
+    const tid=setTimeout(()=>{
+      try{
+        if(leafRef.current){leafRef.current.remove();leafRef.current=null;}
+        const cur=LAYERS[layer],map=L.map(mapRef.current,{zoomControl:true,scrollWheelZoom:true});
+        map.setView([a.lat,a.lon],ZOOMS[zoom].z);
+        L.tileLayer(cur.tile,{attribution:cur.attr,maxZoom:19,crossOrigin:true}).addTo(map);
+        const pin=L.divIcon({html:'<div style="width:16px;height:16px;border-radius:50%;background:'+cc+';border:3px solid #fff;box-shadow:0 0 12px '+cc+'88;"></div>',iconSize:[16,16],iconAnchor:[8,8],className:""});
+        L.marker([a.lat,a.lon],{icon:pin}).addTo(map).bindPopup('<b style="color:'+cc+'">'+(a.rw&&a.rw.icao||a.title)+'</b><br/>'+a.title).openPopup();
+        if(zoom==="runway"&&a.rw&&a.rw.runways){
+          a.rw.runways.forEach(rwy=>{
+            const pts=rwy.id.split("/"),hdg=parseInt(pts[0]||"0")*10,rad=hdg*Math.PI/180;
+            const al=0.008,aw=0.003,dlat=al*Math.cos(rad),dlon=al*Math.sin(rad)/Math.cos(a.lat*Math.PI/180);
+            L.polygon([[a.lat-dlat-aw*Math.sin(rad),a.lon-dlon+aw*Math.cos(rad)],[a.lat+dlat-aw*Math.sin(rad),a.lon+dlon+aw*Math.cos(rad)],[a.lat+dlat+aw*Math.sin(rad),a.lon+dlon-aw*Math.cos(rad)],[a.lat-dlat+aw*Math.sin(rad),a.lon-dlon-aw*Math.cos(rad)]],{color:cc,fillColor:cc,fillOpacity:0.25,weight:1.5}).addTo(map).bindTooltip(rwy.id);
+          });
+        }
+        let drag=null,circ=null;
+        map.on("mousedown",e=>{drag=e.latlng;});
+        map.on("mousemove",e=>{
+          if(!drag) return;
+          const R=6371,dLat=(e.latlng.lat-drag.lat)*Math.PI/180,dLon=(e.latlng.lng-drag.lng)*Math.PI/180;
+          const aa=Math.sin(dLat/2)**2+Math.cos(drag.lat*Math.PI/180)*Math.cos(e.latlng.lat*Math.PI/180)*Math.sin(dLon/2)**2;
+          const nm=R*2*Math.atan2(Math.sqrt(aa),Math.sqrt(1-aa))*0.539957;
+          if(circ)circ.remove();
+          circ=L.circle([a.lat,a.lon],{radius:nm*1852,color:"#38BDF8",fillColor:"#38BDF8",fillOpacity:0.07,weight:2,dashArray:"6 4"}).addTo(map);
+          circ.bindTooltip(Math.round(nm)+" nm",{permanent:true,direction:"top"});
+          setRadius(Math.round(nm));
+          setInRange((allAddons||[]).filter(ac=>ac.type==="Aircraft"&&ac.rw&&ac.rw.range_nm&&ac.rw.range_nm>=nm));
+        });
+        map.on("mouseup",()=>{drag=null;});
+        leafRef.current=map;setReady(true);
+      }catch(e){console.warn("Map error:",e);}
+    },120);
+    return ()=>{clearTimeout(tid);if(leafRef.current){try{leafRef.current.remove();}catch(e){}leafRef.current=null;}};
+  },[a.id,layer,zoom]);
+  if(!a.lat) return <div style={{height:300,background:"var(--bg2)",borderRadius:12,border:"1px solid var(--bdr)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",color:"var(--t2)"}}>
+    <div style={{fontSize:32,marginBottom:10}}>📍</div><div style={{fontSize:13}}>Map available for airports and scenery with coordinates</div>
+  </div>;
+  return <div style={{display:"flex",flexDirection:"column",gap:10}}>
+    {a.rw&&a.rw.runways&&a.rw.runways.length>0&&<div style={{background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:10,padding:"10px 13px"}}>
+      <div style={{fontSize:10,color:"var(--t3)",textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:6}}>Runways</div>
+      <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+        {a.rw.runways.map(r=><div key={r.id} style={{background:cc+"18",border:"1px solid "+cc+"30",borderRadius:6,padding:"3px 9px",fontSize:11,color:cc,fontWeight:600}}>{r.id} <span style={{color:"var(--t2)",fontWeight:400,fontSize:10}}>{r.len}</span></div>)}
+      </div>
+    </div>}
+    <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+      <div style={{display:"flex",gap:4}}>
+        {Object.entries(LAYERS).map(([id,lyr])=><button key={id} onClick={()=>setLayer(id)} style={{background:layer===id?cc+"22":"transparent",border:"1px solid "+(layer===id?cc+"55":"var(--bdr)"),color:layer===id?cc:"var(--t2)",borderRadius:7,padding:"5px 10px",fontSize:11,fontWeight:600,fontFamily:"inherit",cursor:"pointer"}}>{lyr.l}</button>)}
+      </div>
+      <div style={{width:1,height:18,background:"var(--bdr)"}}/>
+      <div style={{display:"flex",gap:4}}>
+        {Object.entries(ZOOMS).map(([id,z])=><button key={id} onClick={()=>setZoom(id)} style={{background:zoom===id?"var(--accD)":"transparent",border:"1px solid "+(zoom===id?"var(--accB)":"var(--bdr)"),color:zoom===id?"var(--acc)":"var(--t2)",borderRadius:7,padding:"5px 10px",fontSize:11,fontWeight:600,fontFamily:"inherit",cursor:"pointer"}}>{z.l}</button>)}
+      </div>
+      {radius>0&&<div style={{marginLeft:"auto",background:"var(--accD)",border:"1px solid var(--accB)",borderRadius:7,padding:"4px 10px",fontSize:11,color:"var(--acc)",fontWeight:600}}>{radius} nm radius</div>}
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:selAc?"minmax(0,1fr) 320px":"1fr",gap:12,alignItems:"start"}}>
+      <div style={{minWidth:0}}>
+        <div ref={mapRef} style={{height:"calc(100vh - 420px)",minHeight:280,borderRadius:12,overflow:"hidden",border:"1px solid "+cc+"30",background:"var(--bg2)"}}/>
+        <div style={{fontSize:10,color:"var(--t3)",textAlign:"center",marginTop:8}}>Drag holding right mouse button to draw range circle — release to see aircraft that can fly that distance</div>
+        {radius>0&&<div style={{background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:10,padding:12,marginTop:10}}>
+          <div style={{fontSize:12,fontWeight:600,color:"var(--acc)",marginBottom:8}}>Aircraft with {radius}+ nm range: {inRange.length}</div>
+          {inRange.length===0?<div style={{fontSize:12,color:"var(--t2)"}}>No aircraft in your library reach this distance.</div>
+            :<div style={{display:"flex",gap:7,flexWrap:"wrap"}}>
+              {inRange.map(ac=><div key={ac.id} onClick={()=>setSelAc(ac)} style={{background:selAc&&selAc.id===ac.id?"var(--accD)":"var(--bg1)",border:"1px solid "+(selAc&&selAc.id===ac.id?"var(--accB)":"var(--bdr)"),borderRadius:8,padding:"6px 11px",cursor:"pointer",fontSize:12,color:selAc&&selAc.id===ac.id?"var(--acc)":"var(--t1)",fontWeight:600}}>{ac.title.split(" ").slice(-2).join(" ")} <span style={{color:"var(--t2)",fontWeight:400}}>{ac.rw&&ac.rw.range_nm?ac.rw.range_nm+" nm":(ac.rw&&ac.rw.range)}</span></div>)}
+            </div>}
+        </div>}
+      </div>
+      {selAc&&<div style={{background:"var(--bg1)",border:"1px solid var(--bdr)",borderRadius:14,overflow:"hidden",boxShadow:"0 12px 32px rgba(0,0,0,.25)",position:"sticky",top:8}}>
+        <div style={{padding:"14px 18px",borderBottom:"1px solid var(--bdr)",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div><div style={{fontSize:14,fontWeight:700,color:"var(--t0)"}}>{selAc.title}</div><div style={{fontSize:11,color:"var(--t2)"}}>{selAc.publisher}</div></div>
+          <button onClick={()=>setSelAc(null)} style={{background:"none",border:"none",color:"var(--t2)",fontSize:18,cursor:"pointer"}}>x</button>
+        </div>
+        <div style={{padding:18}}>
+          <KVG pairs={[["Manufacturer",selAc.rw&&selAc.rw.mfr],["Model",selAc.rw&&selAc.rw.model],["Cruise",selAc.rw&&selAc.rw.cruise],["Range (NM)",selAc.rw&&selAc.rw.range_nm],["Ceiling",selAc.rw&&selAc.rw.ceiling],["Seats",selAc.rw&&selAc.rw.seats]]}/>
+          <div style={{fontSize:10,color:"var(--t3)",textTransform:"uppercase",letterSpacing:"0.08em",margin:"12px 0 6px"}}>Overview</div>
+          <div style={{fontSize:12,color:"var(--t1)",lineHeight:1.7}} dangerouslySetInnerHTML={{__html:selAc.summary||'<p>No overview yet.</p>'}}/>
+        </div>
+      </div>}
+    </div>
+  </div>;
+}
+
+
+function AITab({a,apiKey,googleKey,onSetKey,onSetGoogleKey,onSendToOverview,onSendToFeatures}){
+  const storageKey='hangar_ai_state_'+a.id;
+  const [status,setStatus]=useState('idle'),[result,setResult]=useState(null),[err,setErr]=useState('');
+  const [keyInput,setKeyInput]=useState(apiKey||'');
+  const [googleKeyInput,setGoogleKeyInput]=useState(googleKey||'');
+  const [customPrompt,setCustomPrompt]=useState('');
+  const [provider,setProvider]=useState(()=>googleKey&&apiKey?'gemini':(googleKey?'gemini':'openai'));
+  const renderedRef=useRef(null);
+  useEffect(()=>{ try{ const raw=localStorage.getItem(storageKey); if(raw){ const st=JSON.parse(raw); if(st&&typeof st==='object'){ setStatus(st.status||'idle'); setResult(st.result||null); setErr(st.err||''); setCustomPrompt(st.customPrompt||''); setProvider(st.provider || (googleKey&&apiKey?'gemini':(googleKey?'gemini':'openai'))); } } }catch(e){} },[a.id]);
+  useEffect(()=>{ try{ localStorage.setItem(storageKey, JSON.stringify({status, result, err, customPrompt, provider})); }catch(e){} },[storageKey,status,result,err,customPrompt,provider]);
+  function buildAiHtml(res){
+    const esc=s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    if(res&&res.bodyHtml) return res.bodyHtml;
+    let html = `<div class="ai-enrichment"><h2>${esc(res&&res.headline||a.title)}</h2>`;
+    if(res&&res.description) html += `<p>${esc(res.description)}</p>`;
+    if(res&&res.realWorldInfo) html += `<h3>Real-World Context</h3><p>${esc(res.realWorldInfo)}</p>`;
+    if(res&&res.highlights&&res.highlights.length) html += `<h3>Highlights</h3><ul>${res.highlights.map(h=>`<li>${esc(h)}</li>`).join('')}</ul>`;
+    if(res&&res.pilotBriefing) html += `<h3>Pilot Briefing</h3><p>${esc(res.pilotBriefing)}</p>`;
+    if(res&&res.bestFor) html += `<h3>Best For</h3><p>${esc(res.bestFor)}</p>`;
+    if(res&&res.compatibility) html += `<h3>Compatibility</h3><p>${esc(res.compatibility)}</p>`;
+    if(res&&res.verdict) html += `<h3>Verdict</h3><p><em>${esc(res.verdict)}</em></p>`;
+    html += `</div>`;
+    return html;
+  }
+  async function run(mode='enrich'){
+    const activeProvider=(provider==='gemini'&&googleKey)?'gemini':'openai';
+    if(activeProvider==='gemini' && !googleKey){ setErr('Enter and save your Google Gemini API key first.'); return; }
+    if(activeProvider==='openai' && !apiKey){ setErr('Enter and save your OpenAI API key first.'); return; }
+    setStatus('loading'); setErr('');
+    try{
+      const res=await fetch('/api/ai/enrich',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:activeProvider,mode,prompt:customPrompt,addon_id:a.id})});
+      const data=await res.json();
+      if(!res.ok) throw new Error(data.detail||'AI request failed');
+      setResult(data); setStatus('done');
+    }catch(e){ setErr(e.message||'Unknown error'); setStatus('error'); }
+  }
+  function Block({label,color,children}){ return <div style={{background:color+'09',border:'1px solid '+color+'28',borderRadius:10,padding:14,marginBottom:10}}><div style={{fontSize:10,color,textTransform:'uppercase',letterSpacing:'0.09em',fontWeight:700,marginBottom:7}}>{label}</div>{children}</div>; }
+  const aiHtml=result?buildAiHtml(result):'';
+  function renderedHtml(target){ if(target==='features' && result&&result.featuresHtml) return result.featuresHtml; if(target==='overview' && result&&result.bodyHtml) return result.bodyHtml; return renderedRef.current?renderedRef.current.innerHTML:aiHtml; }
+  return <div>
+    <div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:10,padding:'11px 14px',marginBottom:14}}><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:6}}>OpenAI API Key</div><div style={{display:'flex',gap:8}}><input type='password' value={keyInput} onChange={e=>setKeyInput(e.target.value)} placeholder='sk-...' style={{flex:1,background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:7,padding:'7px 10px',color:'var(--t0)',fontSize:12,outline:'none',fontFamily:'monospace'}}/><Btn label={apiKey?'Saved':'Save Key'} color={apiKey?'var(--grn)':'var(--acc)'} sm onClick={()=>{onSetKey(keyInput);localStorage.setItem('msfs_oai',keyInput);fetch('/api/settings/openai_key',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:keyInput})}).catch(()=>{});}}/></div></div>
+    <div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:10,padding:'11px 14px',marginBottom:14}}><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:6}}>Google Gemini API Key</div><div style={{display:'flex',gap:8}}><input type='password' value={googleKeyInput} onChange={e=>setGoogleKeyInput(e.target.value)} placeholder='AIza...' style={{flex:1,background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:7,padding:'7px 10px',color:'var(--t0)',fontSize:12,outline:'none',fontFamily:'monospace'}}/><Btn label={googleKey?'Saved':'Save Key'} color={googleKey?'var(--grn)':'var(--acc)'} sm onClick={()=>{onSetGoogleKey&&onSetGoogleKey(googleKeyInput);localStorage.setItem('msfs_google',googleKeyInput);fetch('/api/settings/google_api_key',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:googleKeyInput})}).catch(()=>{});}}/></div></div>
+    <div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:10,padding:'11px 14px',marginBottom:14}}><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:6}}>AI Provider</div><select value={provider} onChange={e=>setProvider(e.target.value)} style={{width:'100%',background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:7,padding:'8px 11px',color:'var(--t0)',fontSize:12,outline:'none'}}><option value='openai' disabled={!apiKey}>OpenAI GPT</option><option value='gemini' disabled={!googleKey}>Google Gemini</option></select></div>
+    <div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:10,padding:'11px 14px',marginBottom:14}}><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:6}}>Custom Prompt (optional)</div><textarea value={customPrompt} onChange={e=>setCustomPrompt(e.target.value)} placeholder='Ask for any kind of addon analysis or custom data layout. Rich HTML can be returned for Overview or Features.' style={{width:'100%',minHeight:96,background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:8,padding:'10px 12px',color:'var(--t0)',fontSize:12,outline:'none',resize:'vertical',lineHeight:1.6}}/></div>
+    {status==='idle'&&<div><div style={{background:'var(--vioD)',border:'1px solid rgba(167,139,250,0.22)',borderRadius:12,padding:20,textAlign:'center',marginBottom:14}}><div style={{fontSize:36,marginBottom:10}}>✦</div><div style={{fontSize:15,fontWeight:800,color:'var(--t0)',marginBottom:7}}>AI Enrichment ({provider==='gemini'?'Google Gemini':'OpenAI GPT'})</div><p style={{fontSize:13,color:'var(--t1)',lineHeight:1.75,margin:'0 0 16px'}}>Generate a complete profile for <strong style={{color:'var(--t0)'}}>{a.title}</strong> — or use a custom prompt to return whatever structured content you want.</p><div style={{display:'flex',justifyContent:'center',gap:8,flexWrap:'wrap'}}><button onClick={()=>run('enrich')} style={{background:'linear-gradient(135deg,#7C3AED,#4F46E5)',border:'none',color:'#fff',borderRadius:10,padding:'12px 28px',fontSize:13,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>Enrich with AI</button><Btn label='Execute Prompt' color='var(--acc)' disabled={!customPrompt.trim()} onClick={()=>run('prompt')}/></div>{err&&<div style={{marginTop:12,fontSize:12,color:'var(--red)',lineHeight:1.5}}>{err}</div>}</div></div>}
+    {status==='loading'&&<div style={{textAlign:'center',padding:'50px'}}><div className='spin' style={{fontSize:40,marginBottom:14,color:'var(--vio)',display:'inline-block',border:'3px solid var(--vio)',borderTopColor:'transparent',borderRadius:'50%',width:44,height:44}}/><div style={{fontSize:14,fontWeight:700,color:'var(--t0)',marginBottom:6,marginTop:8}}>Analyzing with {provider==='gemini'?'Google Gemini':'OpenAI GPT'}...</div></div>}
+    {status==='error'&&<div style={{textAlign:'center',padding:'30px'}}><div style={{fontSize:36,marginBottom:12}}>⚠</div><div style={{fontSize:13,color:'var(--red)',marginBottom:12}}>{err||'Unknown error'}</div><Btn label='Try Again' color='var(--acc)' onClick={()=>setStatus('idle')}/></div>}
+    {status==='done'&&result&&<div><div ref={renderedRef}>{result.headline&&<Block label='Headline' color='var(--vio)'><div style={{fontSize:18,fontWeight:800,color:'var(--t0)'}}>{result.headline}</div></Block>}{result.description&&<Block label='Description' color='var(--vio)'><p style={{fontSize:13,color:'var(--t0)',lineHeight:1.8,margin:0}}>{result.description}</p></Block>}{result.realWorldInfo&&<Block label='Real-World Context' color='var(--acc)'><p style={{fontSize:13,color:'var(--t0)',lineHeight:1.75,margin:0}}>{result.realWorldInfo}</p></Block>}{result.highlights&&result.highlights.length>0&&<Block label='Highlights' color='var(--grn)'><ul style={{margin:0,paddingLeft:18}}>{result.highlights.map((h,i)=><li key={i} style={{fontSize:13,color:'var(--t0)',lineHeight:1.8,marginBottom:4}}>{h}</li>)}</ul></Block>}{result.pilotBriefing&&<Block label='Pilot Briefing' color='var(--amb)'><p style={{fontSize:13,color:'var(--t0)',lineHeight:1.75,margin:0}}>{result.pilotBriefing}</p></Block>}{result.bestFor&&<Block label='Best For' color='var(--grn)'><p style={{fontSize:13,color:'var(--t0)',lineHeight:1.75,margin:0}}>{result.bestFor}</p></Block>}{result.compatibility&&<Block label='Compatibility' color='var(--acc)'><p style={{fontSize:13,color:'var(--t0)',lineHeight:1.75,margin:0}}>{result.compatibility}</p></Block>}{result.verdict&&<div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:10,padding:14,marginBottom:12}}><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:7}}>Verdict</div><p style={{fontSize:13,color:'var(--t0)',fontStyle:'italic',margin:0,lineHeight:1.65}}>{result.verdict}</p></div>}</div><div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{onSendToOverview&&<Btn label='Send Full HTML to Overview' color='var(--acc)' onClick={()=>onSendToOverview(renderedHtml('overview'))}/>}{onSendToFeatures&&<Btn label='Send Full HTML to Features' color='var(--vio)' onClick={()=>onSendToFeatures(renderedHtml('features'))}/>}<Btn label='Re-run AI' color='var(--vio)' onClick={()=>setStatus('idle')}/></div></div>}
+  </div>;
+}
+
+function UserDataTab({a,onSave}){
+  const pr=a.pr||{};
+  const [rating,setRating]=useState(a.usr.rating||0),[notes,setNotes]=useState(a.usr.notes||"");
+  const [paid,setPaid]=useState(a.usr.paid||""),[tags,setTags]=useState(a.usr.tags||[]);
+  const [tagInput,setTagInput]=useState(""),[store,setStore]=useState(a.usr.source_store||""),[avionics,setAvionics]=useState((a.usr&&a.usr.avionics)||(a.rw&&a.rw.avionics)||"");
+  const [saved,setSaved]=useState(false);
+  const TYPE_OPTIONS=["Aircraft","Airport","Scenery","Utility","Mod"];
+  const DEFAULT_SUBTYPES={Aircraft:["Airliner","General Aviation","Business Jet","Helicopter","Military","Regional"],Airport:["Large Commercial","Medium Commercial","General Aviation","Heliport","Seaplane Base","Closed"],Scenery:["City","Region","Landmark","Mesh","Airport scenery"],Utility:["Navigation","Tool","Weather","Mission"],Mod:["Livery","Enhancement","Other"]};
+  const DEFAULT_SOURCES=["Aerosoft Shop","flightsim.to","Flightbeam Store","FlyTampa Store","GitHub","iniBuilds Store","Just Flight","MSFS Marketplace","Orbx Direct","PMDG Store","Simmarket","Other"].sort((a,b)=>a.localeCompare(b));
+  const DEFAULT_AVIONICS=["Analog","G1000","G3000","G430","G530","G550","G750","GTN 750","Unsure"].sort((a,b)=>a.localeCompare(b));
+  const sourceLibrary=useMemo(()=>{ try{ const raw=JSON.parse(localStorage.getItem('hangar_sources')||'null'); return Array.isArray(raw)&&raw.length?raw.sort((a,b)=>a.localeCompare(b)):DEFAULT_SOURCES; }catch(e){ return DEFAULT_SOURCES; } },[]);
+  const avionicsLibrary=useMemo(()=>{ try{ const raw=JSON.parse(localStorage.getItem('hangar_avionics')||'null'); return Array.isArray(raw)&&raw.length?raw.sort((a,b)=>a.localeCompare(b)):DEFAULT_AVIONICS; }catch(e){ return DEFAULT_AVIONICS; } },[]);
+  const subtypeLibrary=useMemo(()=>{ try{ const raw=JSON.parse(localStorage.getItem('hangar_subtypes')||'null'); return raw&&typeof raw==='object'?raw:DEFAULT_SUBTYPES; }catch(e){ return DEFAULT_SUBTYPES; } },[]);
+  const [addonType,setAddonType]=useState(a.type||"Mod"),[subtype,setSubtype]=useState(a.sub||"");
+  const subtypeOptions=subtypeLibrary[addonType]||[];
+  const settingsTags=useMemo(()=>{ try{ const raw=localStorage.getItem('hangar_tags')||'IFR, VFR, Study Level, Freeware, Payware, Major Hub, Training, Scenic, GA, Helicopter, Military, Business Jet'; return raw.split(',').map(t=>t.trim()).filter(Boolean);}catch(e){return [];} },[]);
+  useEffect(()=>{setRating(a.usr.rating||0);setNotes(a.usr.notes||"");setPaid(a.usr.paid||"");setTags(a.usr.tags||[]);setStore(a.usr.source_store||"");setAvionics((a.usr&&a.usr.avionics)||(a.rw&&a.rw.avionics)||"");setAddonType(a.type||'Mod');setSubtype(a.sub||'');},[a.id]);
+  useEffect(()=>{ if(subtype && !subtypeOptions.includes(subtype) && subtypeOptions.length){ setSubtype(subtypeOptions[0]); } },[addonType]);
+  function save(){ onSave(a.id,{rating,notes,paid:parseFloat(paid)||0,tags,source_store:store,avionics,type:addonType,sub:subtype,rw_override:{avionics}}); setSaved(true);setTimeout(()=>setSaved(false),2000); }
+  function addTag(){ const t=tagInput.trim(); if(!t) return; if(!tags.includes(t)) setTags(ts=>[...ts,t]); if(!settingsTags.includes(t)){ const updated=[...settingsTags,t].join(', '); localStorage.setItem('hangar_tags',updated); } setTagInput(''); }
+  return <div style={{display:'flex',flexDirection:'column',gap:16}}>
+    <div><DL label='Your Rating' color='var(--amb)'/><div style={{display:'flex',alignItems:'center',gap:10}}><Stars v={rating} sz={24} edit onChange={setRating}/><span style={{fontSize:13,color:'var(--t1)'}}>{rating>0?rating+' / 5':'Tap to rate'}</span></div></div>
+    <div><DL label='Price Paid' color='var(--grn)'/><div style={{display:'flex',gap:9,alignItems:'center'}}><span style={{fontSize:14,color:'var(--t2)'}}>{currentCurrency()}</span><input value={paid} onChange={e=>setPaid(e.target.value)} placeholder='0.00' style={{width:110,background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:7,padding:'8px 11px',color:'var(--t0)',fontSize:13,outline:'none'}}/>{pr.price>0&&<span style={{fontSize:11,color:'var(--t2)'}}>List: {formatCurrencyValue(pr.price)}</span>}</div></div>
+    <div><DL label='Addon Classification' color='var(--vio)'/><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}}><select value={addonType} onChange={e=>setAddonType(e.target.value)} style={{width:'100%',background:'var(--bg0)',border:'1px solid var(--bdr)',color:'var(--t1)',borderRadius:7,padding:'7px 10px',fontSize:12}}>{TYPE_OPTIONS.map(s=><option key={s}>{s}</option>)}</select><input value={subtype} onChange={e=>setSubtype(e.target.value)} list='subtype-opts' placeholder='Subtype' style={{width:'100%',background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:7,padding:'8px 11px',color:'var(--t0)',fontSize:12,outline:'none'}}/><datalist id='subtype-opts'>{subtypeOptions.map(s=><option key={s} value={s}/>)}</datalist></div></div>
+    <div><DL label='Your Source' color='var(--acc)'/><input value={store} onChange={e=>setStore(e.target.value)} placeholder='Where you bought or downloaded this' list='store-opts' style={{width:'100%',background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:7,padding:'8px 11px',color:'var(--t0)',fontSize:12,outline:'none'}}/><datalist id='store-opts'>{sourceLibrary.map(s=><option key={s} value={s}/>)}</datalist></div><div><DL label='Avionics' color='var(--vio)'/><input value={avionics} onChange={e=>setAvionics(e.target.value)} placeholder='Analog, G1000, G3000...' list='avionics-opts' style={{width:'100%',background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:7,padding:'8px 11px',color:'var(--t0)',fontSize:12,outline:'none'}}/><datalist id='avionics-opts'>{avionicsLibrary.map(s=><option key={s} value={s}/>)}</datalist></div>
+    <div><DL label='Tags' color='var(--acc)'/><div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:8}}>{tags.map(t=><div key={t} style={{background:'var(--accD)',border:'1px solid var(--accB)',borderRadius:20,padding:'3px 10px',display:'flex',alignItems:'center',gap:5}}><span style={{fontSize:11,color:'var(--acc)'}}>{t}</span><span onClick={()=>setTags(ts=>ts.filter(x=>x!==t))} style={{fontSize:14,color:'var(--acc)',cursor:'pointer',lineHeight:1}}>x</span></div>)}</div>{settingsTags.filter(t=>!tags.includes(t)).length>0&&<div style={{marginBottom:8}}><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:5}}>Add from library:</div><div style={{display:'flex',flexWrap:'wrap',gap:5}}>{settingsTags.filter(t=>!tags.includes(t)).map(t=><span key={t} onClick={()=>setTags(ts=>[...ts,t])} style={{background:'var(--bg3)',border:'1px solid var(--bdr)',borderRadius:20,padding:'2px 9px',fontSize:11,color:'var(--t2)',cursor:'pointer'}}>+ {t}</span>)}</div></div>}<div style={{display:'flex',gap:7}}><input value={tagInput} onChange={e=>setTagInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addTag()} placeholder='New tag (adds to library)...' style={{flex:1,background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:7,padding:'8px 11px',color:'var(--t0)',fontSize:12,outline:'none'}}/><Btn label='Add' color='var(--acc)' sm onClick={addTag}/></div></div>
+    <div><DL label='Notes' color='var(--amb)'/><textarea value={notes} onChange={e=>setNotes(e.target.value)} placeholder='Tips, impressions, settings, known issues...' style={{width:'100%',height:130,background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:8,padding:'10px 12px',color:'var(--t0)',fontSize:12,resize:'vertical',outline:'none',lineHeight:1.65}}/></div>
+    <Btn label={saved?'Saved!':'Save Changes'} color={saved?'var(--grn)':'var(--amb)'} onClick={save} full style={{justifyContent:'center',fontWeight:700,padding:'11px'}}/>
+  </div>;
+}
+
+function DetailPage({a,onBack,onFav,onSaveUser,apiKey,googleKey,onSetKey,onSetGoogleKey,allAddons}){
+  const [tab,setTab]=useState("overview"),cc=CC[a.type]||"#64748B";
+  const [injectedFeatures,setInjectedFeatures]=useState(null);
+  const [injectedOverview,setInjectedOverview]=useState(null);
+  function sendToFeatures(html){setInjectedFeatures(html);setTab("features");}
+  function sendToOverview(html){setInjectedOverview(html);setTab("overview");}
+  const isGeo=a.type==="Airport"||a.type==="Scenery";
+  useEffect(()=>{if(tab==="map"&&!isGeo)setTab("overview");},[a.id]);
+  useEffect(()=>{
+    fetch('/api/browser/close',{method:'POST'}).catch(()=>{});
+  },[tab,a.id]);
+  useEffect(()=>()=>{ fetch('/api/browser/close',{method:'POST'}).catch(()=>{}); },[]);
+  const imgs=(IMGS&&IMGS[a.imgKey])||[];
+  const dataTabLabel=a.type==="Aircraft"?"Aircraft Data":(a.type==="Airport"?"Airport Data":null);
+  const galleryCount=(a.gallery_paths&&a.gallery_paths.length)||imgs.length||0;
+  const TABS=[
+    {id:"overview",l:"Overview"},
+    {id:"features",l:"Features"},
+    {id:"userdata",l:"Your Data"},
+    {id:"research",l:"Research"},
+    {id:"docs",l:"Docs"+(a.docs&&a.docs.length>0?" ("+a.docs.length+")":"")},
+    {id:"gallery",l:"Gallery"+(galleryCount>0?" ("+galleryCount+")":"")},
+    ...(isGeo?[{id:"map",l:"Map"}]:[]),
+    ...(dataTabLabel?[{id:"realworld",l:dataTabLabel}]:[]),
+    {id:"ai",l:"AI"},
+  ];
+  return <div style={{display:"flex",flexDirection:"column",height:"100%",overflow:"hidden",background:"var(--bg0)"}}>
+    <div style={{background:"var(--bg1)",borderBottom:"1px solid var(--bdr)",flexShrink:0}}>
+      <div style={{padding:"10px 20px 0",maxWidth:1100,margin:"0 auto"}}>
+        <button onClick={onBack} style={{background:"none",border:"none",color:"var(--acc)",cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit",padding:"0 0 8px"}}>Back to Library</button>
+        <div style={{display:"flex",gap:14,alignItems:"flex-start",marginBottom:12,flexWrap:"wrap"}}>
+          <div style={{width:96,height:66,borderRadius:10,overflow:"hidden",flexShrink:0,border:"1px solid var(--bdr)"}}>
+            <AddonImg a={a} h={66}/>
+          </div>
+          <div style={{flex:1,minWidth:180}}>
+            <div style={{display:"flex",gap:5,marginBottom:5,flexWrap:"wrap"}}><Chip label={a.type} color={cc} sm/>{a.sub&&<Chip label={a.sub} color={cc} sm/>}{a.hasUpdate&&<Chip label="Update" color="var(--amb)" sm/>}</div>
+            <div style={{fontSize:19,fontWeight:800,color:"var(--t0)",lineHeight:1.2,marginBottom:4}}>{a.title}</div>
+            <div style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:"var(--t2)",flexWrap:"wrap"}}>
+              <span>{a.publisher}</span>
+              {a.pr&&a.pr.ver&&<><span>·</span><span>v{a.pr.ver}</span></>}
+              {a.pr&&a.pr.price===0?<><span>·</span><span style={{color:"var(--grn)",fontWeight:600}}>Free</span></>:a.pr&&a.pr.price>0?<><span>·</span><span>${a.pr.price}</span></>:null}
+            </div>
+          </div>
+          <div onClick={e=>e.stopPropagation()} style={{flexShrink:0,marginTop:4}}><FavBtn on={a.usr.fav} onChange={v=>onFav(a.id,v)} sz={22}/></div>
+          {a.usr.rating>0&&<div style={{flexShrink:0,marginTop:4}}><Stars v={a.usr.rating} sz={13}/></div>}
+        </div>
+        <div style={{display:"flex",gap:0,overflowX:"auto"}}>
+          {TABS.map(t=><button key={t.id} onClick={()=>setTab(t.id)} style={{background:"none",border:"none",borderBottom:tab===t.id?"2px solid "+cc:"2px solid transparent",color:tab===t.id?"var(--t0)":"var(--t2)",padding:"7px 14px",cursor:"pointer",fontSize:11,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.05em",whiteSpace:"nowrap",fontFamily:"inherit"}}>{t.l}</button>)}
+        </div>
+      </div>
+    </div>
+    <div style={{flex:1,overflowY:"auto"}}>
+      <div style={{maxWidth:(tab==="docs"||tab==="research"||tab==="map"||tab==="realworld")?"100%":(tab==="overview"||tab==="features"||tab==="userdata"?"min(1500px, calc(100vw - 48px))":"1120px"),width:"100%",margin:"0 auto",padding:"20px",height:tab==="docs"?"calc(100% - 40px)":"auto",display:tab==="docs"?"flex":undefined,flexDirection:tab==="docs"?"column":undefined}}>
+        {tab==="overview"&&<OverviewTab a={a} onSave={onSaveUser} injected={injectedOverview} onInjected={()=>setInjectedOverview(null)}/>}
+        {tab==="features"&&<FeaturesTab a={a} injected={injectedFeatures} onInjected={()=>setInjectedFeatures(null)} onSave={onSaveUser}/>}
+        {tab==="docs"&&<DocsTab a={a}/>}
+        {tab==="gallery"&&<GalleryTab a={a} onSaveMeta={onSaveUser}/>}
+        {tab==="research"&&<ResearchTab a={a} apiKey={apiKey} onSendToFeatures={sendToFeatures} onSendToOverview={sendToOverview} onSaveResources={onSaveUser}/>}
+        {tab==="map"&&isGeo&&<MapTab a={a} allAddons={allAddons}/>}
+        {tab==="realworld"&&dataTabLabel&&<RealWorldTab a={a} onSave={onSaveUser}/>}
+        {tab==="userdata"&&<UserDataTab a={a} onSave={onSaveUser}/>}
+        {tab==="ai"&&<AITab a={a} apiKey={apiKey} googleKey={googleKey} onSetKey={onSetKey} onSetGoogleKey={onSetGoogleKey} onSendToOverview={sendToOverview} onSendToFeatures={sendToFeatures}/>}
+      </div>
+    </div>
+  </div>;
+}
+
+function GeoFilter({addons,filterType,countries,setCountries,regions,setRegions}){
+  const avail=useMemo(()=>[...new Set(addons.filter(a=>a.type===filterType&&a.rw&&a.rw.country).map(a=>a.rw.country))].sort(),[addons,filterType]);
+  const avReg=useMemo(()=>{
+    if(!countries.length) return [];
+    const base=addons.filter(a=>a.type===filterType&&countries.includes(a.rw&&a.rw.country));
+    const out=[];
+    countries.forEach(c=>{
+      if(c==="United States") base.filter(a=>a.rw&&a.rw.country===c).forEach(a=>a.rw.state&&!out.includes(a.rw.state)&&out.push(a.rw.state));
+      else if(c==="Canada") base.filter(a=>a.rw&&a.rw.country===c).forEach(a=>a.rw.province&&!out.includes(a.rw.province)&&out.push(a.rw.province));
+      else base.filter(a=>a.rw&&a.rw.country===c).forEach(a=>a.rw.region&&!out.includes(a.rw.region)&&out.push(a.rw.region));
+    });
+    return out.sort();
+  },[addons,filterType,countries]);
+  function togC(c){setCountries(cs=>cs.includes(c)?cs.filter(x=>x!==c):[...cs,c]);setRegions([]);}
+  function togR(r){setRegions(rs=>rs.includes(r)?rs.filter(x=>x!==r):[...rs,r]);}
+  return <div style={{background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:9,padding:"10px 12px",marginBottom:8}}>
+    <div style={{fontSize:10,color:"var(--t3)",textTransform:"uppercase",letterSpacing:"0.09em",marginBottom:7}}>Filter by Country</div>
+    <div style={{display:"flex",flexDirection:"column",gap:2,maxHeight:140,overflowY:"auto",marginBottom:avReg.length?8:0}}>
+      {avail.map(c=>(
+        <label key={c} className="cb-item">
+          <input type="checkbox" checked={countries.includes(c)} onChange={()=>togC(c)}/>
+          {abbr(c)}
+          <span style={{fontSize:10,color:"var(--t3)",marginLeft:"auto"}}>{addons.filter(a=>a.type===filterType&&a.rw&&a.rw.country===c).length}</span>
+        </label>
+      ))}
+    </div>
+    {avReg.length>0&&<>
+      <div style={{fontSize:10,color:"var(--t3)",textTransform:"uppercase",letterSpacing:"0.09em",marginBottom:6,borderTop:"1px solid var(--bdr)",paddingTop:7}}>
+        {countries.includes("United States")?"State":countries.includes("Canada")?"Province":"Region"}
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:2,maxHeight:120,overflowY:"auto"}}>
+        {avReg.map(r=><label key={r} className="cb-item"><input type="checkbox" checked={regions.includes(r)} onChange={()=>togR(r)}/>{r}</label>)}
+      </div>
+    </>}
+    {(countries.length>0||regions.length>0)&&<button onClick={()=>{setCountries([]);setRegions([]);}} style={{marginTop:8,background:"none",border:"none",color:"var(--acc)",fontSize:11,cursor:"pointer",fontFamily:"inherit",padding:0}}>Clear filter</button>}
+  </div>;
+}
+function AircraftFinder({addons,onFilterGrid}){
+  const aircraft=addons.filter(a=>a.type==="Aircraft");
+  const subtypes=["All",...new Set(aircraft.map(a=>a.sub).filter(Boolean))];
+  const [sub,setSub]=useState("All"),[minR,setMinR]=useState(""),[maxR,setMaxR]=useState("");
+  const [minS,setMinS]=useState(""),[maxS,setMaxS]=useState(""),[results,setResults]=useState(null);
+  function search(){
+    setResults(aircraft.filter(a=>{
+      if(sub!=="All"&&a.sub!==sub) return false;
+      const range=(a.rw&&a.rw.range_nm)||0;
+      const sm=a.rw&&a.rw.cruise&&a.rw.cruise.match(/([0-9]+)\s*kts?/i);
+      const speed=sm?parseInt(sm[1]):0;
+      if(minR&&range<parseInt(minR)) return false;
+      if(maxR&&range>parseInt(maxR)) return false;
+      if(minS&&speed<parseInt(minS)) return false;
+      if(maxS&&speed>parseInt(maxS)) return false;
+      return true;
+    }));
+  }
+  function NumInput({label,val,set,unit}){
+    return <div>
+      <div style={{fontSize:10,color:"var(--t2)",textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:5}}>{label}{unit&&<span style={{color:"var(--t3)"}}> ({unit})</span>}</div>
+      <input type="number" value={val} onChange={e=>set(e.target.value)} placeholder="Any"
+        style={{width:"100%",background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:7,padding:"7px 10px",color:"var(--t0)",fontSize:12,outline:"none"}}/>
+    </div>;
+  }
+  return <div style={{padding:24,maxWidth:900}}>
+    <div style={{fontSize:17,fontWeight:800,color:"var(--t0)",marginBottom:4}}>Aircraft Finder</div>
+    <div style={{fontSize:12,color:"var(--t2)",marginBottom:20}}>Filter your aircraft by performance specs to find the right plane for your mission.</div>
+    <div style={{background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:12,padding:20,marginBottom:18}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(150px,1fr))",gap:14,marginBottom:14}}>
+        <div>
+          <div style={{fontSize:10,color:"var(--t2)",textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:5}}>Subtype</div>
+          <select value={sub} onChange={e=>setSub(e.target.value)} style={{width:"100%",background:"var(--bg0)",border:"1px solid var(--bdr)",color:"var(--t1)",borderRadius:7,padding:"7px 10px",fontSize:12,cursor:"pointer"}}>
+            {subtypes.map(t=><option key={t}>{t}</option>)}
+          </select>
+        </div>
+        <NumInput label="Min Range" val={minR} set={setMinR} unit="nm"/>
+        <NumInput label="Max Range" val={maxR} set={setMaxR} unit="nm"/>
+        <NumInput label="Min Cruise" val={minS} set={setMinS} unit="kts"/>
+        <NumInput label="Max Cruise" val={maxS} set={setMaxS} unit="kts"/>
+      </div>
+      <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+        <Btn label="Find Aircraft" color="var(--acc)" onClick={search}/>
+        {results!==null&&results.length>0&&<Btn label={"Show "+results.length+" in Grid"} color="var(--grn)" onClick={()=>onFilterGrid&&onFilterGrid(results.map(a=>a.id))}/>}
+        {results!==null&&<span style={{fontSize:12,color:"var(--t2)"}}>{results.length} matched</span>}
+      </div>
+    </div>
+    {results!==null&&(results.length===0
+      ?<div style={{textAlign:"center",padding:"40px 0",color:"var(--t2)",fontSize:13}}>No aircraft match. Try wider ranges.</div>
+      :<div style={{display:"flex",flexDirection:"column",gap:10}}>
+        {results.map(ac=>(
+          <div key={ac.id} style={{background:"var(--card)",border:"1px solid var(--bdr)",borderRadius:12,padding:16,display:"flex",gap:14,alignItems:"center"}}>
+            <div style={{width:80,height:56,borderRadius:8,overflow:"hidden",flexShrink:0}}><AddonImg a={ac} h={56}/></div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:14,fontWeight:700,color:"var(--t0)",marginBottom:3}}>{ac.title}</div>
+              <div style={{fontSize:11,color:"var(--t2)",marginBottom:7}}>{ac.publisher} · {ac.sub}</div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                {[[(ac.rw&&ac.rw.mfr)||"—","Manufacturer"],[(ac.rw&&ac.rw.range)||"—","Range"],[(ac.rw&&ac.rw.cruise)||"—","Cruise"],[(ac.rw&&ac.rw.ceiling)||"—","Ceiling"],[(ac.rw&&ac.rw.seats)||"—","Seats"]].map(([v,l])=>(
+                  <div key={l} style={{background:"var(--bg2)",borderRadius:6,padding:"4px 9px"}}>
+                    <div style={{fontSize:9,color:"var(--t3)",textTransform:"uppercase",letterSpacing:"0.06em"}}>{l}</div>
+                    <div style={{fontSize:12,color:"var(--t0)",fontWeight:600}}>{v}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={{flexShrink:0}}>
+              <div style={{fontSize:13,color:ac.pr&&ac.pr.price===0?"var(--grn)":"var(--t1)",fontWeight:700}}>{ac.pr&&ac.pr.price===0?"Free":formatCurrencyValue(ac.pr&&ac.pr.price||0)}</div>
+              {ac.usr.rating>0&&<div style={{marginTop:4}}><Stars v={ac.usr.rating} sz={12}/></div>}
+            </div>
+          </div>
+        ))}
+      </div>
+    )}
+  </div>;
+}
+
+/* Reusable settings path input — proper component so hooks work correctly */
+function PathInput({id,label,hint,placeholder}){
+  const [val,setVal]=useState(()=>localStorage.getItem("hangar_"+id)||"");
+  const [ok,setOk]=useState(false);
+  function save(){
+    localStorage.setItem("hangar_"+id,val);
+    fetch("/api/settings/"+id,{
+      method:"PUT",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({value:val})
+    }).catch(()=>{});
+    setOk(true);
+    setTimeout(()=>setOk(false),2000);
+  }
+  return <div style={{marginBottom:12}}>
+    <div style={{fontSize:11,color:"var(--t1)",fontWeight:600,marginBottom:3}}>{label}</div>
+    {hint&&<div style={{fontSize:10,color:"var(--t3)",marginBottom:5}}>{hint}</div>}
+    <div style={{display:"flex",gap:7}}>
+      <input value={val} onChange={e=>setVal(e.target.value)} placeholder={placeholder||""}
+        style={{flex:1,background:"var(--bg0)",border:"1px solid var(--bdr)",borderRadius:7,padding:"7px 10px",color:"var(--t0)",fontSize:11,outline:"none",fontFamily:"monospace"}}/>
+      <Btn label={ok?"Saved!":"Save"} color={ok?"var(--grn)":"var(--acc)"} sm onClick={save}/>
+    </div>
+  </div>;
+}
+function TagsEditor(){
+  const DEFAULT_TAGS="IFR, VFR, Study Level, Freeware, Payware, Major Hub, Training, Scenic, GA, Helicopter, Military, Business Jet";
+  const [tagText,setTagText]=useState(()=>localStorage.getItem("hangar_tags")||DEFAULT_TAGS);
+  const [ok,setOk]=useState(false);
+  return <div>
+    <textarea value={tagText} onChange={e=>setTagText(e.target.value)} rows={3}
+      style={{width:"100%",background:"var(--bg0)",border:"1px solid var(--bdr)",borderRadius:7,padding:"8px 10px",color:"var(--t0)",fontSize:11,resize:"vertical",outline:"none",lineHeight:1.6}}/>
+    <div style={{display:"flex",gap:8,marginTop:8,alignItems:"center"}}>
+      <Btn label={ok?"Saved!":"Save Tags"} color={ok?"var(--grn)":"var(--acc)"} sm onClick={()=>{localStorage.setItem("hangar_tags",tagText);setOk(true);setTimeout(()=>setOk(false),1800);}}/>
+      <span style={{fontSize:10,color:"var(--t3)"}}>Comma-separated. New tags added in Your Data tab appear here automatically.</span>
+    </div>
+  </div>;
+}
+
+function ChoiceListManager({label,items,onChange,placeholder="Add item..."}){
+  const [draft,setDraft]=useState("");
+  const [selected,setSelected]=useState([]);
+  function addItem(){
+    const v=(draft||"").trim(); if(!v) return;
+    if((items||[]).some(x=>String(x).toLowerCase()===v.toLowerCase())){ setDraft(""); return; }
+    onChange([...(items||[]), v].sort((a,b)=>String(a).localeCompare(String(b))));
+    setDraft("");
+  }
+  function toggle(val){ setSelected(cur=>cur.includes(val)?cur.filter(x=>x!==val):[...cur,val]); }
+  function delSelected(){ onChange((items||[]).filter(x=>!selected.includes(x))); setSelected([]); }
+  function editAt(idx,val){ const next=[...(items||[])]; next[idx]=val; onChange(next); }
+  return <div style={{marginBottom:12}}>
+    <div style={{fontSize:11,color:'var(--t1)',fontWeight:600,marginBottom:6}}>{label}</div>
+    <div style={{maxHeight:180,overflowY:'auto',border:'1px solid var(--bdr)',borderRadius:8,background:'var(--bg0)',padding:8}}>
+      {(items||[]).length===0&&<div style={{fontSize:11,color:'var(--t3)',padding:6}}>No items yet.</div>}
+      {(items||[]).map((item,idx)=><div key={label+idx} style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}><input type='checkbox' checked={selected.includes(item)} onChange={()=>toggle(item)}/><input value={item} onChange={e=>editAt(idx,e.target.value)} style={{flex:1,background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:6,padding:'6px 8px',color:'var(--t0)',fontSize:11,outline:'none'}}/></div>)}
+    </div>
+    <div style={{display:'flex',gap:8,marginTop:8,alignItems:'center'}}>
+      <input value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addItem()} placeholder={placeholder} style={{flex:1,background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:7,padding:'7px 9px',color:'var(--t0)',fontSize:11,outline:'none'}}/>
+      <Btn label='Add' color='var(--acc)' sm onClick={addItem}/>
+      <Btn label='Delete Checked' color='var(--red)' sm onClick={delSelected} disabled={selected.length===0}/>
+    </div>
+  </div>;
+}
+
+function DataOptionsManager(){
+  const defaultSubtypes={Aircraft:["Airliner","General Aviation","Business Jet","Helicopter","Military","Regional"],Airport:["Large Commercial","Medium Commercial","General Aviation","Heliport","Seaplane Base","Closed"],Scenery:["City","Region","Landmark","Mesh","Airport scenery"],Utility:["Navigation","Tool","Weather","Mission"],Mod:["Livery","Enhancement","Other"]};
+  const [sources,setSources]=useState(()=>{try{const raw=JSON.parse(localStorage.getItem('hangar_sources')||'null');return Array.isArray(raw)&&raw.length?raw:["Aerosoft Shop","flightsim.to","Flightbeam Store","FlyTampa Store","GitHub","iniBuilds Store","Just Flight","MSFS Marketplace","Orbx Direct","PMDG Store","Simmarket","Other"]}catch(e){return ["Aerosoft Shop","flightsim.to","Flightbeam Store","FlyTampa Store","GitHub","iniBuilds Store","Just Flight","MSFS Marketplace","Orbx Direct","PMDG Store","Simmarket","Other"]}});
+  const [avionics,setAvionics]=useState(()=>{try{const raw=JSON.parse(localStorage.getItem('hangar_avionics')||'null');return Array.isArray(raw)&&raw.length?raw:["Analog","G1000","G3000","G430","G530","G550","G750","GTN 750","Unsure"]}catch(e){return ["Analog","G1000","G3000","G430","G530","G550","G750","GTN 750","Unsure"]}});
+  const [tags,setTags]=useState(()=>{try{const raw=localStorage.getItem('hangar_tags');return raw?raw.split(',').map(x=>x.trim()).filter(Boolean):["IFR","VFR","Study Level","Freeware","Payware"]}catch(e){return ["IFR","VFR","Study Level","Freeware","Payware"]}});
+  const [subtypes,setSubtypes]=useState(()=>{try{const raw=JSON.parse(localStorage.getItem('hangar_subtypes')||'null');return raw&&typeof raw==='object'?raw:defaultSubtypes}catch(e){return defaultSubtypes}});
+  const [activeType,setActiveType]=useState('Aircraft');
+  const [ok,setOk]=useState(false);
+  async function save(){
+    const cleanSources=(sources||[]).map(x=>String(x).trim()).filter(Boolean).sort((a,b)=>a.localeCompare(b));
+    const cleanAvionics=(avionics||[]).map(x=>String(x).trim()).filter(Boolean).sort((a,b)=>a.localeCompare(b));
+    const cleanTags=(tags||[]).map(x=>String(x).trim()).filter(Boolean);
+    const cleanSubtypes=Object.fromEntries(Object.entries(subtypes||{}).map(([k,v])=>[k,(v||[]).map(x=>String(x).trim()).filter(Boolean)]));
+    localStorage.setItem('hangar_sources', JSON.stringify(cleanSources));
+    localStorage.setItem('hangar_avionics', JSON.stringify(cleanAvionics));
+    localStorage.setItem('hangar_tags', cleanTags.join(', '));
+    localStorage.setItem('hangar_subtypes', JSON.stringify(cleanSubtypes));
+    try{ await fetch('/api/data-options',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({options:{sources:cleanSources, avionics:cleanAvionics, tags:cleanTags, subtypes:cleanSubtypes}})});}catch(e){}
+    setOk(true); setTimeout(()=>setOk(false),1800);
+  }
+  return <div>
+    <div style={{fontSize:11,color:'var(--t2)',marginBottom:10}}>Manage drop-down choices here. Add new items, edit existing names inline, or delete checked items.</div>
+    <ChoiceListManager label='Addon Sources' items={sources} onChange={setSources} placeholder='Add source...'/>
+    <ChoiceListManager label='Avionics Choices' items={avionics} onChange={setAvionics} placeholder='Add avionics option...'/>
+    <ChoiceListManager label='Tag Library' items={tags} onChange={setTags} placeholder='Add tag...'/>
+    <div style={{marginBottom:12}}>
+      <div style={{fontSize:11,color:'var(--t1)',fontWeight:600,marginBottom:6}}>Subtype Choices</div>
+      <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>{["Aircraft","Airport","Scenery","Utility","Mod"].map(t=><button key={t} onClick={()=>setActiveType(t)} style={{background:activeType===t?'var(--accD)':'var(--bg0)',border:'1px solid '+(activeType===t?'var(--accB)':'var(--bdr)'),color:activeType===t?'var(--acc)':'var(--t1)',borderRadius:7,padding:'6px 10px',cursor:'pointer',fontSize:11,fontWeight:600}}>{t}</button>)}</div>
+      <ChoiceListManager label={activeType+' Subtypes'} items={(subtypes[activeType])||[]} onChange={(vals)=>setSubtypes(cur=>({...cur,[activeType]:vals}))} placeholder={'Add '+activeType.toLowerCase()+' subtype...'}/>
+    </div>
+    <div style={{display:'flex',gap:8,alignItems:'center'}}><Btn label={ok?'Saved!':'Save Data Options'} color={ok?'var(--grn)':'var(--acc)'} sm onClick={save}/><span style={{fontSize:10,color:'var(--t3)'}}>These lists drive the dropdowns in Your Data.</span></div>
+  </div>;
+}
+
+function TopFolderSelector({folders,selected,onToggle,onSave,onReload,onReset,apiMode}){
+  return <div style={{background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:12,padding:18,marginTop:14}}><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,flexWrap:"wrap"}}><div><div style={{fontSize:12,fontWeight:700,color:"var(--t0)",marginBottom:4}}>Addon Folder Selection</div><div style={{fontSize:11,color:"var(--t2)"}}>Only top folders in your Addons Root are shown here. Checked folders are scanned.</div></div><div style={{display:"flex",gap:8,flexWrap:"wrap"}}><Btn label="Save Selection" color="var(--acc)" sm onClick={onSave}/><Btn label="Reload" color="var(--t2)" sm onClick={onReload}/><Btn label="Reset Library" color="var(--red)" sm onClick={onReset}/></div></div>{!apiMode&&<div style={{fontSize:11,color:"var(--amb)",marginTop:10}}>Start the backend to load folder choices.</div>}{apiMode&&folders.length===0&&<div style={{fontSize:11,color:"var(--t2)",marginTop:10}}>Set and save Addons Root first, then reload this list.</div>}{folders.length>0&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",gap:8,marginTop:12}}>{folders.map(f=><label key={f.path} className="cb-item" style={{background:"var(--bg0)",border:"1px solid var(--bdr)",borderRadius:8,padding:"9px 10px"}}><input type="checkbox" checked={selected.includes(f.path)} onChange={()=>onToggle(f.path)}/><span style={{color:"var(--t0)",fontSize:12,fontWeight:600}}>{f.name}</span><span style={{marginLeft:"auto",fontSize:10,color:"var(--t3)"}}>{f.name}</span></label>)}</div>}</div>;
+}
+
+function App(){
+  const [addons,setAddons]=useState([]);
+  const [apiMode,setApiMode]=useState(false);
+  const [initialLoad,setInitialLoad]=useState(true);
+  const [section,setSection]=useState("library");
+  const [selected,setSelected]=useState(null),[detail,setDetail]=useState(null);
+  const [pickedIds,setPickedIds]=useState([]);
+  const [removeFolders,setRemoveFolders]=useState(false);
+  const [notice,setNotice]=useState(null);
+  const [profiles,setProfiles]=useState([]);
+  const [localeLanguage,setLocaleLanguage]=useState(()=>localStorage.getItem('hangar_language')||'English');
+  const [localeCurrency,setLocaleCurrency]=useState(()=>localStorage.getItem('hangar_currency')||'$');
+  const [localeCalendar,setLocaleCalendar]=useState(()=>localStorage.getItem('hangar_calendar_format')||localStorage.getItem('hangar_calendar')||'MM/DD/YYYY');
+  const [noteModal,setNoteModal]=useState(null);
+  const [search,setSearch]=useState(""),[filterType,setFilterType]=useState("All");
+  const [filterSub,setFilterSub]=useState("All");
+  const [filterCountries,setFilterCountries]=useState([]),[filterRegions,setFilterRegions]=useState([]);
+  const [favOnly,setFavOnly]=useState(false),[sort,setSort]=useState("title");
+  const [sidebarOpen,setSidebarOpen]=useState(true);
+  const [apiKey,setApiKey]=useState(()=>localStorage.getItem("msfs_oai")||"");
+  const [googleKey,setGoogleKey]=useState(()=>localStorage.getItem("msfs_google")||"");
+  const [simName,setSimName]=useState(()=>localStorage.getItem('hangar_sim_name')||'MSFS');
+  const [simVersion,setSimVersion]=useState(()=>localStorage.getItem('hangar_sim_version')||'2024');
+  const [bulkGeminiProgress,setBulkGeminiProgress]=useState(null);
+  const [bulkOverrideExisting,setBulkOverrideExisting]=useState(false);
+  const [bulkIncludeAircraftData,setBulkIncludeAircraftData]=useState(true);
+  const [finderIds,setFinderIds]=useState(null);
+  const [scanning,setScanning]=useState(false);
+  const [scanProgress,setScanProgress]=useState(null);
+  const [topFolders,setTopFolders]=useState([]);
+  const [selectedFolders,setSelectedFolders]=useState([]);
+  const [activatedOnly,setActivatedOnly]=useState(()=>localStorage.getItem("hangar_scan_active_only")==="1");
+  const scanWsRef=useRef(null);
+  const bulkNoticeRef=useRef('');
+  const gridRef=useRef(null), gridScrollRef=useRef(0), selectedIdRef=useRef(null);
+  const isMobile=useIsMobile();
+
+  // Load backend settings + addons on startup
+  useEffect(()=>{
+    setInitialLoad(true);
+    fetch("/api/settings").then(r=>r.ok?r.json():{}).then(s=>{
+      if(s.addons_root) localStorage.setItem("hangar_addons_root",s.addons_root);
+      if(s.community_dir) localStorage.setItem("hangar_community_dir",s.community_dir);
+      if(s.openai_key) saveKey(s.openai_key);
+      if(s.google_api_key) saveGoogleKey(s.google_api_key);
+      if(s.flight_sim_name){ setSimName(s.flight_sim_name); localStorage.setItem('hangar_sim_name', s.flight_sim_name); }
+      if(s.flight_sim_version){ setSimVersion(s.flight_sim_version); localStorage.setItem('hangar_sim_version', s.flight_sim_version); }
+      if(s.language){ setLocaleLanguage(s.language); localStorage.setItem('hangar_language', s.language); }
+      if(s.currency_symbol){ setLocaleCurrency(s.currency_symbol); localStorage.setItem('hangar_currency', s.currency_symbol); }
+      if(s.calendar_format){ setLocaleCalendar(s.calendar_format); localStorage.setItem('hangar_calendar_format', s.calendar_format); localStorage.setItem('hangar_calendar', s.calendar_format); }
+    }).catch(()=>{});
+    fetch("/api/data-options").then(r=>r.ok?r.json():null).then(opts=>{
+      if(!opts) return;
+      if(Array.isArray(opts.sources)) localStorage.setItem('hangar_sources', JSON.stringify(opts.sources));
+      if(Array.isArray(opts.avionics)) localStorage.setItem('hangar_avionics', JSON.stringify(opts.avionics));
+      if(Array.isArray(opts.tags)) localStorage.setItem('hangar_tags', opts.tags.join(', '));
+      if(opts.subtypes) localStorage.setItem('hangar_subtypes', JSON.stringify(opts.subtypes));
+    }).catch(()=>{});
+    fetch("/api/addons")
+      .then(r=>{if(!r.ok)throw new Error("HTTP "+r.status);return r.json();})
+      .then(data=>{setAddons(data);setApiMode(true);setInitialLoad(false);})
+      .catch(()=>{setApiMode(false);setInitialLoad(false);});
+  },[]);
+
+  useEffect(()=>{if(selected)setSelected(addons.find(a=>a.id===selected.id)||null);},[addons]);
+  useEffect(()=>{if(detail)setDetail(addons.find(a=>a.id===detail.id)||null);},[addons]);
+
+  useEffect(()=>{
+    localStorage.setItem('hangar_language', localeLanguage || 'English');
+    localStorage.setItem('hangar_currency', localeCurrency || '$');
+    localStorage.setItem('hangar_calendar_format', localeCalendar || 'MM/DD/YYYY');
+    localStorage.setItem('hangar_calendar', localeCalendar || 'MM/DD/YYYY');
+  },[localeLanguage,localeCurrency,localeCalendar]);
+
+  useEffect(()=>{
+    setPickedIds(cur=>cur.filter(id=>addons.some(a=>a.id===id)));
+  },[addons]);
+
+  async function loadProfiles(){
+    if(!apiMode) return;
+    try{
+      const data=await fetch('/api/profiles').then(r=>r.ok?r.json():[]);
+      setProfiles(Array.isArray(data)?data:[]);
+    }catch(e){ setProfiles([]); }
+  }
+
+  useEffect(()=>{ if(apiMode) loadProfiles(); },[apiMode]);
+
+  function togglePicked(id){
+    setPickedIds(cur=>cur.includes(id)?cur.filter(x=>x!==id):[...cur,id]);
+  }
+
+  async function removeSelectedAddons(){
+    if(pickedIds.length===0) return;
+    if(!window.confirm(`Remove ${pickedIds.length} selected add-on${pickedIds.length===1?'':'s'} from the library${removeFolders?' and from disk':''}?`)) return;
+    try{
+      const data=await fetchJsonSafe('/api/library/remove-selected',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({addon_ids:pickedIds,remove_folders:removeFolders})});
+      setPickedIds([]);
+      setSelected(null);
+      refreshLibrary();
+      setNotice({title:'Selected add-ons removed',message:`Removed ${data.removed||pickedIds.length} add-on${(data.removed||pickedIds.length)===1?'':'s'} from the library.${removeFolders?' Local folders were also removed when possible.':''}`});
+    }catch(e){ alert(e.message||'Failed to remove selected add-ons'); }
+  }
+
+  async function createProfileFromSelection(name){
+    if(!name || pickedIds.length===0) return;
+    try{
+      await fetchJsonSafe('/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,addon_ids:pickedIds})});
+      await loadProfiles();
+      setNotice({title:'Profile created',message:`Saved profile “${name}” with ${pickedIds.length} selected add-ons.`});
+    }catch(e){ alert(e.message||'Failed to create profile'); }
+  }
+
+  async function applyProfile(profile){
+    if(!profile) return;
+    try{
+      const data=await fetchJsonSafe('/api/profiles/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile_id:profile.id})});
+      setNotice({title:'Profile applied',message:data.message||`Applied profile “${profile.name}”.`});
+    }catch(e){ alert(e.message||'Failed to apply profile'); }
+  }
+
+  async function deleteProfile(profile){
+    if(!profile) return;
+    if(!window.confirm(`Delete profile “${profile.name}”?`)) return;
+    try{
+      await fetchJsonSafe('/api/profiles/'+profile.id,{method:'DELETE'});
+      await loadProfiles();
+    }catch(e){ alert(e.message||'Failed to delete profile'); }
+  }
+
+  async function runLitePopulate(addon){
+    if(!addon) return;
+    try{
+      setNotice({title:'Gemini Lite test running',message:`Populating ${addon.title} with the same Flash-Lite flow used for bulk library populate.`});
+      const data=await fetchJsonSafe('/api/gemini/populate-lite/'+addon.id,{method:'POST'});
+      refreshLibrary();
+      setNotice({title:'Gemini Lite test finished',message:`${addon.title} populated using Gemini Flash-Lite.${data.search_candidate?` Search used: ${data.search_candidate}.`:''}`});
+    }catch(e){
+      setNotice({title:'Gemini Lite test failed',message:e.message||'Gemini Lite populate failed.'});
+    }
+  }
+
+  async function saveLocalization(){
+    try{
+      await Promise.all([
+        fetch('/api/settings/language',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:localeLanguage})}),
+        fetch('/api/settings/currency_symbol',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:localeCurrency})}),
+        fetch('/api/settings/calendar_format',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:localeCalendar})})
+      ]);
+      localStorage.setItem('hangar_language', localeLanguage);
+      localStorage.setItem('hangar_currency', localeCurrency);
+      localStorage.setItem('hangar_calendar_format', localeCalendar);
+      localStorage.setItem('hangar_calendar', localeCalendar);
+      setNotice({title:'Localization saved',message:`Language: ${localeLanguage} · Currency: ${localeCurrency} · Calendar: ${localeCalendar}`});
+    }catch(e){ alert('Failed to save localization settings'); }
+  }
+
+  const setFav=(id,v)=>{
+    setAddons(ads=>ads.map(a=>a.id===id?{...a,usr:{...a.usr,fav:v}}:a));
+    fetch("/api/addons/"+id+"/user",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({fav:v})}).catch(()=>{});
+  };
+  const saveNotes=(id,notes)=>{
+    setAddons(ads=>ads.map(a=>a.id===id?{...a,usr:{...a.usr,notes}}:a));
+    fetch("/api/addons/"+id+"/user",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({notes})}).catch(()=>{});
+    setNoteModal(null);
+  };
+  const saveUser=(id,data)=>{
+    setAddons(ads=>ads.map(a=>a.id===id?{...a,
+      ...(data.summary!==undefined?{summary:data.summary}:{}),
+      ...(data.type!==undefined?{type:data.type}:{}),
+      ...(data.sub!==undefined?{sub:data.sub}:{}),
+      ...(data.title!==undefined?{title:data.title}:{}),
+      ...(data.publisher!==undefined?{publisher:data.publisher}:{}),
+      ...(data.thumbnail_path!==undefined?{thumbnail_path:data.thumbnail_path}:{}),
+      ...(data.gallery_paths!==undefined?{gallery_paths:data.gallery_paths}:{}),
+      ...(data.package_name!==undefined?{package_name:data.package_name}:{}),
+      pr:{...a.pr,
+        ...(data.manufacturer!==undefined?{manufacturer:data.manufacturer}:{}),
+        ...(data.version!==undefined?{ver:data.version}:{}),
+        ...(data.latest_version!==undefined?{latest_ver:data.latest_version}:{}),
+        ...(data.released!==undefined?{released:data.released}:{}),
+        ...(data.price!==undefined?{price:data.price}:{}),
+        ...(data.package_name!==undefined?{package_name:data.package_name}:{}),
+        ...(data.product_source_store!==undefined?{source_store:data.product_source_store}:{}),
+      },
+      rw:{...(a.rw||{}), ...(data.rw_override||{}),
+        ...(data.manufacturer!==undefined?{mfr:data.manufacturer}:{}),
+        ...(data.manufacturer_full_name!==undefined?{manufacturer_full_name:data.manufacturer_full_name}:{}),
+        ...(data.model!==undefined?{model:data.model}:{}),
+        ...(data.category!==undefined?{category:data.category}:{}),
+        ...(data.avionics!==undefined?{avionics:data.avionics}:{}),
+      },
+      usr:{...a.usr,...Object.fromEntries(Object.entries(data).filter(([k])=>["fav","rating","notes","tags","paid","source_store","avionics","features","resources","research_resources","data_resources"].includes(k)))}
+    }:a));
+    const userData=Object.fromEntries(Object.entries(data).filter(([k])=>["fav","rating","notes","tags","paid","source_store","avionics","features","resources","research_resources","data_resources"].includes(k)));
+    const metaData=Object.fromEntries(Object.entries(data).filter(([k])=>["summary","type","sub","title","publisher","thumbnail_path","gallery_paths","manufacturer","manufacturer_full_name","model","category","icao","version","latest_version","released","price","package_name","product_source_store","rw_override"].includes(k)));
+    if(Object.keys(userData).length) fetch("/api/addons/"+id+"/user",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(userData)}).catch(()=>{});
+    if(Object.keys(metaData).length) fetch("/api/addons/"+id+"/meta",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(metaData)}).catch(()=>{});
+  };
+  const saveKey=(k)=>{setApiKey(k);localStorage.setItem("msfs_oai",k);};
+  const saveGoogleKey=(k)=>{setGoogleKey(k);localStorage.setItem("msfs_google",k);};
+  useEffect(()=>{ 
+    let t=null; 
+    if(apiMode){ 
+      const poll=()=>fetch('/api/gemini/populate-library/status')
+        .then(r=>r.ok?r.json():null)
+        .then(d=>{
+          if(!d) return;
+          if(d.running || d.type==='running'){
+            bulkNoticeRef.current='';
+            setBulkGeminiProgress(d);
+            return;
+          }
+          setBulkGeminiProgress(null);
+          const sig=`${d.type||''}:${d.message||''}`;
+          if(sig && bulkNoticeRef.current!==sig){
+            bulkNoticeRef.current=sig;
+            if(d.type==='done') refreshLibrary();
+            setNotice({title:d.type==='done'?'Gemini library populate finished':'Gemini library populate stopped',message:d.message||'Library populate finished.'});
+          }
+        }).catch(()=>{}); 
+      poll(); 
+      t=setInterval(poll,1800);
+    } 
+    return ()=>{if(t) clearInterval(t);}; 
+  },[apiMode]);
+
+  async function loadTopFolders(){
+    if(!apiMode) return;
+    try{
+      const [foldersRes,selRes]=await Promise.all([
+        fetch("/api/folders/top").then(r=>r.ok?r.json():{folders:[]}),
+        fetch("/api/selection").then(r=>r.ok?r.json():{paths:[]})
+      ]);
+      setTopFolders(foldersRes.folders||[]);
+      setSelectedFolders(selRes.paths||[]);
+    }catch(e){setTopFolders([]);}
+  }
+  useEffect(()=>{if(section==="settings"&&apiMode) loadTopFolders();},[section,apiMode]);
+  function toggleFolder(path){setSelectedFolders(cur=>cur.includes(path)?cur.filter(p=>p!==path):[...cur,path]);}
+  async function saveFolderSelection(){await fetch("/api/selection",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({paths:selectedFolders})}).catch(()=>{});}
+  async function resetLibrary(){if(!window.confirm("Reset library database? This does not change Community folder links.")) return; await fetch("/api/library/reset",{method:"POST"}).catch(()=>{}); setAddons([]);setSelected(null);setDetail(null);setFinderIds(null);}
+
+
+  async function startBulkGemini(addonIds=null){
+    if(!apiMode) return;
+    const res=await fetch('/api/gemini/populate-library/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({include_overview:true,include_features:true,include_aircraft_data:bulkIncludeAircraftData,override_existing:bulkOverrideExisting,provider:'gemini',addon_ids:addonIds&&addonIds.length?addonIds:null})}).catch(()=>null);
+    if(!res) return;
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok){ alert(data.detail||'Library populate failed'); return; }
+    setBulkGeminiProgress({running:true,pct:0,current:'Preparing...',done:0,total:addonIds&&addonIds.length?addonIds.length:addons.length,message:'',type:'running'});
+  }
+
+  // Scan functions
+  async function startScan(){
+    if(scanning) return;
+    await saveFolderSelection();
+    localStorage.setItem("hangar_scan_active_only", activatedOnly?"1":"0");
+    await fetch("/api/settings/scan_activated_only",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({value:activatedOnly?"1":"0"})}).catch(()=>{});
+    setScanning(true);setScanProgress({type:"start",pct:0,current:"Starting scan..."});
+    const proto=window.location.protocol==="https:"?"wss":"ws";
+    const ws=new WebSocket(proto+"://"+window.location.host+"/ws/scan");
+    scanWsRef.current=ws;
+    ws.onopen=()=>ws.send(JSON.stringify({action:"start",selected_paths:selectedFolders}));
+    ws.onmessage=e=>{
+      const msg=JSON.parse(e.data);
+      setScanProgress(msg);
+      if(msg.addon){
+        setAddons(ads=>{
+          const ex=ads.find(a=>a.id===msg.addon.id);
+          if(ex) return ads.map(a=>a.id===msg.addon.id?msg.addon:a);
+          return [...ads,msg.addon];
+        });
+      }
+      if(msg.type==="done"||msg.type==="cancelled"||msg.type==="error"){
+        setScanning(false);
+        if(msg.type==="done"){ refreshLibrary(); setNotice({title:'Scan finished',message:`Added ${msg.added||0} new, updated ${msg.updated||0}, removed ${msg.removed||0}.`}); }
+        if(msg.type==="error") setNotice({title:'Scan error',message:msg.message||'Scan failed.'});
+        if(msg.type==="cancelled") setNotice({title:'Scan stopped',message:'The library scan was cancelled.'});
+        setTimeout(()=>setScanProgress(null), 250);
+      } 
+    };
+    ws.onerror=()=>setScanning(false);
+    ws.onclose=()=>setScanning(false);
+  }
+  function stopScan(){
+    if(scanWsRef.current){scanWsRef.current.send(JSON.stringify({action:"stop"}));}
+  }
+  function refreshLibrary(){
+    fetch("/api/addons").then(r=>r.json()).then(data=>setAddons(data)).catch(()=>{});
+  }
+
+  const isGeoFilter=filterType==="Airport"||filterType==="Scenery";
+  const subtypes=useMemo(()=>["All",...new Set(addons.filter(a=>filterType==="All"||a.type===filterType).map(a=>a.sub).filter(Boolean))]
+  ,[addons,filterType]);
+
+  const selectedItems=useMemo(()=>pickedIds.map(id=>addons.find(a=>a.id===id)).filter(Boolean),[pickedIds,addons]);
+
+  const filtered=useMemo(()=>addons.filter(a=>{
+    if(filterType!=="All"&&a.type!==filterType) return false;
+    if(filterSub!=="All"&&a.sub!==filterSub) return false;
+    if(finderIds!==null&&!finderIds.includes(a.id)) return false;
+    if(filterCountries.length>0&&!(a.rw&&filterCountries.includes(a.rw.country))) return false;
+    if(filterRegions.length>0){
+      const c=a.rw&&a.rw.country;
+      const ok=(c==="United States"&&filterRegions.includes(a.rw&&a.rw.state))||(c==="Canada"&&filterRegions.includes(a.rw&&a.rw.province))||(!["United States","Canada"].includes(c)&&filterRegions.includes(a.rw&&a.rw.region));
+      if(!ok) return false;
+    }
+    if(favOnly&&!a.usr.fav) return false;
+    if(search){const q=search.toLowerCase(),hay=[a.title,a.publisher,a.rw&&a.rw.icao,a.rw&&a.rw.mfr,locDisplay(a),...(a.usr.tags||[])].join(" ").toLowerCase();if(!hay.includes(q))return false;}
+    return true;
+  }).sort((a,b)=>{
+    if(sort==="title") return a.title.localeCompare(b.title);
+    if(sort==="type") return a.type.localeCompare(b.type)||a.title.localeCompare(b.title);
+    if(sort==="icao") return ((a.rw&&a.rw.icao)||"").localeCompare((b.rw&&b.rw.icao)||"");
+    if(sort==="fav") return (b.usr.fav?1:0)-(a.usr.fav?1:0);
+    if(sort==="price") return ((a.pr&&a.pr.price)||0)-((b.pr&&b.pr.price)||0);
+    return 0;
+  }),[addons,filterType,filterSub,finderIds,filterCountries,filterRegions,favOnly,search,sort]);
+
+  const stats={total:addons.length,airports:addons.filter(a=>a.type==="Airport").length,aircraft:addons.filter(a=>a.type==="Aircraft").length,favs:addons.filter(a=>a.usr.fav).length};
+  const NAV=[{id:"library",ic:"L",l:"Library"},{id:"finder",ic:"F",l:"Aircraft Finder"},{id:"sets",ic:"C",l:"Collections",stub:true},{id:"settings",ic:"S",l:"Settings"}];
+  const TYPES=["All","Aircraft","Airport","Scenery","Utility"];
+
+  if(detail) return <div style={{height:"100%",width:"100%",overflow:"hidden",display:"flex",flexDirection:"column"}}>
+    <DetailPage a={detail} onBack={()=>{setDetail(null);requestAnimationFrame(()=>{const el=gridRef.current;if(el) el.scrollTop=gridScrollRef.current||0;const card=selectedIdRef.current&&document.getElementById("addon-card-"+selectedIdRef.current);if(card) card.scrollIntoView({block:"nearest"});});}} onFav={setFav} onSaveUser={saveUser} apiKey={apiKey} googleKey={googleKey} onSetKey={saveKey} onSetGoogleKey={saveGoogleKey} allAddons={addons}/>
+  </div>;
+
+  return <div style={{display:"flex",height:"100%",width:"100%",overflow:"hidden",background:"var(--bg0)"}}>
+    <div style={{width:sidebarOpen?188:50,flexShrink:0,background:"var(--bg1)",borderRight:"1px solid var(--bdr)",display:"flex",flexDirection:"column",transition:"width 0.22s",overflow:"hidden"}}>
+      <div style={{padding:sidebarOpen?"14px 13px":"14px 0",borderBottom:"1px solid var(--bdr)",display:"flex",alignItems:"center",gap:9,justifyContent:sidebarOpen?"flex-start":"center",flexShrink:0}}>
+        <div style={{width:32,height:32,flexShrink:0,background:"linear-gradient(135deg,#0EA5E9,#6366F1)",borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,color:"#fff",fontWeight:800,boxShadow:"0 4px 12px rgba(14,165,233,.3)"}}>H</div>
+        {sidebarOpen&&<div><div style={{fontFamily:"'Orbitron',monospace",fontSize:11,fontWeight:800,color:"var(--t0)",letterSpacing:"0.06em"}}>MSFS</div><div style={{fontFamily:"'Orbitron',monospace",fontSize:8,color:"var(--acc)",letterSpacing:"0.13em"}}>HANGAR v9</div></div>}
+      </div>
+      <nav style={{flex:1,padding:"9px 6px",display:"flex",flexDirection:"column",gap:2,overflowY:"auto",minHeight:0}}>
+        {NAV.map(n=>(
+          <button key={n.id} onClick={()=>!n.stub&&setSection(n.id)}
+            style={{background:section===n.id?"var(--accD)":"transparent",border:"1px solid "+(section===n.id?"var(--accB)":"transparent"),color:section===n.id?"var(--acc)":n.stub?"var(--t3)":"var(--t2)",borderRadius:8,padding:sidebarOpen?"8px 11px":"8px 0",cursor:n.stub?"not-allowed":"pointer",display:"flex",alignItems:"center",gap:8,fontSize:12,fontWeight:section===n.id?600:400,transition:"all 0.14s",width:"100%",justifyContent:sidebarOpen?"flex-start":"center",fontFamily:"inherit",opacity:n.stub?0.45:1}}>
+            <span style={{fontSize:14,flexShrink:0,fontWeight:700}}>{n.ic}</span>
+            {sidebarOpen&&<><span>{n.l}</span>{n.stub&&<span style={{fontSize:9,color:"var(--t3)",marginLeft:"auto"}}>SOON</span>}</>}
+          </button>
+        ))}
+        {sidebarOpen&&section==="library"&&isGeoFilter&&<div style={{marginTop:8}}>
+          <GeoFilter addons={addons} filterType={filterType} countries={filterCountries} setCountries={setFilterCountries} regions={filterRegions} setRegions={setFilterRegions}/>
+        </div>}
+      </nav>
+      {sidebarOpen&&<div style={{padding:"9px 13px",borderTop:"1px solid var(--bdr)",flexShrink:0}}>
+        <div style={{fontSize:9,color:"var(--t3)",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:7}}>Library</div>
+        {[["Total",stats.total,"var(--t1)"],["Airports",stats.airports,"var(--acc)"],["Aircraft",stats.aircraft,"var(--grn)"],["Favorites",stats.favs,"#FBBF24"]].map(([l,v,c])=>(
+          <div key={l} style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+            <span style={{fontSize:11,color:"var(--t2)"}}>{l}</span>
+            <span style={{fontSize:11,fontWeight:700,color:c}}>{v}</span>
+          </div>
+        ))}
+      </div>}
+      <button onClick={()=>setSidebarOpen(!sidebarOpen)} style={{background:"none",border:"none",color:"var(--t3)",padding:"9px",cursor:"pointer",fontSize:13,borderTop:"1px solid var(--bdr)",fontFamily:"inherit",flexShrink:0}}>{sidebarOpen?"<":">"}</button>
+    </div>
+    <div style={{flex:1,display:"flex",flexDirection:"column",minWidth:0,overflow:"hidden"}}>
+      <div style={{height:52,display:"flex",alignItems:"center",gap:6,padding:"0 14px",borderBottom:"1px solid var(--bdr)",background:"var(--bg1)",flexShrink:0,overflowX:"auto"}}>
+        {section==="library"&&<>
+          <div style={{position:"relative",flexShrink:0,width:isMobile?140:230}}>
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search name, ICAO, publisher..."
+              style={{width:"100%",background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:7,padding:"7px 9px 7px 24px",color:"var(--t0)",fontSize:12,outline:"none"}}/>
+          </div>
+          <select value={filterType} onChange={e=>{setFilterType(e.target.value);setFilterSub("All");setFilterCountries([]);setFilterRegions([]);setSearch("");}}
+            style={{background:"var(--bg2)",border:"1px solid var(--bdr)",color:"var(--t1)",borderRadius:7,padding:"6px 9px",fontSize:11,cursor:"pointer",flexShrink:0}}>
+            {TYPES.map(t=><option key={t}>{t}</option>)}
+          </select>
+          {subtypes.length>1&&!isGeoFilter&&<select value={filterSub} onChange={e=>setFilterSub(e.target.value)}
+            style={{background:"var(--bg2)",border:"1px solid var(--bdr)",color:"var(--t1)",borderRadius:7,padding:"6px 9px",fontSize:11,cursor:"pointer",flexShrink:0}}>
+            {subtypes.map(t=><option key={t}>{t}</option>)}
+          </select>}
+          {isGeoFilter&&filterCountries.length>0&&<div style={{background:"var(--accD)",border:"1px solid var(--accB)",borderRadius:7,padding:"4px 9px",fontSize:11,color:"var(--acc)",fontWeight:600,flexShrink:0,whiteSpace:"nowrap"}}>
+            {filterCountries.map(c=>abbr(c)).join(", ")}{filterRegions.length>0?" / "+filterRegions.join(", "):""}
+          </div>}
+          {finderIds!==null&&<div style={{display:"flex",alignItems:"center",gap:6,background:"var(--grnD)",border:"1px solid var(--grn)",borderRadius:7,padding:"4px 9px",fontSize:11,color:"var(--grn)",flexShrink:0,whiteSpace:"nowrap"}}>
+            Finder: {finderIds.length}
+            <span onClick={()=>setFinderIds(null)} style={{cursor:"pointer",fontWeight:700}}>x</span>
+          </div>}
+          <button onClick={()=>setFavOnly(!favOnly)} style={{background:favOnly?"var(--ambD)":"transparent",border:"1px solid "+(favOnly?"rgba(251,191,36,.3)":"var(--bdr)"),color:favOnly?"var(--amb)":"var(--t2)",borderRadius:7,padding:"6px 10px",fontSize:11,fontWeight:600,fontFamily:"inherit",flexShrink:0,cursor:"pointer"}}>{favOnly?"Favs On":"Favs"}</button>
+          <select value={sort} onChange={e=>setSort(e.target.value)}
+            style={{marginLeft:"auto",background:"var(--bg2)",border:"1px solid var(--bdr)",color:"var(--t1)",borderRadius:7,padding:"6px 9px",fontSize:11,cursor:"pointer",flexShrink:0}}>
+            <option value="title">Name</option><option value="type">Type</option><option value="icao">ICAO</option><option value="fav">Favorites</option><option value="price">Price</option>
+          </select>
+          <span style={{fontSize:11,color:"var(--t2)",flexShrink:0,whiteSpace:"nowrap"}}>{filtered.length}</span>{pickedIds.length>0&&<div style={{background:'var(--vioD)',border:'1px solid var(--vio)',borderRadius:7,padding:'4px 9px',fontSize:11,color:'var(--vio)',fontWeight:600,flexShrink:0,whiteSpace:'nowrap'}}>Selected: {pickedIds.length} <span onClick={()=>setPickedIds([])} style={{cursor:'pointer',marginLeft:6}}>x</span></div>}
+        </>}
+        {section!=="library"&&<div style={{fontSize:14,fontWeight:700,color:"var(--t0)"}}>{(NAV.find(n=>n.id===section)||{}).l||""}</div>}
+      </div>
+      <div style={{flex:1,display:"flex",overflow:"hidden"}}>
+        <div style={{flex:selected&&section==="library"&&!isMobile?"0 0 70%":"1",overflowY:"auto",minWidth:0,transition:"flex 0.2s"}}>
+          {section==="library"&&<div style={{padding:"12px 14px"}}>
+            <div className="card-grid">
+              {filtered.map((a,i)=>(
+                <div key={a.id} className="fadeUp" style={{animationDelay:(i*0.03)+"s"}}>
+                  <AddonCard a={a} selected={!isMobile&&selected&&selected.id===a.id} onClick={setSelected} onFav={setFav} onTogglePick={togglePicked} picked={pickedIds.includes(a.id)}/>
+                </div>
+              ))}
+              {initialLoad&&<div style={{gridColumn:"1/-1",textAlign:"center",padding:"60px 0",color:"var(--t2)"}}>
+                <div className="spin" style={{width:32,height:32,border:"3px solid var(--acc)",borderTopColor:"transparent",borderRadius:"50%",margin:"0 auto 16px"}}/>
+                <div style={{fontSize:13}}>Loading library...</div>
+              </div>}
+              {!initialLoad&&!apiMode&&addons.length===0&&<div style={{gridColumn:"1/-1",textAlign:"center",padding:"60px 0",color:"var(--t2)"}}>
+                <div style={{fontSize:40,marginBottom:16}}>📂</div>
+                <div style={{fontSize:16,fontWeight:700,color:"var(--t0)",marginBottom:8}}>No addons in library</div>
+                <div style={{fontSize:13,marginBottom:20,maxWidth:400,margin:"0 auto 20px"}}>Go to Settings, set your Addons Root folder, then click Scan Now to populate your library from your installed MSFS addons.</div>
+                <Btn label="Go to Settings" color="var(--acc)" onClick={()=>setSection("settings")}/>
+              </div>}
+              {!initialLoad&&apiMode&&addons.length===0&&<div style={{gridColumn:"1/-1",textAlign:"center",padding:"60px 0",color:"var(--t2)"}}>
+                <div style={{fontSize:40,marginBottom:16}}>📂</div>
+                <div style={{fontSize:16,fontWeight:700,color:"var(--t0)",marginBottom:8}}>Library is empty</div>
+                <div style={{fontSize:13,marginBottom:20}}>Go to Settings and run a Scan to find your installed addons.</div>
+                <Btn label="Scan Now" color="var(--acc)" onClick={()=>{setSection("settings");startScan();}}/>
+              </div>}
+              {!initialLoad&&filtered.length===0&&addons.length>0&&<div style={{gridColumn:"1/-1",textAlign:"center",padding:"60px 0",color:"var(--t2)",fontSize:13}}>No addons match your filters.</div>}
+            </div>
+          </div>}
+          {section==="finder"&&<AircraftFinder addons={addons} onFilterGrid={ids=>{setFinderIds(ids);setSection("library");}}/>}
+          {section==="settings"&&<div style={{padding:24,maxWidth:760,overflowY:"auto",height:"100%"}}>
+            <div style={{fontSize:18,fontWeight:800,color:"var(--t0)",marginBottom:20}}>Settings</div>
+
+            {/* OpenAI API Key */}
+            <div style={{background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:12,padding:18,marginBottom:14}}>
+              <div style={{fontSize:12,fontWeight:700,color:"var(--t0)",marginBottom:4}}>AI — OpenAI API Key (GPT-4o)</div>
+              <div style={{fontSize:11,color:"var(--t2)",marginBottom:10}}>Used for AI Enrichment tab. Get yours at platform.openai.com</div>
+              <div style={{display:"flex",gap:8}}>
+                <input type="password" id="oai-key" defaultValue={apiKey} placeholder="sk-..." style={{flex:1,background:"var(--bg0)",border:"1px solid var(--bdr)",borderRadius:7,padding:"8px 11px",color:"var(--t0)",fontSize:12,outline:"none",fontFamily:"monospace"}}/>
+                <Btn label="Save" color="var(--acc)" sm onClick={()=>{const v=document.getElementById("oai-key");const k=v&&v.value||"";saveKey(k);fetch("/api/settings/openai_key",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({value:k})}).catch(()=>{});}}/>
+              </div>
+              {apiKey&&<div style={{fontSize:11,color:"var(--grn)",marginTop:6}}>✓ API key saved</div>}
+            </div>
+
+            <div style={{background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:12,padding:18,marginBottom:14}}>
+              <div style={{fontSize:12,fontWeight:700,color:"var(--t0)",marginBottom:4}}>AI — Google Gemini API Key</div>
+              <div style={{fontSize:11,color:"var(--t2)",marginBottom:10}}>Used for Populate with Gemini actions. Gemini has a free tier with lower rate limits.</div>
+              <div style={{display:"flex",gap:8}}>
+                <input type="password" id="google-key" defaultValue={googleKey} placeholder="AIza..." style={{flex:1,background:"var(--bg0)",border:"1px solid var(--bdr)",borderRadius:7,padding:"8px 11px",color:"var(--t0)",fontSize:12,outline:"none",fontFamily:"monospace"}}/>
+                <Btn label="Save" color="var(--acc)" sm onClick={()=>{const v=document.getElementById("google-key");const k=v&&v.value||"";saveGoogleKey(k);fetch("/api/settings/google_api_key",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({value:k})}).catch(()=>{});}}/>
+              </div>
+              {googleKey&&<div style={{fontSize:11,color:"var(--grn)",marginTop:6}}>✓ Google API key saved</div>}
+            </div>
+
+            <div style={{background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:12,padding:18,marginBottom:14}}>
+              <div style={{fontSize:12,fontWeight:700,color:"var(--t0)",marginBottom:4}}>Flight Simulator Target</div>
+              <div style={{fontSize:11,color:"var(--t2)",marginBottom:10}}>Used by Populate with Gemini so release date, list price, and latest version are searched for the correct simulator platform.</div>
+              <div style={{display:'grid',gridTemplateColumns:'1.2fr .8fr auto',gap:8,alignItems:'center'}}>
+                <input value={simName} onChange={e=>setSimName(e.target.value)} placeholder='MSFS' style={{background:"var(--bg0)",border:"1px solid var(--bdr)",borderRadius:7,padding:"8px 11px",color:"var(--t0)",fontSize:12,outline:"none"}}/>
+                <input value={simVersion} onChange={e=>setSimVersion(e.target.value)} placeholder='2024' style={{background:"var(--bg0)",border:"1px solid var(--bdr)",borderRadius:7,padding:"8px 11px",color:"var(--t0)",fontSize:12,outline:"none"}}/>
+                <Btn label="Save" color="var(--acc)" sm onClick={()=>{localStorage.setItem('hangar_sim_name',simName); localStorage.setItem('hangar_sim_version',simVersion); fetch('/api/settings/flight_sim_name',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:simName})}).catch(()=>{}); fetch('/api/settings/flight_sim_version',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:simVersion})}).catch(()=>{});}}/>
+              </div>
+            </div>
+
+            {/* Library Paths */}
+            <div style={{background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:12,padding:18,marginBottom:14}}>
+              <div style={{fontSize:12,fontWeight:700,color:"var(--t0)",marginBottom:4}}>Library Management</div>
+              <div style={{fontSize:11,color:"var(--t2)",marginBottom:12}}>Set your folder paths, then click Scan Now to refresh the library from your installed addons.</div>
+              <PathInput id="addons_root" label="Addons Root Folder" hint="Where your MSFS addons are stored (not the Community folder)" placeholder="D:\\MSFS Addons"/>
+              <PathInput id="community_dir" label="Community Folder" hint="MSFS Community folder where links are created" placeholder="C:\\Users\\YourName\\...\\Community"/>
+
+              <div style={{borderTop:"1px solid var(--bdr)",paddingTop:12,marginTop:4}}>
+                <div style={{fontSize:11,color:"var(--t1)",fontWeight:600,marginBottom:8}}>Scan Library</div>
+                {scanProgress&&scanProgress.type!=="done"&&<div style={{marginBottom:10}}>
+                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                    <span style={{fontSize:11,color:"var(--t1)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"70%"}}>{scanProgress.current||"Scanning..."}</span>
+                    <span style={{fontSize:11,color:"var(--acc)",fontWeight:700,flexShrink:0}}>{scanProgress.pct||0}%</span>
+                  </div>
+                  <div style={{height:6,background:"var(--bg3)",borderRadius:3,overflow:"hidden"}}>
+                    <div style={{height:"100%",width:(scanProgress.pct||0)+"%",background:"var(--acc)",borderRadius:3,transition:"width 0.3s"}}/>
+                  </div>
+                  {scanProgress.type==="done"&&<div style={{fontSize:11,color:"var(--grn)",marginTop:6}}>Done — +{scanProgress.added} new, {scanProgress.updated} updated, {scanProgress.removed} removed</div>}
+                  {scanProgress.type==="error"&&<div style={{fontSize:11,color:"var(--red)",marginTop:6}}>{scanProgress.message}</div>}
+                </div>}
+                <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                  <Btn label={scanning?"Scanning...":"Scan Now"} color="var(--acc)" onClick={scanning?stopScan:startScan}/>
+                  {scanning&&<Btn label="Stop" color="var(--red)" sm onClick={stopScan}/>}
+                  <label style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:11,color:"var(--t1)"}}><input type="checkbox" checked={activatedOnly} onChange={e=>setActivatedOnly(e.target.checked)}/> Import only activated addons</label>
+                </div>
+                {!apiMode&&<div style={{fontSize:11,color:"var(--amb)",marginTop:8}}>Not connected to backend. Start via run_hangar.bat to enable scanning.</div>}
+              </div>
+              <TopFolderSelector folders={topFolders} selected={selectedFolders} onToggle={toggleFolder} onSave={saveFolderSelection} onReload={loadTopFolders} onReset={resetLibrary} apiMode={apiMode}/>
+            </div>
+
+
+            <div style={{background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:12,padding:18,marginBottom:14}}>
+              <div style={{fontSize:12,fontWeight:700,color:"var(--t0)",marginBottom:4}}>Populate Library with AI</div>
+              <div style={{fontSize:11,color:"var(--t2)",marginBottom:10}}>Populate addon overview summaries, detailed feature writeups, and aircraft data for the whole library using free Gemini Flash-Lite. Overview output now aims for at least two paragraphs about the addon purpose, while Features is generated as a more in-depth formatted feature breakdown. Interactive Gemini actions continue to use the regular Gemini model.</div>
+              <div style={{display:'flex',gap:12,flexWrap:'wrap',marginBottom:8}}>
+                <label style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:11,color:"var(--t1)"}}><input type="checkbox" checked={bulkOverrideExisting} onChange={e=>setBulkOverrideExisting(e.target.checked)}/> Override Existing Overview / Features</label>
+                <label style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:11,color:"var(--t1)"}}><input type="checkbox" checked={bulkIncludeAircraftData} onChange={e=>setBulkIncludeAircraftData(e.target.checked)}/> Include Aircraft Data</label>
+              </div>
+              <div style={{fontSize:10,color:"var(--t3)",marginBottom:10}}>When override is off, existing overview/features are preserved and Gemini fills blanks or generic placeholder summaries. Turn override on to replace current overview/features with fresh Gemini output.</div>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:10}}>
+                <Btn label={bulkGeminiProgress&&bulkGeminiProgress.running?"Populating with Gemini Lite...":"Start Library Populate using free Gemini Lite"} color="var(--vio)" sm onClick={startBulkGemini} disabled={!googleKey || (bulkGeminiProgress&&bulkGeminiProgress.running)}/>
+                {!googleKey&&<span style={{fontSize:11,color:'var(--amb)'}}>Save your Google Gemini API key first.</span>}
+              </div>
+              {bulkGeminiProgress&&bulkGeminiProgress.running&&<div>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{fontSize:11,color:"var(--t1)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"70%"}}>{bulkGeminiProgress.current||"Populating library..."}</span><span style={{fontSize:11,color:"var(--vio)",fontWeight:700}}>{bulkGeminiProgress.pct||0}%</span></div>
+                <div style={{height:6,background:"var(--bg3)",borderRadius:3,overflow:"hidden"}}><div style={{height:"100%",width:(bulkGeminiProgress.pct||0)+"%",background:"var(--vio)",borderRadius:3,transition:"width 0.3s"}}/></div>
+                {bulkGeminiProgress.message&&<div style={{fontSize:11,color:bulkGeminiProgress.type==='done'?"var(--grn)":"var(--t2)",marginTop:6}}>{bulkGeminiProgress.message}</div>}
+              </div>}
+            </div>
+
+            <div style={{background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:12,padding:18,marginBottom:14}}>
+              <div style={{fontSize:12,fontWeight:700,color:"var(--t0)",marginBottom:4}}>Localization</div>
+              <div style={{fontSize:11,color:"var(--t2)",marginBottom:10}}>Choose the language used for browser/Gemini research context plus how currency and dates are displayed in the app.</div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:10,marginBottom:10}}>
+                <div>
+                  <div style={{fontSize:10,color:"var(--t3)",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:5}}>Language</div>
+                  <select value={localeLanguage} onChange={e=>setLocaleLanguage(e.target.value)} style={{width:'100%',background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:7,padding:'8px 11px',color:'var(--t0)',fontSize:12}}>
+                    {['English','Spanish','French','German','Italian','Portuguese'].map(v=><option key={v}>{v}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <div style={{fontSize:10,color:"var(--t3)",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:5}}>Currency</div>
+                  <select value={localeCurrency} onChange={e=>setLocaleCurrency(e.target.value)} style={{width:'100%',background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:7,padding:'8px 11px',color:'var(--t0)',fontSize:12}}>
+                    {['$','€','£','¥','CAD$','AUD$'].map(v=><option key={v} value={v}>{v}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <div style={{fontSize:10,color:"var(--t3)",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:5}}>Calendar Format</div>
+                  <select value={localeCalendar} onChange={e=>setLocaleCalendar(e.target.value)} style={{width:'100%',background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:7,padding:'8px 11px',color:'var(--t0)',fontSize:12}}>
+                    {['MM/DD/YYYY','DD/MM/YYYY','YYYY-MM-DD'].map(v=><option key={v}>{v}</option>)}
+                  </select>
+                </div>
+              </div>
+              <Btn label="Save Localization" color="var(--acc)" sm onClick={saveLocalization}/>
+            </div>
+
+            <div style={{background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:12,padding:18,marginBottom:14}}>
+              <div style={{fontSize:12,fontWeight:700,color:"var(--t0)",marginBottom:4}}>Profiles (foundation)</div>
+              <div style={{fontSize:11,color:"var(--t2)",marginBottom:10}}>Profiles save selected add-ons and can apply them to the Community folder using symbolic-link management. Create profiles from the Library multi-select panel, then manage them here.</div>
+              {profiles.length===0?<div style={{fontSize:11,color:'var(--t2)'}}>No profiles yet. Pick add-ons in the library and create your first profile.</div>:<div style={{display:'flex',flexDirection:'column',gap:8}}>{profiles.map(p=><div key={p.id} style={{background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:10,padding:'10px 12px',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}><div style={{flex:1,minWidth:0}}><div style={{fontSize:12,fontWeight:700,color:'var(--t0)'}}>{p.name}</div><div style={{fontSize:11,color:'var(--t2)'}}>{(p.addon_ids||[]).length} add-ons</div></div><Btn label='Apply' color='var(--vio)' sm onClick={()=>applyProfile(p)}/><Btn label='Delete' color='var(--red)' sm onClick={()=>deleteProfile(p)}/></div>)}</div>}
+            </div>
+
+            {/* Display Mode */}
+            <div style={{background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:12,padding:18,marginBottom:14}}>
+              <div style={{fontSize:12,fontWeight:700,color:"var(--t0)",marginBottom:10}}>Display Mode</div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                {[["system","System Default"],["dark","Dark"],["light","Light"]].map(([mode,label])=>(
+                  <button key={mode} onClick={()=>{
+                    const r=document.documentElement;
+                    if(mode==="light"){r.style.setProperty("--bg0","#F8FAFC");r.style.setProperty("--bg1","#FFFFFF");r.style.setProperty("--bg2","#F1F5F9");r.style.setProperty("--bg3","#E2E8F0");r.style.setProperty("--card","#FFFFFF");r.style.setProperty("--cardH","#F1F5F9");r.style.setProperty("--bdr","rgba(0,0,0,0.1)");r.style.setProperty("--bdrH","rgba(0,0,0,0.2)");r.style.setProperty("--t0","#0F172A");r.style.setProperty("--t1","#334155");r.style.setProperty("--t2","#64748B");r.style.setProperty("--t3","#94A3B8");}
+                    else{r.style.setProperty("--bg0","#050C18");r.style.setProperty("--bg1","#0A1628");r.style.setProperty("--bg2","#0F1E35");r.style.setProperty("--bg3","#152540");r.style.setProperty("--card","#192A45");r.style.setProperty("--cardH","#1F3254");r.style.setProperty("--bdr","rgba(255,255,255,0.07)");r.style.setProperty("--bdrH","rgba(255,255,255,0.18)");r.style.setProperty("--t0","#F1F5F9");r.style.setProperty("--t1","#94A3B8");r.style.setProperty("--t2","#64748B");r.style.setProperty("--t3","#475569");}
+                    localStorage.setItem("hangar-theme",mode);
+                  }} style={{background:"var(--bg0)",border:"2px solid var(--bdr)",color:"var(--t0)",borderRadius:8,padding:"8px 16px",cursor:"pointer",fontSize:12,fontFamily:"inherit",fontWeight:600}}>{label}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Data Management */}
+            <div style={{background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:12,padding:18,marginBottom:14}}>
+              <div style={{fontSize:12,fontWeight:700,color:"var(--t0)",marginBottom:4}}>Data Management</div>
+              <div style={{fontSize:11,color:"var(--t2)",marginBottom:10}}>Manage dropdown choices used in Your Data.</div>
+              <DataOptionsManager/>
+            </div>
+
+            {/* Tags Management */}
+            <div style={{background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:12,padding:18,marginBottom:14}}>
+              <div style={{fontSize:12,fontWeight:700,color:"var(--t0)",marginBottom:4}}>Tag Library</div>
+              <div style={{fontSize:11,color:"var(--t2)",marginBottom:10}}>Tags defined here appear as quick-add options in Your Data tab.</div>
+              <TagsEditor/>
+            </div>
+          </div>}
+        </div>
+        {(section==="library"&&!isMobile&&(pickedIds.length>1 || selected))&&(
+          <div style={{flex:"0 0 30%",minWidth:290,maxWidth:420,flexShrink:0,borderLeft:"1px solid var(--bdr)",overflow:"hidden",height:"100%"}}>
+            {pickedIds.length>1 ? (
+              <MultiSelectPanel items={selectedItems} removeFolders={removeFolders} setRemoveFolders={setRemoveFolders} onRemove={removeSelectedAddons} onCreateProfile={createProfileFromSelection}/>
+            ) : selected ? (
+              <QuickPanel a={selected} onOpen={(addon)=>{gridScrollRef.current=gridRef.current?gridRef.current.scrollTop:0;selectedIdRef.current=addon.id;setDetail(addon);}} onFav={setFav} onNote={setNoteModal} onLitePopulate={runLitePopulate}/>
+            ) : null}
+          </div>
+        )}
+      </div>
+    </div>
+    {selected&&isMobile&&section==="library"&&(
+      <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.75)",backdropFilter:"blur(4px)",zIndex:100,display:"flex",alignItems:"flex-end"}} onClick={()=>setSelected(null)}>
+        <div onClick={e=>e.stopPropagation()} style={{width:"100%",maxHeight:"88vh",background:"var(--bg1)",borderRadius:"18px 18px 0 0",overflow:"hidden",display:"flex",flexDirection:"column"}}>
+          <div style={{textAlign:"center",padding:"10px 0 4px",cursor:"pointer"}} onClick={()=>setSelected(null)}>
+            <div style={{width:40,height:4,background:"var(--bdr)",borderRadius:2,margin:"0 auto"}}/>
+          </div>
+          <div style={{flex:1,overflow:"hidden"}}><QuickPanel a={selected} onOpen={(addon)=>{gridScrollRef.current=gridRef.current?gridRef.current.scrollTop:0;selectedIdRef.current=addon.id;setDetail(addon);}} onFav={setFav} onNote={setNoteModal} onLitePopulate={runLitePopulate}/></div>
+        </div>
+      </div>
+    )}
+    {notice&&<NotificationOverlay notice={notice} onDismiss={()=>setNotice(null)}/>}
+    {noteModal&&<NotesModal a={noteModal} onSave={saveNotes} onClose={()=>setNoteModal(null)}/>}
+  </div>;
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+
+</script>
+</body>
+</html>

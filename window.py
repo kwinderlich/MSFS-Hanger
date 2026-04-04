@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from urllib import request as urlrequest, error as urlerror
 
-from paths import BROWSER_PROFILE_DIR, USER_DATA_DIR, SETTINGS_JSON_PATH
+from paths import BROWSER_PROFILE_DIR, USER_DATA_DIR, SETTINGS_JSON_PATH, load_settings_file
 
 try:
     from PySide6.QtWidgets import (
@@ -130,6 +130,7 @@ class HangarWindow(QMainWindow):
         self._devtools = None
         self._browser_state = {}
         self._requested_url = ""
+        self._requested_id = 0
 
         icon = _make_icon()
         self.setWindowTitle(APP_NAME)
@@ -137,15 +138,24 @@ class HangarWindow(QMainWindow):
         self.setMinimumSize(1100, 720)
         _dark_titlebar(int(self.winId()))
 
-        profile_path = str(BROWSER_PROFILE_DIR)
+        profile_path = Path(BROWSER_PROFILE_DIR)
+        app_storage = profile_path / 'app'
+        app_cache = profile_path / 'app_cache'
+        native_storage = profile_path / 'native'
+        native_cache = profile_path / 'native_cache'
+        for folder in (profile_path, app_storage, app_cache, native_storage, native_cache):
+            folder.mkdir(parents=True, exist_ok=True)
+
         self._profile = QWebEngineProfile("HangarProfile", None)
-        self._profile.setPersistentStoragePath(profile_path + "/app")
-        self._profile.setCachePath(profile_path + "/app_cache")
+        self._profile.setPersistentStoragePath(str(app_storage))
+        self._profile.setCachePath(str(app_cache))
+        self._profile.setHttpCacheType(QWebEngineProfile.MemoryHttpCache)
         self._profile.setPersistentCookiesPolicy(QWebEngineProfile.ForcePersistentCookies)
 
         self._native_profile = QWebEngineProfile("HangarNativeProfile", None)
-        self._native_profile.setPersistentStoragePath(profile_path + "/native")
-        self._native_profile.setCachePath(profile_path + "/native_cache")
+        self._native_profile.setPersistentStoragePath(str(native_storage))
+        self._native_profile.setCachePath(str(native_cache))
+        self._native_profile.setHttpCacheType(QWebEngineProfile.MemoryHttpCache)
         self._native_profile.setPersistentCookiesPolicy(QWebEngineProfile.ForcePersistentCookies)
 
         # Main app browser
@@ -275,16 +285,19 @@ class HangarWindow(QMainWindow):
             return
         self._browser_state = state
         requested = state.get("requested_url") or ""
+        requested_id = int(state.get("request_id") or 0)
         visible = bool(state.get("visible"))
         if visible and requested:
             self.show_browser_panel()
-            if requested != self._requested_url:
+            if requested != self._requested_url or requested_id != self._requested_id:
                 self._requested_url = requested
+                self._requested_id = requested_id
                 self._native_browser.setUrl(QUrl(requested))
                 self._browser_title.setText(state.get("requested_title") or requested)
                 self._browser_url.setText(requested)
         else:
             self._requested_url = ""
+            self._requested_id = 0
             if self._browser_panel.isVisible():
                 self.hide_browser_panel()
 
@@ -341,11 +354,20 @@ class HangarWindow(QMainWindow):
             return
         if not (url.startswith(("http://", "https://")) or "." in url.split()[0]):
             from urllib.parse import quote_plus
-            url = "https://www.google.com/search?hl=en&gl=us&pws=0&q=" + quote_plus(url)
+            provider = 'bing'
+            try:
+                provider = str(load_settings_file().get('search_provider') or 'bing').strip().lower()
+            except Exception:
+                provider = 'bing'
+            if provider == 'google':
+                url = "https://www.google.com/search?hl=en&gl=us&pws=0&q=" + quote_plus(url)
+            else:
+                url = "https://www.bing.com/search?q=" + quote_plus(url)
         elif not url.startswith(("http://", "https://")):
             url = "https://" + url
         self.show_browser_panel()
         self._requested_url = url
+        self._requested_id = 0
         self._native_browser.setUrl(QUrl(url))
         self._report_browser_state(url, self._native_browser.title() or url)
 
