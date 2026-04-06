@@ -30,6 +30,7 @@ SETTINGS_JSON_PATH = USER_DATA_DIR / "settings.json"
 LOG_DIR = USER_DATA_DIR / "logs"
 BROWSER_PROFILE_DIR = USER_DATA_DIR / "browser_profile"
 PID_FILE = USER_DATA_DIR / "backend.pid"
+DESKTOP_PID_FILE = USER_DATA_DIR / "desktop.pid"
 CACHE_ROOT = USER_DATA_DIR / "browser_profile"
 
 

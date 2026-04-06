@@ -13,10 +13,10 @@ BASE_DIR = Path(__file__).parent
 sys.path.insert(0, str(BASE_DIR))
 os.environ.setdefault('QT_OPENGL', 'software')
 _flags = os.environ.get('QTWEBENGINE_CHROMIUM_FLAGS', '').strip()
-_extra_flags = '--disable-gpu-compositing --disable-features=UseSkiaRenderer,CanvasOopRasterization'
+_extra_flags = '--disable-gpu-compositing --disable-features=UseSkiaRenderer,CanvasOopRasterization --disable-http-cache --disable-application-cache --disable-gpu-shader-disk-cache'
 if _extra_flags not in _flags:
     os.environ['QTWEBENGINE_CHROMIUM_FLAGS'] = (_flags + ' ' + _extra_flags).strip()
-from paths import initialize_user_data, PID_FILE, CACHE_ROOT, USER_DATA_DIR, SETTINGS_JSON_PATH, DB_PATH
+from paths import initialize_user_data, PID_FILE, DESKTOP_PID_FILE, CACHE_ROOT, USER_DATA_DIR, SETTINGS_JSON_PATH, DB_PATH
 _backend_proc = None
 _shell_proc = None
 
@@ -77,15 +77,51 @@ def _terminate_pid(pid: int):
 
 def clear_browser_cache():
     CACHE_ROOT.mkdir(parents=True, exist_ok=True)
-    # Clean legacy cache folders from earlier builds plus current profile cache folders.
+    # Clean legacy Chromium cache folders without touching app data stored in
+    # SQLite. We also remove service-worker cache folders because the desktop
+    # shell does not need them and stale copies were generating noisy startup
+    # errors on some Windows systems.
     targets = [CACHE_ROOT / name for name in CACHE_DIRS]
     for profile_cache in [CACHE_ROOT / 'app_cache', CACHE_ROOT / 'native_cache']:
         targets.append(profile_cache)
         for child in profile_cache.glob('old_*'):
             targets.append(child)
+    for storage_dir in [CACHE_ROOT / 'app', CACHE_ROOT / 'native']:
+        targets.extend([
+            storage_dir / 'Service Worker',
+            storage_dir / 'GPUCache',
+            storage_dir / 'Code Cache',
+            storage_dir / 'DawnCache',
+            storage_dir / 'GrShaderCache',
+            storage_dir / 'GraphiteDawnCache',
+        ])
     for target in targets:
         if target.exists():
             shutil.rmtree(target, ignore_errors=True)
+
+
+def stop_previous_desktop_instance():
+    if not DESKTOP_PID_FILE.exists():
+        return
+    try:
+        old_pid = int(DESKTOP_PID_FILE.read_text().strip())
+    except Exception:
+        old_pid = None
+    if old_pid and old_pid != os.getpid():
+        print(f"Stopping previous desktop instance PID {old_pid}...", flush=True)
+        _terminate_pid(old_pid)
+        time.sleep(1.0)
+    try:
+        DESKTOP_PID_FILE.unlink()
+    except Exception:
+        pass
+
+
+def register_desktop_instance():
+    try:
+        DESKTOP_PID_FILE.write_text(str(os.getpid()))
+    except Exception:
+        pass
 
 
 def stop_previous_backend(port: int):
@@ -159,6 +195,16 @@ def stop_backend():
 
 
 atexit.register(stop_backend)
+
+
+def _cleanup_desktop_pid():
+    try:
+        if DESKTOP_PID_FILE.exists() and DESKTOP_PID_FILE.read_text().strip() == str(os.getpid()):
+            DESKTOP_PID_FILE.unlink()
+    except Exception:
+        pass
+
+atexit.register(_cleanup_desktop_pid)
 
 
 def wait_for_server(port: int, timeout: float = 30.0) -> bool:
@@ -242,6 +288,8 @@ def open_desktop_window(port: int) -> bool:
 def main():
     global _shell_proc, _backend_proc
     initialize_user_data()
+    stop_previous_desktop_instance()
+    register_desktop_instance()
     (BASE_DIR / "frontend").mkdir(exist_ok=True)
     print("MSFS Hangar starting...", flush=True)
     print(f"User data dir: {USER_DATA_DIR}", flush=True)

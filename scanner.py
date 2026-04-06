@@ -321,6 +321,7 @@ class ScanResult:
         self.added: list[Addon] = []
         self.updated: list[Addon] = []
         self.removed: list[str] = []
+        self.skipped_ignored: int = 0
 
 
 def _expand_scan_targets(root: Path, selected_paths: Optional[list[str]] = None) -> list[tuple[Path, Path]]:
@@ -347,6 +348,7 @@ async def scan_addons(
     selected_paths: Optional[list[str]] = None,
     concurrency: int = 6,
     activated_only: bool = False,
+    ignored_rules: Optional[list[dict]] = None,
 ) -> ScanResult:
     root = Path(addons_root)
     result = ScanResult()
@@ -364,6 +366,10 @@ async def scan_addons(
         return result
 
     existing_by_path = {a.addon_path: a for a in existing.values()}
+    ignored_rules = ignored_rules or []
+    ignored_paths = {str((r.get('addon_path') or '')).strip().lower() for r in ignored_rules if (r.get('addon_path') or '').strip()}
+    ignored_packages = {str((r.get('package_name') or '')).strip().lower() for r in ignored_rules if (r.get('package_name') or '').strip()}
+    ignored_titles = {str((r.get('title') or '')).strip().lower() for r in ignored_rules if (r.get('title') or '').strip()}
     seen_paths = set()
     semaphore = asyncio.Semaphore(concurrency)
 
@@ -391,6 +397,15 @@ async def scan_addons(
                 await progress_cb(msg)
                 await asyncio.sleep(0)
                 continue
+            addon_path_key = str(addon.addon_path or '').strip().lower()
+            package_key = str(addon.package_name or '').strip().lower()
+            title_key = str(addon.title or '').strip().lower()
+            if addon_path_key in ignored_paths or (package_key and package_key in ignored_packages) or (title_key and title_key in ignored_titles):
+                result.skipped_ignored += 1
+                msg['ignored'] = True
+                await progress_cb(msg)
+                await asyncio.sleep(0)
+                continue
             seen_paths.add(addon.addon_path)
             old = existing_by_path.get(addon.addon_path)
             if old:
@@ -413,5 +428,6 @@ async def scan_addons(
         "added": len(result.added),
         "updated": len(result.updated),
         "removed": len(result.removed),
+        "ignored": result.skipped_ignored,
     })
     return result

@@ -146,16 +146,18 @@ class HangarWindow(QMainWindow):
         for folder in (profile_path, app_storage, app_cache, native_storage, native_cache):
             folder.mkdir(parents=True, exist_ok=True)
 
+        # Use explicit profile paths but disable Chromium's on-disk HTTP cache.
+        # Earlier builds could emit noisy cross-drive cache-move errors on Windows
+        # when QtWebEngine tried to recycle old cache folders. The app data itself
+        # lives in SQLite; these profiles are only for browser state.
         self._profile = QWebEngineProfile("HangarProfile", None)
         self._profile.setPersistentStoragePath(str(app_storage))
-        self._profile.setCachePath(str(app_cache))
-        self._profile.setHttpCacheType(QWebEngineProfile.MemoryHttpCache)
+        self._profile.setHttpCacheType(QWebEngineProfile.NoCache)
         self._profile.setPersistentCookiesPolicy(QWebEngineProfile.ForcePersistentCookies)
 
         self._native_profile = QWebEngineProfile("HangarNativeProfile", None)
         self._native_profile.setPersistentStoragePath(str(native_storage))
-        self._native_profile.setCachePath(str(native_cache))
-        self._native_profile.setHttpCacheType(QWebEngineProfile.MemoryHttpCache)
+        self._native_profile.setHttpCacheType(QWebEngineProfile.NoCache)
         self._native_profile.setPersistentCookiesPolicy(QWebEngineProfile.ForcePersistentCookies)
 
         # Main app browser
@@ -427,17 +429,25 @@ class HangarWindow(QMainWindow):
             from PySide6.QtCore import QObject, Slot
 
             class Bridge(QObject):
-                @Slot(result=str)
-                def pickFolder(self) -> str:
+                @Slot(str, str, result=str)
+                def pickFolder(self, title: str = "Select Folder", current: str = "") -> str:
+                    start = current if current and Path(current).exists() else str(Path.home())
                     return QFileDialog.getExistingDirectory(
-                        self.parent(), "Select Folder", "",
+                        self.parent(), title or "Select Folder", start,
                         QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
                     ) or ""
 
-                @Slot(result=str)
-                def pickFile(self) -> str:
+                @Slot(str, str, str, result=str)
+                def pickFile(self, title: str = "Select File", current: str = "", pattern: str = "") -> str:
+                    start = current if current and Path(current).exists() else str(Path.home())
+                    filt = pattern or "All Files (*)"
+                    # Accept web-style *.ext,*.ext lists from the frontend and turn them into
+                    # a Qt file-filter expression.
+                    if filt and ';;' not in filt and '(' not in filt:
+                        parts = [part.strip() for part in filt.split(',') if part.strip()]
+                        filt = f"Matching Files ({' '.join(parts)});;All Files (*)" if parts else "All Files (*)"
                     path, _ = QFileDialog.getOpenFileName(
-                        self.parent(), "Select Document", "", "Documents (*.pdf *.txt *.md);;All Files (*)"
+                        self.parent(), title or "Select File", start, filt
                     )
                     return path or ""
 

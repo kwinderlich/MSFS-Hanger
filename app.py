@@ -6,6 +6,8 @@ import json
 import mimetypes
 import base64
 import os
+import shlex
+import subprocess
 from datetime import datetime
 import re
 import shutil
@@ -25,7 +27,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from models import SUBTYPE_MAP
+from models import SUBTYPE_MAP, Addon
 import linker
 import scanner as scan_module
 import storage
@@ -49,6 +51,8 @@ _scan_cancel: Optional[asyncio.Event] = None
 _scan_running = False
 _enrich_running = False
 _enrich_progress = {"running": False, "pct": 0, "current": "", "done": 0, "total": 0, "message": "", "type": "idle"}
+_subtype_enrich_running = False
+_subtype_enrich_progress = {"running": False, "pct": 0, "current": "", "done": 0, "total": 0, "message": "", "type": "idle"}
 
 _browser_state = {
     'requested_url': '',
@@ -254,6 +258,13 @@ class UserDataUpdate(BaseModel):
     avionics: Optional[str] = None
     features: Optional[str] = None
     resources: Optional[list] = None
+    research_resources: Optional[list] = None
+    data_resources: Optional[list] = None
+    map_lat: Optional[float] = None
+    map_lon: Optional[float] = None
+    map_zoom: Optional[int] = None
+    map_search_label: Optional[str] = None
+    map_polygon: Optional[list] = None
 
 @app.patch("/api/addons/{addon_id}/user")
 async def update_user(addon_id: str, body: UserDataUpdate):
@@ -311,6 +322,8 @@ async def toggle_addon(addon_id: str, body: ToggleRequest):
     addon = await storage.get_addon(addon_id)
     if not addon:
         raise HTTPException(404)
+    if not _addon_supports_link_management(addon):
+        raise HTTPException(400, "This library item is not link-managed and cannot be activated from Community controls.")
     community_dir = await storage.get_setting("community_dir")
     if not community_dir:
         raise HTTPException(400, "Community folder not set")
@@ -354,9 +367,20 @@ async def set_selection(body: SelectionUpdate):
     await storage.set_json_setting("scan_selected_paths", body.paths)
     return {"ok": True}
 
+class RelocatePreviewRequest(BaseModel):
+    old_root: str = ""
+    new_root: str = ""
+    repair_links: bool = True
+
+
 class BatchRemoveRequest(BaseModel):
     addon_ids: list[str]
     remove_folders: bool = False
+    ignore_future: bool = False
+
+
+class IgnoreRemoveRequest(BaseModel):
+    ignore_ids: list[int]
 
 
 class ProfilePayload(BaseModel):
@@ -366,6 +390,25 @@ class ProfilePayload(BaseModel):
 
 class ProfileApplyRequest(BaseModel):
     profile_id: str
+
+
+class ExternalToolCreateRequest(BaseModel):
+    title: str
+    publisher: str = ""
+    launch_path: str
+    working_dir: str = ""
+    type: str = "Utility"
+    subtype: str = "Utility"
+    notes: str = ""
+
+
+class ImportCommunityRequest(BaseModel):
+    community_dir: str = ""
+    addons_root: str = ""
+
+
+class ImportOfficialRequest(BaseModel):
+    official_root: str = ""
 
 
 class VisibleApplyRequest(BaseModel):
@@ -398,6 +441,209 @@ class CommunityActionRequest(BaseModel):
     collection_ids: list[str] = []
 
 
+def _norm_path_str(value: str) -> str:
+    if not value:
+        return ""
+    s = str(value).strip().replace("/", "\\")
+    while len(s) > 3 and s.endswith("\\"):
+        s = s[:-1]
+    return s
+
+
+def _path_equal(a: str, b: str) -> bool:
+    return _norm_path_str(a).lower() == _norm_path_str(b).lower()
+
+
+def _is_under_root(path_value: str, root_value: str) -> bool:
+    p = _norm_path_str(path_value)
+    r = _norm_path_str(root_value)
+    if not p or not r:
+        return False
+    pl = p.lower()
+    rl = r.lower()
+    return pl == rl or pl.startswith(rl + "\\")
+
+
+def _replace_root_prefix(path_value: str, old_root: str, new_root: str) -> str:
+    p = _norm_path_str(path_value)
+    old = _norm_path_str(old_root)
+    new = _norm_path_str(new_root)
+    if not _is_under_root(p, old):
+        return path_value
+    suffix = p[len(old):]
+    if suffix.startswith("\\"):
+        return new + suffix
+    if not suffix:
+        return new
+    return new + "\\" + suffix
+
+
+def _rewrite_local_paths(value, old_root: str, new_root: str):
+    if isinstance(value, str):
+        return _replace_root_prefix(value, old_root, new_root) if _is_under_root(value, old_root) else value
+    if isinstance(value, list):
+        return [_rewrite_local_paths(v, old_root, new_root) for v in value]
+    if isinstance(value, dict):
+        return {k: _rewrite_local_paths(v, old_root, new_root) for k, v in value.items()}
+    return value
+
+
+def _rewrite_addon_paths(addon, old_root: str, new_root: str):
+    addon.addon_path = _replace_root_prefix(addon.addon_path, old_root, new_root)
+    if addon.manifest_path:
+        addon.manifest_path = _replace_root_prefix(addon.manifest_path, old_root, new_root)
+    if addon.thumbnail_path:
+        addon.thumbnail_path = _replace_root_prefix(addon.thumbnail_path, old_root, new_root)
+    addon.gallery_paths = [_replace_root_prefix(p, old_root, new_root) if _is_under_root(p, old_root) else p for p in (addon.gallery_paths or [])]
+    addon.docs = [type(doc)(**_rewrite_local_paths(doc.__dict__, old_root, new_root)) for doc in (addon.docs or [])]
+    addon.usr.resources = _rewrite_local_paths(addon.usr.resources or [], old_root, new_root)
+    addon.usr.research_resources = _rewrite_local_paths(addon.usr.research_resources or [], old_root, new_root)
+    addon.usr.data_resources = _rewrite_local_paths(addon.usr.data_resources or [], old_root, new_root)
+    addon.exists = Path(addon.addon_path).exists()
+    return addon
+
+
+def _build_relocation_plan(addons: dict[str, object], old_root: str, new_root: str):
+    old_root = _norm_path_str(old_root)
+    new_root = _norm_path_str(new_root)
+    if not old_root:
+        raise HTTPException(400, 'Old add-ons root is empty')
+    if not new_root:
+        raise HTTPException(400, 'New add-ons root is empty')
+    if _path_equal(old_root, new_root):
+        raise HTTPException(400, 'Old and new add-ons roots must be different')
+    old_exists = Path(old_root).exists()
+    new_exists = Path(new_root).exists()
+    if not old_exists:
+        raise HTTPException(400, f'Old add-ons root not found: {old_root}')
+    if not new_exists:
+        raise HTTPException(400, f'New add-ons root not found: {new_root}')
+
+    plan_items = []
+    missing = []
+    manifest_missing = []
+    total_relocated = 0
+    for addon in addons.values():
+        if not getattr(addon, 'addon_path', None):
+            continue
+        if not _is_under_root(addon.addon_path, old_root):
+            continue
+        total_relocated += 1
+        new_addon_path = _replace_root_prefix(addon.addon_path, old_root, new_root)
+        new_manifest = _replace_root_prefix(addon.manifest_path, old_root, new_root) if getattr(addon, 'manifest_path', None) else ''
+        exists_new = Path(new_addon_path).exists()
+        manifest_exists = bool(new_manifest) and Path(new_manifest).exists()
+        item = {
+            'addon_id': addon.id,
+            'title': addon.title,
+            'old_addon_path': addon.addon_path,
+            'new_addon_path': new_addon_path,
+            'old_manifest_path': addon.manifest_path or '',
+            'new_manifest_path': new_manifest or '',
+            'enabled': bool(addon.enabled),
+            'exists_new': exists_new,
+            'manifest_exists': manifest_exists if new_manifest else None,
+        }
+        plan_items.append(item)
+        if not exists_new:
+            missing.append({'addon_id': addon.id, 'title': addon.title, 'path': new_addon_path})
+        if new_manifest and not manifest_exists:
+            manifest_missing.append({'addon_id': addon.id, 'title': addon.title, 'path': new_manifest})
+
+    return {
+        'old_root': old_root,
+        'new_root': new_root,
+        'count': total_relocated,
+        'repair_candidates': len([p for p in plan_items if p['enabled']]),
+        'missing_count': len(missing),
+        'manifest_missing_count': len(manifest_missing),
+        'sample': plan_items[:8],
+        'missing_sample': missing[:8],
+        'manifest_missing_sample': manifest_missing[:8],
+        'items': plan_items,
+    }
+
+
+async def _preview_relocation(old_root: str, new_root: str):
+    addons = await storage.get_all_addons(include_removed=True)
+    return _build_relocation_plan(addons, old_root, new_root)
+
+
+async def _repair_enabled_links_after_relocation(items: list[dict], community_dir: str):
+    repaired = 0
+    failed = []
+    if not community_dir:
+        return repaired, failed
+    for item in items:
+        if not item.get('enabled'):
+            continue
+        old_path = item.get('old_addon_path') or ''
+        new_path = item.get('new_addon_path') or ''
+        try:
+            linker.disable_addon(old_path, community_dir)
+            ok, msg = linker.enable_addon(new_path, community_dir)
+            if ok:
+                repaired += 1
+            else:
+                failed.append({'title': item.get('title') or new_path, 'error': msg})
+        except Exception as e:
+            failed.append({'title': item.get('title') or new_path, 'error': str(e)})
+    return repaired, failed
+
+
+@app.post('/api/library/relocate/preview')
+async def preview_relocate_library(body: RelocatePreviewRequest):
+    old_root = body.old_root or await storage.get_setting('addons_root')
+    plan = await _preview_relocation(old_root, body.new_root)
+    return {'ok': True, **{k:v for k,v in plan.items() if k != 'items'}}
+
+
+@app.post('/api/library/relocate/execute')
+async def execute_relocate_library(body: RelocatePreviewRequest):
+    old_root = body.old_root or await storage.get_setting('addons_root')
+    plan = await _preview_relocation(old_root, body.new_root)
+    addons = await storage.get_all_addons(include_removed=True)
+    updated = []
+    updated_ids = []
+    for item in plan['items']:
+        addon = addons.get(item['addon_id'])
+        if not addon:
+            continue
+        old_path = addon.addon_path
+        addon = _rewrite_addon_paths(addon, plan['old_root'], plan['new_root'])
+        addon.enabled = bool(item.get('enabled'))
+        updated.append(addon)
+        updated_ids.append(addon.id)
+        item['old_addon_path'] = old_path
+        item['new_addon_path'] = addon.addon_path
+    if updated:
+        await storage.update_many_existing(updated)
+    # Update settings so future scans and UI defaults point to the new root.
+    await storage.set_setting('addons_root', plan['new_root'])
+    selected_paths = await storage.get_json_setting('scan_selected_paths', [])
+    migrated_selected = [_replace_root_prefix(p, plan['old_root'], plan['new_root']) if _is_under_root(p, plan['old_root']) else p for p in (selected_paths or [])]
+    await storage.set_json_setting('scan_selected_paths', migrated_selected)
+    await storage.remap_ignored_paths(plan['old_root'], plan['new_root'])
+    repaired = 0
+    repair_failed = []
+    community_dir = await storage.get_setting('community_dir')
+    if body.repair_links and community_dir:
+        repaired, repair_failed = await _repair_enabled_links_after_relocation(plan['items'], community_dir)
+    synced = await _sync_enabled_state_from_community(await storage.get_all_addons(include_removed=False))
+    return {
+        'ok': True,
+        'updated': len(updated_ids),
+        'old_root': plan['old_root'],
+        'new_root': plan['new_root'],
+        'missing_count': plan['missing_count'],
+        'manifest_missing_count': plan['manifest_missing_count'],
+        'repaired_links': repaired,
+        'repair_failed': repair_failed[:12],
+        'migrated_selected_paths': len([p for p in migrated_selected if _is_under_root(p, plan['new_root'])]),
+        'sample': plan['sample'],
+    }
+
+
 def _safe_folder_delete(path_str: str) -> tuple[bool, str]:
     try:
         p = Path(path_str).resolve()
@@ -423,6 +669,28 @@ def _profile_store(raw):
         return []
 
 
+def _build_ignore_entry(addon) -> dict:
+    return {
+        'addon_path': addon.addon_path or '',
+        'package_name': addon.package_name or getattr(addon.pr, 'package_name', None) or '',
+        'title': addon.title or '',
+        'publisher': addon.publisher or '',
+        'created_at': datetime.utcnow().isoformat() + 'Z',
+        'note': 'Removed from library but kept on disk; skip future scans.',
+    }
+
+
+@app.get('/api/library/ignored')
+async def list_ignored_library_items():
+    return {'items': await storage.list_ignored_addons()}
+
+
+@app.post('/api/library/ignored/remove')
+async def remove_ignored_library_items(body: IgnoreRemoveRequest):
+    await storage.remove_ignored_addons(body.ignore_ids or [])
+    return {'ok': True}
+
+
 @app.post('/api/library/remove-selected')
 async def remove_selected_addons(body: BatchRemoveRequest):
     addon_ids = [aid for aid in (body.addon_ids or []) if aid]
@@ -432,6 +700,7 @@ async def remove_selected_addons(body: BatchRemoveRequest):
     community_dir = await storage.get_setting('community_dir')
     removed_rows = []
     removed_folders = []
+    ignored_entries = []
     failed = []
     for addon_id in addon_ids:
         addon = addons.get(addon_id)
@@ -448,13 +717,243 @@ async def remove_selected_addons(body: BatchRemoveRequest):
                 else:
                     failed.append({'addon_id': addon_id, 'error': msg})
                     continue
+            elif body.ignore_future:
+                ignored_entries.append(_build_ignore_entry(addon))
             removed_rows.append(addon_id)
         except Exception as e:
             failed.append({'addon_id': addon_id, 'error': str(e)})
     if removed_rows:
         await storage.delete_addons(removed_rows)
-    log.info('Library remove-selected count=%s folders=%s failed=%s', len(removed_rows), len(removed_folders), len(failed))
-    return {'ok': True, 'removed_ids': removed_rows, 'removed_folders': removed_folders, 'failed': failed}
+    if ignored_entries:
+        await storage.add_ignored_addons(ignored_entries)
+    log.info('Library remove-selected count=%s folders=%s ignored=%s failed=%s', len(removed_rows), len(removed_folders), len(ignored_entries), len(failed))
+    return {'ok': True, 'removed_ids': removed_rows, 'removed_folders': removed_folders, 'ignored_count': len(ignored_entries), 'failed': failed}
+
+
+def _addon_supports_link_management(addon) -> bool:
+    return bool(addon and getattr(addon, 'managed', True) and getattr(addon, 'entry_kind', 'addon') == 'addon' and getattr(addon, 'addon_path', ''))
+
+
+def _addon_can_launch(addon) -> bool:
+    return bool(addon and getattr(addon, 'entry_kind', 'addon') == 'tool' and (getattr(addon, 'launch_path', None) or getattr(addon, 'addon_path', '')))
+
+
+def _safe_tool_subtype(raw: str) -> str:
+    value = (raw or '').strip()
+    return value or 'Utility'
+
+def _safe_tool_type(raw: str) -> str:
+    value = (raw or '').strip()
+    allowed = [t for t in DEFAULT_DATA_OPTIONS.get('subtypes', {}).keys() if t != 'External Tool']
+    if value in allowed:
+        return value
+    return 'Utility'
+
+
+def _is_real_dir_not_link(path: Path) -> bool:
+    try:
+        return path.exists() and path.is_dir() and not linker.is_junction(path)
+    except Exception:
+        return False
+
+
+def _first_manifest_under(path: Path) -> Optional[Path]:
+    try:
+        manifests = scan_module._discover_manifest_files(path)
+        return manifests[0] if manifests else None
+    except Exception:
+        return None
+
+
+def _discover_official_package_roots(root: Path) -> list[Path]:
+    """Find Marketplace / Official package folders by manifest.json only.
+
+    The Official folder can contain extra cache/support folders; importing every
+    directory was too noisy. We only import the direct parent folders that hold a
+    manifest.json anywhere below the selected root.
+    """
+    package_roots = []
+    seen = set()
+    try:
+        manifests = scan_module._discover_manifest_files(root)
+    except Exception:
+        manifests = []
+    for mf in manifests:
+        try:
+            pkg = mf.parent.resolve()
+        except Exception:
+            pkg = mf.parent
+        key = str(pkg).strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            package_roots.append(pkg)
+    return sorted(package_roots, key=lambda p: p.name.lower())
+
+
+def _existing_path_keys(addons: dict[str, Addon]) -> set[str]:
+    keys=set()
+    for addon in addons.values():
+        if getattr(addon, 'addon_path', None):
+            keys.add(str(addon.addon_path).strip().lower())
+    return keys
+
+
+def _mark_special_library_item(addon: Addon, *, entry_kind: str, managed: bool, enabled: Optional[bool] = None):
+    addon.entry_kind = entry_kind
+    addon.managed = managed
+    if enabled is not None:
+        addon.enabled = enabled
+    return addon
+
+
+async def _import_community_only_items(community_dir: str, addons_root: str = ''):
+    community_path = Path((community_dir or '').strip())
+    addons_root_path = Path((addons_root or '').strip()) if (addons_root or '').strip() else None
+    if not community_path.exists():
+        raise HTTPException(400, f'Community folder not found: {community_dir}')
+    existing = await storage.get_all_addons(include_removed=True)
+    existing_paths = _existing_path_keys(existing)
+    added=[]
+    skipped=0
+    for entry in sorted(community_path.iterdir(), key=lambda p: p.name.lower()):
+        if not _is_real_dir_not_link(entry):
+            continue
+        if addons_root_path and _is_under_root(str(entry), str(addons_root_path)):
+            skipped += 1
+            continue
+        mf = _first_manifest_under(entry)
+        if not mf:
+            skipped += 1
+            continue
+        addon = scan_module.build_addon_from_manifest(mf, None, entry)
+        if not addon:
+            skipped += 1
+            continue
+        addon = _mark_special_library_item(addon, entry_kind='community', managed=False, enabled=True)
+        addon.summary = addon.summary or 'Community-only add-on installed directly in the simulator Community folder.'
+        addon.usr.source_store = addon.usr.source_store or 'Community Folder'
+        key = str(addon.addon_path or '').strip().lower()
+        if not key or key in existing_paths:
+            skipped += 1
+            continue
+        existing_paths.add(key)
+        added.append(addon)
+    if added:
+        await storage.upsert_many(added)
+    return {'ok': True, 'added': len(added), 'skipped': skipped}
+
+
+async def _import_official_items(official_root: str):
+    official_path = Path((official_root or '').strip())
+    if not official_path.exists():
+        raise HTTPException(400, f'Official / Marketplace folder not found: {official_root}')
+    existing = await storage.get_all_addons(include_removed=True)
+    existing_paths = _existing_path_keys(existing)
+    added=[]
+    skipped=0
+    package_roots = _discover_official_package_roots(official_path)
+    for entry in package_roots:
+        key = str(entry.resolve()).strip().lower()
+        if key in existing_paths:
+            skipped += 1
+            continue
+        mf = _first_manifest_under(entry)
+        if not mf:
+            skipped += 1
+            continue
+        addon = scan_module.build_addon_from_manifest(mf, None, entry)
+        if not addon:
+            addon = Addon(
+                type='Mod',
+                sub='Official / Marketplace',
+                title=entry.name,
+                publisher='MSFS Marketplace',
+                summary='Official / Marketplace content. Inventory item only; not link-managed.',
+                addon_path=str(entry.resolve()),
+                package_name=entry.name,
+                enabled=True,
+                exists=True,
+            )
+        addon = _mark_special_library_item(addon, entry_kind='official', managed=False, enabled=True)
+        addon.usr.source_store = addon.usr.source_store or 'MSFS Marketplace'
+        if not addon.sub:
+            addon.sub = 'Official / Marketplace'
+        existing_paths.add(key)
+        added.append(addon)
+    if added:
+        await storage.upsert_many(added)
+    return {'ok': True, 'added': len(added), 'skipped': skipped, 'found': len(package_roots)}
+
+
+def _launch_tool_process(addon: Addon) -> dict:
+    launch_path = (getattr(addon, 'launch_path', None) or addon.addon_path or '').strip()
+    if not launch_path:
+        raise HTTPException(400, 'Tool executable path is empty')
+    exe = Path(launch_path)
+    if not exe.exists():
+        raise HTTPException(400, f'Tool executable not found: {launch_path}')
+    working_dir = (getattr(addon, 'working_dir', None) or str(exe.parent)).strip() or str(exe.parent)
+    args = (getattr(addon, 'launch_args', None) or '').strip()
+    cmd = [str(exe)] + (shlex.split(args, posix=False) if args else [])
+    subprocess.Popen(cmd, cwd=working_dir or None, shell=False)
+    return {'ok': True, 'title': addon.title, 'launch_path': launch_path, 'working_dir': working_dir}
+
+
+
+@app.post('/api/library/import-community-only')
+async def import_community_only(body: ImportCommunityRequest):
+    community_dir = body.community_dir or await storage.get_setting('community_dir')
+    addons_root = body.addons_root or await storage.get_setting('addons_root')
+    return await _import_community_only_items(community_dir, addons_root)
+
+
+@app.post('/api/library/import-official')
+async def import_official_library(body: ImportOfficialRequest):
+    official_root = body.official_root or await storage.get_setting('official_root')
+    if not official_root:
+        raise HTTPException(400, 'Set the Official / Marketplace folder first.')
+    return await _import_official_items(official_root)
+
+
+@app.post('/api/tools/add')
+async def add_external_tool(body: ExternalToolCreateRequest):
+    launch_path = (body.launch_path or '').strip()
+    title = (body.title or '').strip()
+    if not launch_path:
+        raise HTTPException(400, 'Executable path required')
+    if not title:
+        raise HTTPException(400, 'Display name required')
+    exe = Path(launch_path)
+    addon = Addon(
+        type=_safe_tool_type(body.type),
+        sub=_safe_tool_subtype(body.subtype),
+        title=title,
+        publisher=(body.publisher or '').strip() or exe.parent.name or 'Local Publisher',
+        summary=(body.notes or '').strip() or 'Local external tool or utility launched from MSFS Hangar.',
+        addon_path=str(exe.resolve()),
+        launch_path=str(exe.resolve()),
+        working_dir=(body.working_dir or str(exe.parent)).strip() or str(exe.parent),
+        launch_args='',
+        enabled=False,
+        exists=exe.exists(),
+        entry_kind='tool',
+        managed=False,
+    )
+    addon.usr.notes = (body.notes or '').strip()
+    addon.usr.source_store = 'Local'
+    addon.pr.source_store = 'Local'
+    await storage.upsert_addon(addon)
+    return {'ok': True, 'addon': addon.to_frontend_dict()}
+
+
+@app.post('/api/tools/{addon_id}/launch')
+async def launch_external_tool(addon_id: str):
+    addon = await storage.get_addon(addon_id)
+    if not addon:
+        raise HTTPException(404, 'Tool not found')
+    if not _addon_can_launch(addon):
+        raise HTTPException(400, 'This library item is not a launchable tool.')
+    return _launch_tool_process(addon)
 
 
 @app.get('/api/profiles')
@@ -517,6 +1016,8 @@ async def apply_profile(body: ProfileApplyRequest):
     disabled_count = 0
     failures = []
     for addon in addons:
+        if not _addon_supports_link_management(addon):
+            continue
         should_enable = addon.id in selected_ids
         try:
             ok, msg = linker.toggle_addon(addon.addon_path, community_dir, should_enable)
@@ -538,6 +1039,21 @@ DEFAULT_DATA_OPTIONS = {
     "sources": sorted(["Aerosoft Shop","flightsim.to","Flightbeam Store","FlyTampa Store","GitHub","iniBuilds Store","Just Flight","MSFS Marketplace","Orbx Direct","PMDG Store","Simmarket","Other"]),
     "avionics": sorted(["Analog","G1000","G3000","G430","G530","G550","G750","GTN 750","Unsure"]),
     "tags": ["IFR","VFR","Study Level","Freeware","Payware","Major Hub","Training","Scenic","GA","Helicopter","Military","Business Jet"],
+    "airport_sites": [
+        {"name":"SkyVector","url":"https://skyvector.com"},
+        {"name":"Airportdata.com","url":"https://www.airportdata.com"},
+        {"name":"AVIPages","url":"https://aviapages.com"},
+        {"name":"Wikipedia","url":"https://wikipedia.org"},
+        {"name":"AIRNAV","url":"https://www.airnav.com"},
+    ],
+    "aircraft_sites": [
+        {"name":"Wikipedia","url":"https://wikipedia.org"},
+        {"name":"PlaneSpotters","url":"https://www.planespotters.net"},
+        {"name":"SKYbrary","url":"https://skybrary.aero"},
+        {"name":"Airliners.net","url":"https://www.airliners.net"},
+        {"name":"Simple Flying","url":"https://simpleflying.com"},
+        {"name":"FlightGlobal","url":"https://www.flightglobal.com"},
+    ],
     "subtypes": {
         "Aircraft": ["Airliner","General Aviation","Business Jet","Helicopter","Military","Regional"],
         "Airport": ["Large Commercial","Medium Commercial","General Aviation","Heliport","Seaplane Base","Closed"],
@@ -552,7 +1068,7 @@ DEFAULT_DATA_OPTIONS = {
 
 def _merged_data_options(settings: dict[str, str]) -> dict:
     options = json.loads(json.dumps(DEFAULT_DATA_OPTIONS))
-    for key, setting_key in [("sources", "data_options_sources"), ("avionics", "data_options_avionics"), ("tags", "data_options_tags"), ("subtypes", "data_options_subtypes")]:
+    for key, setting_key in [("sources", "data_options_sources"), ("avionics", "data_options_avionics"), ("tags", "data_options_tags"), ("subtypes", "data_options_subtypes"), ("airport_sites", "data_options_airport_sites"), ("aircraft_sites", "data_options_aircraft_sites")]:
         raw = settings.get(setting_key)
         if not raw:
             continue
@@ -578,7 +1094,7 @@ class DataOptionsUpdate(BaseModel):
 @app.put("/api/data-options")
 async def set_data_options(body: DataOptionsUpdate):
     options = body.options or {}
-    for key, setting_key in [("sources", "data_options_sources"), ("avionics", "data_options_avionics"), ("tags", "data_options_tags"), ("subtypes", "data_options_subtypes")]:
+    for key, setting_key in [("sources", "data_options_sources"), ("avionics", "data_options_avionics"), ("tags", "data_options_tags"), ("subtypes", "data_options_subtypes"), ("airport_sites", "data_options_airport_sites"), ("aircraft_sites", "data_options_aircraft_sites")]:
         if key in options:
             await storage.set_json_setting(setting_key, options[key])
     return {"ok": True}
@@ -614,7 +1130,7 @@ async def replace_library_value(body: ReplaceLibraryValue):
         if changed:
             updated.append(addon)
     if updated:
-        await storage.upsert_many(updated)
+        await storage.update_many_existing(updated)
     return {"ok": True, "updated": len(updated)}
 
 
@@ -695,6 +1211,35 @@ async def folder_children(root: str = Query(...)):
         return {'root': str(root_path.resolve()), 'parent': parent, 'folders': folders}
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+@app.get('/api/folders/files')
+async def folder_files(root: str = Query(...), pattern: str = Query('*.exe')):
+    root_path = Path(root)
+    if not root_path.exists():
+        raise HTTPException(404, 'Folder not found')
+    try:
+        files = []
+        patterns = [p.strip() for p in str(pattern or '*.exe').split(',') if p.strip()] or ['*.exe']
+        for p in sorted(root_path.iterdir(), key=lambda x: x.name.lower()):
+            if p.name.startswith('.') or not p.is_file():
+                continue
+            name = p.name.lower()
+            matched = False
+            for pat in patterns:
+                pat = pat.lower().strip()
+                if pat.startswith('*.') and name.endswith(pat[1:]):
+                    matched = True
+                    break
+                if pat == '*' or pat == name:
+                    matched = True
+                    break
+            if matched:
+                files.append({'name': p.name, 'path': str(p.resolve())})
+        parent = str(root_path.parent.resolve()) if root_path.parent and root_path.parent != root_path else ''
+        return {'root': str(root_path.resolve()), 'parent': parent, 'files': files}
+    except Exception as e:
+        raise HTTPException(500, str(e))
 @app.get("/api/docs/{addon_id}/{index}")
 async def addon_doc(addon_id: str, index: int):
     addon = await storage.get_addon(addon_id)
@@ -715,7 +1260,35 @@ class AircraftFetchRequest(BaseModel):
 
 
 class AirportFetchRequest(BaseModel):
-    icao: str
+    icao: Optional[str] = None
+    title: Optional[str] = None
+
+
+class MapResolveRequest(BaseModel):
+    addon_id: str
+
+
+class MapResolveBatchRequest(BaseModel):
+    addon_ids: list[str]
+
+
+class GlobalMapCandidatePoint(BaseModel):
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+
+
+class GlobalMapCandidateItem(BaseModel):
+    addon_id: str
+    title: Optional[str] = None
+    addon_type: Optional[str] = None
+    subtype: Optional[str] = None
+    icao: Optional[str] = None
+    point: Optional[GlobalMapCandidatePoint] = None
+    polygon: Optional[list[dict]] = None
+
+
+class GlobalMapResolveRequest(BaseModel):
+    items: list[GlobalMapCandidateItem]
 
 
 @app.post("/api/aircraft/fetch-specs")
@@ -769,39 +1342,409 @@ def _extract_infobox_field(html: str, keys: list[str]) -> str:
             return re.sub(r"\s+", " ", td.get_text(" ", strip=True)).strip()
     return ""
 
+US_STATE_TO_ABBR = {
+    'alabama':'AL','alaska':'AK','arizona':'AZ','arkansas':'AR','california':'CA','colorado':'CO','connecticut':'CT','delaware':'DE',
+    'district of columbia':'DC','florida':'FL','georgia':'GA','hawaii':'HI','idaho':'ID','illinois':'IL','indiana':'IN','iowa':'IA',
+    'kansas':'KS','kentucky':'KY','louisiana':'LA','maine':'ME','maryland':'MD','massachusetts':'MA','michigan':'MI','minnesota':'MN',
+    'mississippi':'MS','missouri':'MO','montana':'MT','nebraska':'NE','nevada':'NV','new hampshire':'NH','new jersey':'NJ','new mexico':'NM',
+    'new york':'NY','north carolina':'NC','north dakota':'ND','ohio':'OH','oklahoma':'OK','oregon':'OR','pennsylvania':'PA','rhode island':'RI',
+    'south carolina':'SC','south dakota':'SD','tennessee':'TN','texas':'TX','utah':'UT','vermont':'VT','virginia':'VA','washington':'WA',
+    'west virginia':'WV','wisconsin':'WI','wyoming':'WY'
+}
+
+CA_PROVINCE_TO_ABBR = {
+    'alberta':'AB','british columbia':'BC','manitoba':'MB','new brunswick':'NB','newfoundland and labrador':'NL','newfoundland':'NL','nova scotia':'NS',
+    'northwest territories':'NT','nunavut':'NU','ontario':'ON','prince edward island':'PE','quebec':'QC','saskatchewan':'SK','yukon':'YT'
+}
+
+def _normalize_airport_region_fields(data: dict) -> dict:
+    out = dict(data or {})
+    country = str(out.get('country') or '').strip()
+    state = str(out.get('state') or '').strip()
+    province = str(out.get('province') or '').strip()
+    if country == 'United States' and state:
+        out['state'] = US_STATE_TO_ABBR.get(state.lower(), state if len(state) == 2 else state)
+        if len(str(out.get('state') or '')) == 2:
+            out['region'] = out.get('region') or out['state']
+    if country == 'Canada' and province:
+        out['province'] = CA_PROVINCE_TO_ABBR.get(province.lower(), province)
+    return out
+
+
+def _airport_lookup_queries(icao: str = '', title: str = '', municipality: str = '', country: str = '') -> list[str]:
+    queries = []
+    icao = (icao or '').strip().upper()
+    title = (title or '').strip()
+    clean_title = _clean_airport_name_for_lookup(title)
+    if icao:
+        queries.extend([f"{icao} airport", icao])
+    for candidate in [clean_title, title]:
+        candidate = (candidate or '').strip()
+        if not candidate:
+            continue
+        queries.extend([candidate, f"{candidate} airport"])
+        if municipality:
+            queries.append(f"{candidate} airport {municipality}")
+        if municipality and country:
+            queries.append(f"{candidate} airport {municipality} {country}")
+        elif country:
+            queries.append(f"{candidate} airport {country}")
+    seen = set()
+    out = []
+    for q in queries:
+        key = q.lower().strip()
+        if key and key not in seen:
+            out.append(q)
+            seen.add(key)
+    return out
+
+
+def _lookup_airport_coords_by_name(icao: str = '', title: str = '', municipality: str = '', country: str = '') -> dict:
+    headers = {"User-Agent": "MSFSHangar/2.0 (local desktop app)", "Accept-Language": "en-US,en;q=0.9"}
+    for q in _airport_lookup_queries(icao, title, municipality, country):
+        try:
+            resp = requests.get('https://nominatim.openstreetmap.org/search', params={"q": q, "format": "jsonv2", "limit": 1}, timeout=12, headers=headers)
+            resp.raise_for_status()
+            rows = resp.json() or []
+            if rows:
+                row = rows[0]
+                if _coord_valid(row.get('lat'), row.get('lon')):
+                    return {
+                        'lat': float(row['lat']),
+                        'lon': float(row['lon']),
+                        'name': row.get('display_name') or title or icao,
+                        'source': 'Nominatim',
+                        'geocode_query': q,
+                    }
+        except Exception:
+            continue
+    return {}
+
+
+def _fetch_airport_data_sync(icao: str = '', title: str = '') -> dict:
+    icao = (icao or '').strip().upper()
+    title = (title or '').strip()
+    csv_data = {}
+    if len(icao) >= 3:
+        try:
+            from airports import lookup_airport
+            csv_data = lookup_airport(icao) or {}
+        except Exception:
+            csv_data = {}
+    wiki_extra = {}
+    wiki_title = ''
+    wiki_url = ''
+    for q in _airport_lookup_queries(icao, title):
+        try:
+            search = _wiki_request({"action": "opensearch", "search": q, "limit": 5, "namespace": 0})
+            titles = search[1] if isinstance(search, list) and len(search) > 1 else []
+            urls = search[3] if isinstance(search, list) and len(search) > 3 else []
+            if titles:
+                wiki_title = titles[0]
+                wiki_url = urls[0] if urls else (f"https://en.wikipedia.org/wiki/{quote(wiki_title.replace(' ', '_'))}" if wiki_title else '')
+                break
+        except Exception:
+            continue
+    if wiki_title:
+        try:
+            parse = _wiki_request({"action": "parse", "page": wiki_title, "prop": "text"})
+            html = ((((parse or {}).get("parse") or {}).get("text") or {}).get("*")) or ""
+            wiki_extra = {
+                "first_opened": _extract_infobox_field(html, ["opened", "first opened", "opening"]),
+                "hub_airlines": _extract_infobox_field(html, ["hub for", "focus city for", "operating base for", "airline hubs"]),
+                "passenger_count": _extract_infobox_field(html, ["passengers", "passenger traffic", "annual passenger traffic"]),
+                "cargo_count": _extract_infobox_field(html, ["cargo", "cargo throughput"]),
+                "us_rank": _extract_infobox_field(html, ["rank in the united states", "u.s. rank", "us rank"]),
+                "world_rank": _extract_infobox_field(html, ["world rank", "global rank", "rank worldwide"]),
+                "wiki_title": wiki_title,
+                "wiki_url": wiki_url,
+            }
+            q = _wiki_request({"action": "query", "prop": "extracts", "titles": wiki_title, "exintro": True, "explaintext": True, "exsentences": 4})
+            pages = (((q or {}).get("query") or {}).get("pages") or {})
+            page = next(iter(pages.values())) if pages else {}
+            wiki_extra["wiki_summary"] = page.get("extract", "")
+            if not wiki_extra.get('name'):
+                wiki_extra['name'] = wiki_title
+        except Exception:
+            pass
+    merged = {**csv_data, **wiki_extra}
+    if not _coord_valid(merged.get('lat'), merged.get('lon')):
+        coords = _lookup_airport_coords_by_name(icao=icao, title=title or merged.get('name') or wiki_title, municipality=merged.get('municipality') or merged.get('city') or '', country=merged.get('country') or '')
+        if coords:
+            merged['lat'] = coords.get('lat')
+            merged['lon'] = coords.get('lon')
+            merged['geocode_query'] = coords.get('geocode_query')
+    if not merged.get('name') and title:
+        merged['name'] = _clean_airport_name_for_lookup(title) or title
+    if icao and not merged.get('icao'):
+        merged['icao'] = icao
+    src_parts = []
+    if csv_data:
+        src_parts.append('OurAirports')
+    if wiki_extra:
+        src_parts.append('Wikipedia')
+    if merged.get('geocode_query'):
+        src_parts.append('Nominatim')
+    merged['source'] = ' + '.join(src_parts) if src_parts else 'Airport Lookup'
+    return _normalize_airport_region_fields(merged)
+
+
 
 @app.post("/api/airport/fetch-data")
 async def airport_fetch_data(body: AirportFetchRequest):
     icao = (body.icao or "").strip().upper()
-    if len(icao) < 3:
-        raise HTTPException(400, "ICAO required")
+    title = (body.title or "").strip()
+    if len(icao) < 3 and len(title) < 2:
+        raise HTTPException(400, "Airport ICAO or title required")
+    return _fetch_airport_data_sync(icao=icao, title=title)
+
+
+class PlaceSearchRequest(BaseModel):
+    query: str
+    limit: Optional[int] = 5
+
+
+@app.post("/api/map/search-place")
+async def map_search_place(body: PlaceSearchRequest):
+    q = (body.query or '').strip()
+    if len(q) < 2:
+        raise HTTPException(400, 'Search text required')
+    limit = max(1, min(int(body.limit or 5), 10))
+    headers = {"User-Agent": "MSFSHangar/2.0 (local desktop app)", "Accept-Language": "en-US,en;q=0.9"}
     try:
-        from airports import lookup_airport
-        csv_data = lookup_airport(icao) or {}
+        resp = requests.get('https://nominatim.openstreetmap.org/search', params={"q": q, "format": "jsonv2", "limit": limit}, timeout=12, headers=headers)
+        resp.raise_for_status()
+        rows = resp.json() or []
+    except Exception as e:
+        raise HTTPException(502, f'Place search failed: {e}')
+    out = []
+    for row in rows:
+        try:
+            lat = float(row.get('lat'))
+            lon = float(row.get('lon'))
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                continue
+        except Exception:
+            continue
+        out.append({
+            'label': row.get('display_name') or q,
+            'lat': lat,
+            'lon': lon,
+            'type': row.get('type') or row.get('class') or '',
+        })
+    return {'results': out}
+
+
+def _coord_valid(lat, lon):
+    try:
+        lat = float(lat)
+        lon = float(lon)
+        if abs(lat) < 1e-9 and abs(lon) < 1e-9:
+            return False
+        return -90 <= lat <= 90 and -180 <= lon <= 180
     except Exception:
-        csv_data = {}
-    wiki_extra = {}
-    try:
-        search = _wiki_request({"action": "opensearch", "search": f"{icao} airport", "limit": 5, "namespace": 0})
-        titles = search[1] if isinstance(search, list) and len(search) > 1 else []
-        urls = search[3] if isinstance(search, list) and len(search) > 3 else []
-        title = titles[0] if titles else ""
-        wiki_url = urls[0] if urls else (f"https://en.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}" if title else "")
-        if title:
-            parse = _wiki_request({"action": "parse", "page": title, "prop": "text"})
-            html = ((((parse or {}).get("parse") or {}).get("text") or {}).get("*")) or ""
-            wiki_extra = {
-                "first_opened": _extract_infobox_field(html, ["opened", "first opened", "opening"]),
-                "wiki_title": title,
-                "wiki_url": wiki_url,
+        return False
+
+
+def _clean_airport_name_for_lookup(name: str) -> str:
+    n = (name or '').strip()
+    if not n:
+        return ''
+    prefixes = ['aerosoft', 'iniBuilds', 'inibuilds', 'orbx', 'pmdg', 'flightbeam', 'mk studios', 'drzewiecki design', 'latinvfr', 'fsdreamteam', 'justsim', 'feelthere']
+    lower = n.lower()
+    for pref in prefixes:
+        if lower.startswith(pref + ' '):
+            n = n[len(pref):].strip(' -:_')
+            lower = n.lower()
+            break
+    parts = [seg.strip() for seg in n.replace('|', ' - ').split(' - ') if seg.strip()]
+    for seg in parts:
+        s = seg.lower()
+        if 'airport' in s or 'intl' in s or 'international' in s or 'field' in s or 'airfield' in s:
+            return seg
+    return parts[0] if parts else n
+
+
+def _valid_polygon_points(points):
+    out = []
+    if not isinstance(points, list):
+        return out
+    for p in points:
+        lat = (p or {}).get('lat') if isinstance(p, dict) else None
+        lon = (p or {}).get('lon') if isinstance(p, dict) else None
+        if _coord_valid(lat, lon):
+            out.append({'lat': float(lat), 'lon': float(lon)})
+    return out
+
+
+def _centroid(points):
+    if not points:
+        return None
+    lat = sum(float(p['lat']) for p in points) / len(points)
+    lon = sum(float(p['lon']) for p in points) / len(points)
+    return {'lat': lat, 'lon': lon}
+
+
+def _resolve_addon_coords_sync(addon):
+    if not addon:
+        return None
+    polygon = _valid_polygon_points(getattr(getattr(addon, 'usr', None), 'map_polygon', None))
+    if _coord_valid(getattr(addon, 'lat', None), getattr(addon, 'lon', None)):
+        return {'point': {'lat': float(addon.lat), 'lon': float(addon.lon)}, 'source': 'stored', 'polygon': polygon}
+    if getattr(addon, 'usr', None) and _coord_valid(getattr(addon.usr, 'map_lat', None), getattr(addon.usr, 'map_lon', None)):
+        return {'point': {'lat': float(addon.usr.map_lat), 'lon': float(addon.usr.map_lon)}, 'source': 'user', 'polygon': polygon}
+    if getattr(addon, 'rw', None) and _coord_valid(getattr(addon.rw, 'lat', None), getattr(addon.rw, 'lon', None)):
+        return {'point': {'lat': float(addon.rw.lat), 'lon': float(addon.rw.lon)}, 'source': getattr(addon.rw, 'source', '') or 'stored', 'polygon': polygon}
+
+    icao = ((getattr(addon, 'rw', None) and getattr(addon.rw, 'icao', None)) or '').strip().upper()
+    if icao and len(icao) >= 3:
+        try:
+            from airports import lookup_airport
+            csv_data = lookup_airport(icao) or {}
+            if _coord_valid(csv_data.get('lat'), csv_data.get('lon')):
+                return {'point': {'lat': float(csv_data['lat']), 'lon': float(csv_data['lon'])}, 'source': 'OurAirports', 'icao': icao, 'polygon': polygon}
+        except Exception:
+            pass
+
+    title = (getattr(addon, 'title', '') or '').strip()
+    clean_title = _clean_airport_name_for_lookup(title)
+    pkg = (getattr(addon, 'package_name', '') or '').strip().replace('_', ' ')
+    municipality = ((getattr(addon, 'rw', None) and (getattr(addon.rw, 'municipality', None) or getattr(addon.rw, 'city', None))) or '').strip()
+    country = ((getattr(addon, 'rw', None) and getattr(addon.rw, 'country', None)) or '').strip()
+    queries = []
+    if icao:
+        queries.append(f'{icao} airport')
+    if clean_title:
+        queries.append(clean_title)
+        if (getattr(addon, 'type', '') or '') == 'Airport':
+            queries.append(f'{clean_title} airport')
+            if municipality:
+                queries.append(f'{clean_title} airport {municipality}')
+            if municipality and country:
+                queries.append(f'{clean_title} airport {municipality} {country}')
+    if title and title not in queries:
+        queries.append(title)
+    if pkg and pkg not in queries:
+        queries.append(pkg)
+
+    seen = set()
+    headers = {"User-Agent": "MSFSHangar/2.0 (local desktop app)", "Accept-Language": "en-US,en;q=0.9"}
+    for q in queries:
+        key = q.lower().strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        try:
+            resp = requests.get('https://nominatim.openstreetmap.org/search', params={"q": q, "format": "jsonv2", "limit": 1}, timeout=12, headers=headers)
+            resp.raise_for_status()
+            rows = resp.json() or []
+            if rows:
+                row = rows[0]
+                if _coord_valid(row.get('lat'), row.get('lon')):
+                    return {'point': {'lat': float(row['lat']), 'lon': float(row['lon'])}, 'source': 'Nominatim', 'query': q, 'polygon': polygon}
+        except Exception:
+            continue
+
+    if polygon:
+        center = _centroid(polygon)
+        if center and _coord_valid(center['lat'], center['lon']):
+            return {'point': center, 'source': 'polygon-centroid', 'polygon': polygon}
+    return None
+
+
+
+
+def _resolve_global_marker_item(candidate):
+    addon_id = str(getattr(candidate, 'addon_id', '') or '').strip()
+    title = str(getattr(candidate, 'title', '') or '').strip()
+    addon_type = str(getattr(candidate, 'addon_type', '') or '').strip()
+    subtype = str(getattr(candidate, 'subtype', '') or '').strip()
+    icao = str(getattr(candidate, 'icao', '') or '').strip().upper()
+    point = getattr(candidate, 'point', None)
+    polygon = _valid_polygon_points(getattr(candidate, 'polygon', None))
+    if point and _coord_valid(getattr(point, 'lat', None), getattr(point, 'lon', None)):
+        return {
+            'addon_id': addon_id, 'title': title, 'type': addon_type, 'subtype': subtype, 'icao': icao,
+            'point': {'lat': float(point.lat), 'lon': float(point.lon)}, 'polygon': polygon, 'source': 'frontend-candidate'
+        }
+    if polygon:
+        center = _centroid(polygon)
+        if center and _coord_valid(center['lat'], center['lon']):
+            return {
+                'addon_id': addon_id, 'title': title, 'type': addon_type, 'subtype': subtype, 'icao': icao,
+                'point': {'lat': float(center['lat']), 'lon': float(center['lon'])}, 'polygon': polygon, 'source': 'frontend-polygon'
             }
-            q = _wiki_request({"action": "query", "prop": "extracts", "titles": title, "exintro": True, "explaintext": True, "exsentences": 4})
-            pages = (((q or {}).get("query") or {}).get("pages") or {})
-            page = next(iter(pages.values())) if pages else {}
-            wiki_extra["wiki_summary"] = page.get("extract", "")
-    except Exception:
-        pass
-    return {**csv_data, **wiki_extra, "source": "OurAirports + Wikipedia" if wiki_extra else "OurAirports"}
+    return None
+
+
+@app.post('/api/map/global-markers')
+async def map_global_markers(body: GlobalMapResolveRequest):
+    items = []
+    unresolved = []
+    for cand in (body.items or []):
+        resolved = _resolve_global_marker_item(cand)
+        if not resolved:
+            addon = await storage.get_addon(str(getattr(cand, 'addon_id', '') or ''))
+            if addon:
+                resolved2 = _resolve_addon_coords_sync(addon)
+                if resolved2 and resolved2.get('point'):
+                    resolved = {
+                        'addon_id': str(addon.id),
+                        'title': addon.title,
+                        'type': getattr(cand, 'addon_type', None) or addon.type,
+                        'subtype': getattr(cand, 'subtype', None) or addon.sub,
+                        'icao': ((addon.rw and addon.rw.icao) or getattr(cand, 'icao', None) or ''),
+                        'point': resolved2.get('point'),
+                        'polygon': resolved2.get('polygon') or [],
+                        'source': resolved2.get('source', ''),
+                    }
+            if not resolved:
+                unresolved.append({'addon_id': str(getattr(cand, 'addon_id', '') or ''), 'title': str(getattr(cand, 'title', '') or ''), 'icao': str(getattr(cand, 'icao', '') or ''), 'reason': 'unresolved'})
+                continue
+        items.append(resolved)
+    return {'items': items, 'unresolved': unresolved, 'count': len(items)}
+@app.post("/api/map/resolve-addon-coords")
+async def map_resolve_addon_coords(body: MapResolveRequest):
+    addon = await storage.get_addon(body.addon_id)
+    if not addon:
+        raise HTTPException(404, 'Add-on not found')
+    resolved = _resolve_addon_coords_sync(addon)
+    if not resolved:
+        raise HTTPException(404, 'No coordinates resolved for this add-on')
+    point = resolved.get('point') or {}
+    payload = {'lat': point.get('lat'), 'lon': point.get('lon'), 'source': resolved.get('source', '')}
+    if resolved.get('icao'):
+        payload['icao'] = resolved['icao']
+    if resolved.get('query'):
+        payload['query'] = resolved['query']
+    if resolved.get('polygon'):
+        payload['polygon'] = resolved['polygon']
+    return payload
+
+
+@app.post("/api/map/resolve-addons-coords")
+async def map_resolve_addons_coords(body: MapResolveBatchRequest):
+    addon_ids = [str(x).strip() for x in (body.addon_ids or []) if str(x).strip()]
+    items = []
+    unresolved = []
+    for addon_id in addon_ids:
+        addon = await storage.get_addon(addon_id)
+        if not addon:
+            unresolved.append({'addon_id': addon_id, 'reason': 'not-found'})
+            continue
+        resolved = _resolve_addon_coords_sync(addon)
+        if not resolved:
+            unresolved.append({'addon_id': addon_id, 'reason': 'unresolved'})
+            continue
+        items.append({
+            'addon_id': addon_id,
+            'point': resolved.get('point'),
+            'polygon': resolved.get('polygon') or [],
+            'source': resolved.get('source', ''),
+            'icao': resolved.get('icao', ''),
+            'query': resolved.get('query', ''),
+        })
+    return {'items': items, 'unresolved': unresolved, 'count': len(items)}
 
 
 # --- Research helpers ---
@@ -1799,34 +2742,185 @@ def _clean_provider_source_label(value: str) -> str:
     return raw
 
 
+def _coerce_text_list(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parts = [p.strip(' -•\t') for p in re.split(r'[\n\r]+', value) if p.strip()]
+        return [p for p in parts if p]
+    if isinstance(value, list):
+        out = []
+        for item in value:
+            if isinstance(item, str):
+                txt = item.strip(' -•\t')
+                if txt:
+                    out.append(txt)
+            elif isinstance(item, dict):
+                txt = str(item.get('text') or item.get('title') or item.get('value') or '').strip(' -•\t')
+                if txt:
+                    out.append(txt)
+            elif item is not None:
+                txt = str(item).strip(' -•\t')
+                if txt:
+                    out.append(txt)
+        return out
+    return [str(value).strip()] if str(value).strip() else []
+
+def _normalize_feature_groups(value) -> list[dict]:
+    groups = []
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                heading = str(item.get('heading') or item.get('title') or item.get('name') or '').strip()
+                bullets = _coerce_text_list(item.get('bullets') or item.get('items') or item.get('points'))
+                if heading or bullets:
+                    groups.append({'heading': heading or 'Highlights', 'bullets': bullets})
+            elif isinstance(item, str):
+                txt = item.strip()
+                if txt:
+                    groups.append({'heading': 'Highlights', 'bullets': [txt]})
+    elif isinstance(value, dict):
+        for heading, bullets in value.items():
+            rows = _coerce_text_list(bullets)
+            if rows:
+                groups.append({'heading': str(heading).strip() or 'Highlights', 'bullets': rows})
+    return groups
+
+
+def _html_escape(value: str) -> str:
+    return escape(str(value or '').strip(), quote=False)
+
+
+
+def _text_canonical(value: str) -> str:
+    value = re.sub(r'<[^>]+>', ' ', str(value or ''))
+    value = value.replace('&nbsp;', ' ')
+    value = re.sub(r'[^a-z0-9]+', ' ', value.lower())
+    return re.sub(r'\s+', ' ', value).strip()
+
+
+def _text_repeats(candidate: str, seen: list[str]) -> bool:
+    cand = _text_canonical(candidate)
+    if not cand:
+        return True
+    for item in seen or []:
+        base = _text_canonical(item)
+        if not base:
+            continue
+        if cand == base:
+            return True
+        if len(cand) >= 28 and cand in base:
+            return True
+        if len(base) >= 28 and base in cand:
+            return True
+    return False
+
+
+def _dedupe_text_list_against(items, seen=None):
+    kept = []
+    seen_items = list(seen or [])
+    for item in _coerce_text_list(items):
+        if _text_repeats(item, seen_items):
+            continue
+        kept.append(item)
+        seen_items.append(item)
+    return kept
+
+
+def _render_ai_overview_html(parsed: dict, addon) -> str:
+    paras = _dedupe_text_list_against(parsed.get('purpose_paragraphs') or parsed.get('summary_paragraphs') or parsed.get('overview_paragraphs'))
+    if len(paras) < 2 and parsed.get('summary_html'):
+        return _normalize_html_fragment(parsed.get('summary_html'))
+    title = str(parsed.get('summary_title') or '').strip()
+    selling_points = _dedupe_text_list_against(parsed.get('key_selling_points') or parsed.get('selling_points') or parsed.get('highlights'), paras)
+    notes = _dedupe_text_list_against(parsed.get('notes'), paras + selling_points)
+    compatibility = _dedupe_text_list_against(parsed.get('compatibility'), paras + selling_points + notes)
+    installation = _dedupe_text_list_against(parsed.get('installation_notes'), paras + selling_points + notes + compatibility)
+    parts = []
+    if title:
+        parts.append(f'<h3>{_html_escape(title)}</h3>')
+    for para in paras[:3]:
+        parts.append(f'<p>{_html_escape(para)}</p>')
+    if selling_points:
+        parts.append('<h3>Key Selling Points</h3><ul>' + ''.join(f'<li>{_html_escape(item)}</li>' for item in selling_points[:8]) + '</ul>')
+    if compatibility:
+        parts.append('<h3>Compatibility</h3><ul>' + ''.join(f'<li>{_html_escape(item)}</li>' for item in compatibility[:6]) + '</ul>')
+    if installation:
+        parts.append('<h3>Installation Notes</h3><ul>' + ''.join(f'<li>{_html_escape(item)}</li>' for item in installation[:6]) + '</ul>')
+    if notes:
+        parts.append('<h3>Notes</h3><ul>' + ''.join(f'<li>{_html_escape(item)}</li>' for item in notes[:6]) + '</ul>')
+    return ''.join(parts).strip()
+
+
+def _render_ai_features_html(parsed: dict, addon) -> str:
+    overview_seen = _coerce_text_list(parsed.get('purpose_paragraphs') or parsed.get('summary_paragraphs') or parsed.get('overview_paragraphs'))
+    overview_seen += _coerce_text_list(parsed.get('key_selling_points') or parsed.get('selling_points') or parsed.get('highlights'))
+    overview_seen += _coerce_text_list(parsed.get('compatibility'))
+    intro_paras = _dedupe_text_list_against(parsed.get('feature_intro') or parsed.get('feature_paragraphs') or parsed.get('features_paragraphs'), overview_seen)
+    groups = _normalize_feature_groups(parsed.get('feature_groups'))
+    notes = _dedupe_text_list_against(parsed.get('notes'), overview_seen + intro_paras)
+    installation = _dedupe_text_list_against(parsed.get('installation_notes'), overview_seen + intro_paras + notes)
+    if not intro_paras and not groups and parsed.get('features_html'):
+        return _normalize_html_fragment(parsed.get('features_html'))
+    seen = list(overview_seen) + list(intro_paras)
+    parts = []
+    for para in intro_paras[:2]:
+        parts.append(f'<p>{_html_escape(para)}</p>')
+    for group in groups[:8]:
+        bullets = []
+        for item in group.get('bullets') or []:
+            if _text_repeats(item, seen):
+                continue
+            bullets.append(item)
+            seen.append(item)
+        if not bullets:
+            continue
+        parts.append(f'<h3>{_html_escape(group.get("heading") or "Highlights")}</h3>')
+        parts.append('<ul>' + ''.join(f'<li>{_html_escape(item)}</li>' for item in bullets[:10]) + '</ul>')
+    if installation:
+        parts.append('<h3>Installation Notes</h3><ul>' + ''.join(f'<li>{_html_escape(item)}</li>' for item in installation[:6]) + '</ul>')
+    if notes:
+        parts.append('<h3>Notes</h3><ul>' + ''.join(f'<li>{_html_escape(item)}</li>' for item in notes[:6]) + '</ul>')
+    return ''.join(parts).strip()
+
+
 def _gemini_log_context(kind: str, addon_title: str, candidate: str, attempt: int, model: str):
     log.info('Gemini %s attempt=%s model=%s addon=%s candidate=%s', kind, attempt, model, addon_title, candidate)
 
 
 def _build_product_prompt(addon, sim_label: str, include_overview: bool = True, include_features: bool = True, *, search_term: Optional[str] = None, response_language: str = 'English') -> str:
-    extra = []
-    if include_overview:
-        extra.append('summary_html')
-    if include_features:
-        extra.append('features_html')
-    extra_tail = (', ' + ', '.join(extra)) if extra else ''
     lookup = (search_term or f"{(addon.publisher or '').strip()} {(addon.title or '').strip()}").strip()
-    return f"""Use Google Search grounding to find flight simulator add-on product metadata for the product '{lookup}' for '{sim_label}'.
-Return ONLY one valid JSON object with these exact keys: latest_current_version, latest_version_date, release_date, list_price, currency, store_name{extra_tail}.
+    addon_type = (getattr(addon, 'type', '') or '').strip() or 'Addon'
+    feature_guidance = "general addon capability categories"
+    if addon_type == 'Aircraft':
+        feature_guidance = 'feature categories such as avionics, systems depth, flight model, sounds, visuals, cabin or cockpit detail, performance options, included variants, and compatibility'
+    elif addon_type == 'Airport':
+        feature_guidance = 'feature categories such as scenery scope, terminals and buildings, ground textures, lighting, landside detail, terrain, custom objects, and compatibility'
+    elif addon_type == 'Scenery':
+        feature_guidance = 'feature categories such as coverage area, landmarks, photogrammetry or textures, terrain, lighting, included points of interest, and compatibility'
+    return f"""Use grounded web search to find product metadata for the flight simulator add-on '{lookup}' for '{sim_label}'.
+Return ONLY one valid JSON object with these exact keys:
+latest_current_version, latest_version_date, release_date, list_price, currency, store_name, summary_title, purpose_paragraphs, key_selling_points, feature_intro, feature_groups, notes, compatibility, installation_notes, summary_html, features_html.
 Rules:
-- Focus on the flight simulator add-on product for {sim_label}, not YouTube videos, generic home pages, forum chatter, or unrelated marketplace listings.
-- Prefer official store pages or known addon storefronts.
-- The prose fields must be written in {response_language}.
-- latest_version_date should be the date the latest/current product version was made available when known.
-- release_date should be the add-on's initial or first public release date when known, not the latest update date.
-- list_price must be a number without currency symbols when possible, otherwise null.
-- summary_html should be a nicely formatted HTML fragment with at least 2 paragraphs that explain the addon purpose, scope, and what it adds to the simulator. Give it a polished product-page feel with a short lead paragraph and a second paragraph that helps a pilot understand what is included.
-- summary_html must not use generic filler such as '<<Type>> addon by <<publisher>>' or similarly vague template wording.
-- features_html should be a richly formatted HTML fragment that mirrors a polished addon product page and describes the addon features in depth.
-- features_html should normally include a short introductory paragraph, at least one <h3> heading, and a <ul> with specific substantial bullets. Add a second section when useful for aircraft systems, airport features, scenery scope, or included content.
-- Keep both HTML fragments readable inside an app: use simple tags like <p>, <ul>, <li>, <strong>, <em>, and <h3> only.
+- Focus on the product page for the addon itself, not unrelated videos, forum chatter, or generic vendor home pages.
+- Prefer official storefronts, official developer pages, and reputable product listings.
+- All prose must be written in {response_language}.
+- latest_version_date should be the date the current/latest version became available when known.
+- release_date should be the add-on's original/first public release date when known.
+- list_price must be numeric when possible, otherwise null.
+- summary_title should be a concise headline for the addon.
+- purpose_paragraphs should be an array with 2 or 3 substantial paragraphs describing the addon purpose, scope, and what it adds to the simulator. Do not turn these paragraphs into a feature list.
+- key_selling_points should be an array of short, specific bullets.
+- feature_intro should be 1 or 2 short introductory paragraphs for a detailed features section and must not repeat the same ideas already used in purpose_paragraphs.
+- feature_groups should be an array of objects with heading and bullets keys. The grouped bullets should cover {feature_guidance}.
+- When the official product page has a Features, Details, Included, or Specifications section, mirror that detail and specificity in feature_groups instead of generic marketing phrasing.
+- Prefer concrete implementation details from the product page such as modeled systems, included airports or variants, avionics packages, terminal/building scope, custom objects, textures, lighting, sounds, flight model notes, performance options, and included extras.
+- notes, compatibility, and installation_notes should each be arrays of short strings when useful, otherwise empty arrays.
+- compatibility should be limited to simulator/platform compatibility and should not be repeated inside feature_intro or feature_groups.
+- Do not use generic filler such as '<<Type>> addon by <<publisher>>'.
+- summary_html and features_html are optional fallback fields only. Prefer filling the structured fields above.
 - Do not include markdown or code fences.
-- If unknown, use empty strings or null for list_price."""
+- If unknown, use empty strings, empty arrays, or null for list_price."""
 
 
 def _build_aircraft_prompt(mfr: str, model: str, *, response_language: str = 'English') -> str:
@@ -1859,7 +2953,7 @@ def _merge_product_into_addon(addon, parsed: dict, sources: list[str], *, includ
         addon.pr.source_store = _clean_provider_source_label(parsed.get('store_name'))
 
     if include_overview:
-        incoming_summary = _normalize_html_fragment(parsed.get('summary_html'))
+        incoming_summary = _normalize_html_fragment(_render_ai_overview_html(parsed, addon) or parsed.get('summary_html'))
         existing_summary = addon.summary or ''
         existing_summary_is_meaningful = _has_meaningful_existing_html(existing_summary, field='overview', addon=addon)
         existing_summary_is_generic = bool(existing_summary) and not existing_summary_is_meaningful
@@ -1869,7 +2963,7 @@ def _merge_product_into_addon(addon, parsed: dict, sources: list[str], *, includ
             addon.summary = ''
 
     if include_features:
-        incoming_features = _normalize_html_fragment(parsed.get('features_html'))
+        incoming_features = _normalize_html_fragment(_render_ai_features_html(parsed, addon) or parsed.get('features_html'))
         existing_features = addon.usr.features or ''
         existing_features_is_meaningful = _has_meaningful_existing_html(existing_features, field='features', addon=addon)
         if incoming_features and (override_existing or not existing_features_is_meaningful):
@@ -2241,20 +3335,74 @@ async def ai_populate_product(addon_id: str):
         'source_url': sources[0] if sources else '',
         'source': provider_name,
         'search_candidate': meta.get('candidate'),
-        'summary_html': parsed.get('summary_html') or '',
-        'features_html': parsed.get('features_html') or '',
+        'summary_html': addon.summary or '',
+        'features_html': addon.usr.features or '',
     }
+
+
+async def _populate_addon_with_selected_ai(addon, settings: dict, *, provider: Optional[str] = None, use_bulk_model: bool = True, override_existing: bool = True, include_overview: bool = True, include_features: bool = True, include_aircraft_data: bool = True):
+    provider = (provider or _selected_ai_provider(settings)).lower().strip()
+    gemini_model = _selected_gemini_bulk_model(settings) if use_bulk_model else _selected_gemini_interactive_model(settings)
+    openai_model = _selected_openai_model(settings)
+    claude_model = _selected_claude_model(settings)
+    parsed = {}
+    sources = []
+    meta = {}
+    aircraft_meta = None
+    if include_overview or include_features:
+        parsed, sources, meta = await _run_provider_product_lookup(addon, settings, provider=provider, gemini_model=gemini_model, openai_model=openai_model, claude_model=claude_model)
+        addon = _merge_product_into_addon(addon, parsed, sources, include_overview=include_overview, include_features=include_features, override_existing=override_existing)
+    if include_aircraft_data and addon.type == 'Aircraft':
+        try:
+            lookup_mfr = (addon.rw.manufacturer_full_name or addon.rw.mfr or addon.pr.manufacturer or addon.publisher or '').strip()
+            model_name = (addon.rw.model or addon.title or '').strip()
+            if lookup_mfr and model_name:
+                ap, asources, ameta = await _run_provider_aircraft_lookup(provider, settings, lookup_mfr, model_name, fallback_title=addon.title, gemini_model=gemini_model, openai_model=openai_model, claude_model=claude_model)
+                addon = _merge_aircraft_into_addon(addon, ap, asources)
+                aircraft_meta = {'candidate': ameta.get('candidate'), 'sources': asources}
+        except Exception as e:
+            log.warning('AI aircraft follow-up failed addon=%s error=%s', addon.title, e)
+    if addon.type == 'Airport':
+        try:
+            airport_data = _fetch_airport_data_sync(icao=(addon.rw.icao or ''), title=(addon.rw.name or addon.title or ''))
+            if airport_data:
+                addon.rw.icao = airport_data.get('icao') or addon.rw.icao
+                addon.rw.name = airport_data.get('name') or addon.rw.name
+                addon.rw.city = airport_data.get('city') or addon.rw.city
+                addon.rw.municipality = airport_data.get('municipality') or airport_data.get('city') or addon.rw.municipality
+                addon.rw.country = airport_data.get('country') or addon.rw.country
+                addon.rw.state = airport_data.get('state') or addon.rw.state
+                addon.rw.province = airport_data.get('province') or addon.rw.province
+                addon.rw.region = airport_data.get('region') or addon.rw.region
+                addon.rw.continent = airport_data.get('continent') or addon.rw.continent
+                addon.rw.elev = airport_data.get('elev') or addon.rw.elev
+                addon.rw.lat = airport_data.get('lat') if airport_data.get('lat') is not None else addon.rw.lat
+                addon.rw.lon = airport_data.get('lon') if airport_data.get('lon') is not None else addon.rw.lon
+                addon.rw.scheduled = airport_data.get('scheduled') or addon.rw.scheduled
+                addon.rw.airport_type = airport_data.get('airport_type') or addon.rw.airport_type
+                addon.rw.home_link = airport_data.get('home_link') or addon.rw.home_link
+                addon.rw.wiki_url = airport_data.get('wiki_url') or addon.rw.wiki_url
+                addon.rw.first_opened = airport_data.get('first_opened') or addon.rw.first_opened
+                addon.rw.passenger_count = airport_data.get('passenger_count') or addon.rw.passenger_count
+                addon.rw.cargo_count = airport_data.get('cargo_count') or addon.rw.cargo_count
+                addon.rw.us_rank = airport_data.get('us_rank') or addon.rw.us_rank
+                addon.rw.world_rank = airport_data.get('world_rank') or addon.rw.world_rank
+                addon.rw.hub_airlines = airport_data.get('hub_airlines') or addon.rw.hub_airlines
+                addon.rw.source = airport_data.get('source') or addon.rw.source
+                if airport_data.get('airport_type'):
+                    addon.sub = airport_data.get('airport_type')
+        except Exception as e:
+            log.warning('Airport enrichment failed addon=%s error=%s', addon.title, e)
+    guessed_sub = _guess_subtype_for_addon(addon, category=(addon.rw.category or addon.rw.airport_type or ''), title=(addon.title or ''))
+    if guessed_sub:
+        addon.sub = guessed_sub
+    await storage.upsert_addon(addon)
+    return addon, {'provider': provider, 'provider_name': ('Gemini Flash-Lite' if provider == 'gemini' else (f'OpenAI ({openai_model})' if provider == 'openai' else f'Claude ({claude_model})')), 'search_candidate': meta.get('candidate'), 'product_sources': sources, 'product_source': _clean_provider_source_label(sources[0]) if sources else '', 'aircraft_meta': aircraft_meta, 'aircraft_sources': list((aircraft_meta or {}).get('sources') or []), 'aircraft_source': _clean_provider_source_label((((aircraft_meta or {}).get('sources') or [addon.rw.source or ''])[0]) if ((aircraft_meta or {}).get('sources') or [addon.rw.source or '']) else '')}
 
 
 @app.post('/api/ai/populate-lite/{addon_id}')
 async def ai_populate_product_lite(addon_id: str):
-    """Populate the selected add-on from the right sidebar using the low-cost path.
-
-    This endpoint intentionally mirrors the bulk-library strategy: one product
-    lookup plus an aircraft follow-up when needed. Unlike earlier builds, the
-    merged result is always persisted and returned so the sidebar and detail tabs
-    stay in sync immediately.
-    """
+    """Populate the selected add-on from the right sidebar using the low-cost path."""
 
     addon = await storage.get_addon(addon_id)
     if not addon:
@@ -2268,55 +3416,19 @@ async def ai_populate_product_lite(addon_id: str):
     if provider == 'claude' and not settings.get('claude_api_key'):
         raise HTTPException(400, 'Claude API key not configured in Settings')
 
-    # Explicit sidebar populate should refresh the visible text, so we allow the
-    # generated overview/features to replace older AI-filled content here.
-    parsed, sources, meta = await _run_provider_product_lookup(addon, settings, provider=provider, gemini_model=_selected_gemini_bulk_model(settings), openai_model=_selected_openai_model(settings), claude_model=_selected_claude_model(settings))
-    addon = _merge_product_into_addon(addon, parsed, sources, include_overview=True, include_features=True, override_existing=True)
-
-    aircraft_meta = None
-    # Sidebar populate is intentionally a full low-cost sync for aircraft: product
-    # data plus the follow-up aircraft-spec lookup so the right sidebar and the
-    # Aircraft Data tab stay consistent after a single click.
-    if addon.type == 'Aircraft':
-        try:
-            lookup_mfr = (addon.rw.manufacturer_full_name or addon.rw.mfr or addon.pr.manufacturer or addon.publisher or '').strip()
-            model_name = (addon.rw.model or addon.title or '').strip()
-            if lookup_mfr and model_name:
-                ap, asources, ameta = await _run_provider_aircraft_lookup(provider, settings, lookup_mfr, model_name, fallback_title=addon.title, gemini_model=_selected_gemini_bulk_model(settings), openai_model=_selected_openai_model(settings), claude_model=_selected_claude_model(settings))
-                addon = _merge_aircraft_into_addon(addon, ap, asources)
-                aircraft_meta = {'candidate': ameta.get('candidate'), 'sources': asources}
-        except Exception as e:
-            log.warning('AI lite aircraft follow-up failed addon=%s error=%s', addon.title, e)
-
-    guessed_sub = _guess_subtype_for_addon(addon, category=(addon.rw.category or ''), title=(addon.title or ''))
-    if guessed_sub and guessed_sub != addon.sub:
-        addon.sub = guessed_sub
-
-    # Persist the merged product + aircraft updates every time so the sidebar,
-    # grid, and detail tabs all see the same data after one populate action.
-    await storage.upsert_addon(addon)
-
-    provider_name = ('Gemini Flash-Lite' if provider == 'gemini' else (f'OpenAI ({_selected_openai_model(settings)})' if provider == 'openai' else f'Claude ({_selected_claude_model(settings)})'))
-
-    # Return product and aircraft sources separately so the UI can explain where
-    # each slice of AI-populated data came from. This is especially helpful when
-    # the sidebar low-cost populate updates both overview/features and aircraft
-    # specifications in one click.
-    product_source = _clean_provider_source_label(sources[0]) if sources else ''
-    aircraft_sources = list((aircraft_meta or {}).get('sources') or [])
-    aircraft_source = _clean_provider_source_label((aircraft_sources[0] if aircraft_sources else addon.rw.source) or '')
+    addon, info = await _populate_addon_with_selected_ai(addon, settings, provider=provider, use_bulk_model=True, override_existing=True, include_overview=True, include_features=True, include_aircraft_data=True)
     return {
         'ok': True,
         'addon_id': addon_id,
-        'provider': provider,
-        'provider_name': provider_name,
-        'search_candidate': meta.get('candidate'),
-        'sources': sources,
-        'product_sources': sources,
-        'product_source': product_source,
-        'aircraft_meta': aircraft_meta,
-        'aircraft_sources': aircraft_sources,
-        'aircraft_source': aircraft_source,
+        'provider': info['provider'],
+        'provider_name': info['provider_name'],
+        'search_candidate': info.get('search_candidate'),
+        'sources': info.get('product_sources') or [],
+        'product_sources': info.get('product_sources') or [],
+        'product_source': info.get('product_source') or '',
+        'aircraft_meta': info.get('aircraft_meta'),
+        'aircraft_sources': info.get('aircraft_sources') or [],
+        'aircraft_source': info.get('aircraft_source') or '',
         'subtype': addon.sub or '',
         'latest_version': addon.pr.latest_ver or '',
         'latest_version_date': addon.pr.latest_ver_date or '',
@@ -2347,330 +3459,10 @@ async def ai_populate_product_lite(addon_id: str):
         'aircraft_cost': addon.rw.aircraft_cost or '',
         'country_of_origin': addon.rw.country_of_origin or '',
         'introduced': addon.rw.introduced or '',
-        'source': aircraft_source or product_source or provider_name,
+        'source': addon.rw.source or info.get('product_source') or info['provider_name'],
+        'aircraft_source_raw': addon.rw.source or '',
     }
 
-
-def _collection_union_ids(collection_ids: list[str], profiles: list[dict]) -> tuple[list[dict], set[str]]:
-    chosen = [p for p in profiles if p.get('id') in set(collection_ids or [])]
-    union_ids: set[str] = set()
-    for profile in chosen:
-        union_ids.update(profile.get('addon_ids') or [])
-    return chosen, union_ids
-
-
-def _plan_community_changes(*, addons, target_ids: set[str], action: str):
-    """Build a preview of which symbolic links would change.
-
-    activate   -> only turn on the scoped add-ons
-    deactivate -> only turn off the scoped add-ons
-    """
-
-    if action not in {'activate', 'deactivate'}:
-        raise HTTPException(400, 'Unsupported community action')
-    to_enable = []
-    to_disable = []
-    already_matching = 0
-    for addon in addons:
-        in_scope = addon.id in target_ids
-        if action == 'activate':
-            if in_scope and not addon.enabled:
-                to_enable.append(addon)
-            elif in_scope and addon.enabled:
-                already_matching += 1
-        else:
-            if in_scope and addon.enabled:
-                to_disable.append(addon)
-            elif in_scope and not addon.enabled:
-                already_matching += 1
-    return {
-        'target_count': len(target_ids),
-        'to_enable': to_enable,
-        'to_disable': to_disable,
-        'already_matching': already_matching,
-    }
-
-
-async def _execute_deactivate_all_from_actual_community(*, addons: dict[str, object], community_dir: str):
-    """Remove every managed link that physically exists in Community right now.
-
-    Why this special-case exists:
-      * Global "Deactivate All" should be based on the *actual* Community
-        folder contents, not just whatever the library currently thinks is
-        enabled.
-      * This is also the safest migration path from older junction-based builds
-        to the newer directory-symlink strategy.
-
-    Matching rules:
-      * first by resolved target path
-      * then by Community entry name == addon folder name
-
-    Only reparse-point links are removed. Normal non-link folders are skipped.
-    """
-    community_path = Path(community_dir)
-    addon_by_target = {}
-    addon_by_name = {}
-    for addon in addons.values():
-        addon_path = getattr(addon, 'addon_path', '')
-        if not addon_path:
-            continue
-        try:
-            resolved = str(Path(addon_path).resolve())
-        except Exception:
-            resolved = ''
-        if resolved:
-            addon_by_target[resolved] = addon
-        addon_by_name[Path(addon_path).name.lower()] = addon
-
-    removed = 0
-    failures = []
-    matched_ids: set[str] = set()
-    for entry in linker.iter_community_links(community_path):
-        target = linker.get_link_target(entry)
-        addon = None
-        if target:
-            addon = addon_by_target.get(str(Path(target).resolve()))
-        if addon is None:
-            addon = addon_by_name.get(entry.name.lower())
-        if addon is None:
-            continue
-        ok, msg = linker.remove_link_entry(entry)
-        if ok:
-            removed += 1
-            matched_ids.add(addon.id)
-        else:
-            failures.append({'addon': addon.title, 'message': msg})
-
-    # After physically removing the links, mark every matched add-on disabled and
-    # perform one final sync against the Community folder so the UI reflects
-    # reality even if some manual folders still exist.
-    for addon_id in matched_ids:
-        addon = addons.get(addon_id)
-        if addon is None:
-            continue
-        addon.enabled = False
-        await storage.upsert_addon(addon)
-
-    addons = await _sync_enabled_state_from_community(addons)
-    return {
-        'ok': True,
-        'scope': 'all',
-        'scope_label': 'entire library',
-        'action': 'deactivate',
-        'enabled': 0,
-        'disabled': removed,
-        'already_matching': 0,
-        'failures': failures,
-        'collection_names': [],
-    }
-
-
-async def _community_scope_payload(body: CommunityActionRequest):
-    addons = await storage.get_all_addons()
-    addons = await _sync_enabled_state_from_community(addons)
-    community_dir = await storage.get_setting('community_dir')
-    profiles = _profile_store(await storage.get_setting('profiles_json', '[]'))
-    scope = (body.scope or 'displayed').strip().lower()
-    action = (body.action or 'activate').strip().lower()
-
-    # Re-check actual Community-folder presence for activation/deactivation
-    # planning. This makes the preview/execute path robust even if older builds
-    # left stale library enabled flags behind, or if junction detection changed.
-    # We intentionally consult the filesystem here so "Deactivate All" can still
-    # find and remove old links even when the Library UI currently says every
-    # add-on is inactive.
-    if community_dir:
-        try:
-            from pathlib import Path as _Path
-            comm_path = _Path(community_dir)
-            for addon in addons.values():
-                addon_path = getattr(addon, 'addon_path', '')
-                addon.enabled = bool(addon_path and linker.find_link_in_community(comm_path, _Path(addon_path)))
-        except Exception as e:
-            log.warning('Community action planning fallback scan failed: %s', e)
-
-    if scope == 'displayed':
-        target_ids = set(body.addon_ids or [])
-        scope_label = 'displayed add-ons'
-        chosen_profiles = []
-    elif scope == 'collections':
-        chosen_profiles, target_ids = _collection_union_ids(body.collection_ids or [], profiles)
-        scope_label = 'selected collections'
-    elif scope == 'all':
-        # `addons` is a dict keyed by add-on id, so for the all-library scope the
-        # ids are simply the dictionary keys. Iterating the dict values would also
-        # work, but the keys are the most direct and avoids the earlier str.id bug.
-        target_ids = set(addons.keys())
-        scope_label = 'entire library'
-        chosen_profiles = []
-    else:
-        raise HTTPException(400, 'Unsupported community scope')
-    plan = _plan_community_changes(addons=addons.values(), target_ids=target_ids, action=action)
-    return {
-        'scope': scope,
-        'scope_label': scope_label,
-        'action': action,
-        'addons': addons,
-        'target_ids': target_ids,
-        'chosen_profiles': chosen_profiles,
-        'plan': plan,
-    }
-
-
-@app.post('/api/community/preview')
-async def preview_community_action(body: CommunityActionRequest):
-    payload = await _community_scope_payload(body)
-    plan = payload['plan']
-
-    # For global deactivate-all, preview from the actual Community folder so the
-    # counts reflect physical links that still exist, not stale library flags.
-    if payload['scope'] == 'all' and payload['action'] == 'deactivate':
-        community_dir = await storage.get_setting('community_dir')
-        sample_remove = []
-        remove_count = 0
-        if community_dir:
-            community_path = Path(community_dir)
-            addon_by_target = {}
-            addon_by_name = {}
-            for addon in payload['addons'].values():
-                addon_path = getattr(addon, 'addon_path', '')
-                if not addon_path:
-                    continue
-                try:
-                    resolved = str(Path(addon_path).resolve())
-                except Exception:
-                    resolved = ''
-                if resolved:
-                    addon_by_target[resolved] = addon
-                addon_by_name[Path(addon_path).name.lower()] = addon
-            for entry in linker.iter_community_links(community_path):
-                target = linker.get_link_target(entry)
-                addon = None
-                if target:
-                    addon = addon_by_target.get(str(Path(target).resolve()))
-                if addon is None:
-                    addon = addon_by_name.get(entry.name.lower())
-                if addon is None:
-                    continue
-                remove_count += 1
-                if len(sample_remove) < 8:
-                    sample_remove.append(addon.title)
-        return {
-            'ok': True,
-            'scope': payload['scope'],
-            'scope_label': payload['scope_label'],
-            'action': payload['action'],
-            'collection_names': [],
-            'target_count': len(payload['addons']),
-            'create_count': 0,
-            'remove_count': remove_count,
-            'already_matching': max(0, len(payload['addons']) - remove_count),
-            'sample_create': [],
-            'sample_remove': sample_remove,
-        }
-
-    return {
-        'ok': True,
-        'scope': payload['scope'],
-        'scope_label': payload['scope_label'],
-        'action': payload['action'],
-        'collection_names': [p.get('name') or 'Collection' for p in payload['chosen_profiles']],
-        'target_count': plan['target_count'],
-        'create_count': len(plan['to_enable']) if payload['action'] == 'activate' else 0,
-        'remove_count': len(plan['to_disable']) if payload['action'] == 'deactivate' else 0,
-        'already_matching': plan['already_matching'],
-        'sample_create': [a.title for a in plan['to_enable'][:8]],
-        'sample_remove': [a.title for a in plan['to_disable'][:8]],
-    }
-
-
-@app.post('/api/community/execute')
-async def execute_community_action(body: CommunityActionRequest):
-    payload = await _community_scope_payload(body)
-    plan = payload['plan']
-    community_dir = await storage.get_setting('community_dir')
-    if not community_dir:
-        raise HTTPException(400, 'Community folder not set')
-
-    # Special-case the migration-safe global deactivate flow. This removes the
-    # links that physically exist in Community right now rather than trusting the
-    # library's current enabled flags.
-    if payload['scope'] == 'all' and payload['action'] == 'deactivate':
-        result = await _execute_deactivate_all_from_actual_community(addons=payload['addons'], community_dir=community_dir)
-        log.info('Community action scope=%s action=%s enabled=%s disabled=%s failures=%s', result['scope'], result['action'], result['enabled'], result['disabled'], len(result['failures']))
-        return result
-
-    enabled_count = 0
-    disabled_count = 0
-    failures = []
-    for addon in plan['to_enable']:
-        ok, msg = linker.toggle_addon(addon.addon_path, community_dir, True)
-        if ok:
-            addon.enabled = True
-            enabled_count += 1
-            await storage.upsert_addon(addon)
-        else:
-            failures.append({'addon': addon.title, 'message': msg})
-    for addon in plan['to_disable']:
-        ok, msg = linker.toggle_addon(addon.addon_path, community_dir, False)
-        if ok:
-            addon.enabled = False
-            disabled_count += 1
-            await storage.upsert_addon(addon)
-        else:
-            failures.append({'addon': addon.title, 'message': msg})
-
-    # One post-action sync keeps the Library cards honest after batch work and
-    # after external tools modify Community between runs.
-    await _sync_enabled_state_from_community(payload['addons'])
-
-    log.info('Community action scope=%s action=%s enabled=%s disabled=%s failures=%s', payload['scope'], payload['action'], enabled_count, disabled_count, len(failures))
-    return {
-        'ok': True,
-        'scope': payload['scope'],
-        'scope_label': payload['scope_label'],
-        'action': payload['action'],
-        'enabled': enabled_count,
-        'disabled': disabled_count,
-        'already_matching': plan['already_matching'],
-        'failures': failures,
-        'collection_names': [p.get('name') or 'Collection' for p in payload['chosen_profiles']],
-    }
-
-
-@app.post('/api/library/apply-visible')
-async def apply_visible_grid(body: VisibleApplyRequest):
-    """Enable exactly the add-ons currently shown on the grid and disable the rest.
-
-    This is intentionally separate from collection editing. The grid is treated as
-    a live activation plan that may be shaped by search, type filters, favorites,
-    and one or more selected collections.
-    """
-
-    community_dir = await storage.get_setting('community_dir')
-    if not community_dir:
-        raise HTTPException(400, 'Community folder not set')
-    selected_ids = {aid for aid in (body.addon_ids or []) if aid}
-    addons = await storage.get_addons()
-    enabled_count = 0
-    disabled_count = 0
-    failures = []
-    for addon in addons:
-        should_enable = addon.id in selected_ids
-        if addon.enabled == should_enable:
-            if should_enable:
-                enabled_count += 1
-            continue
-        ok, msg = linker.toggle_addon(addon.addon_path, community_dir, should_enable)
-        if ok:
-            await storage.set_enabled(addon.id, should_enable)
-            if should_enable:
-                enabled_count += 1
-            else:
-                disabled_count += 1
-        else:
-            failures.append({'addon_id': addon.id, 'title': addon.title, 'message': msg})
-    return {'ok': True, 'enabled': enabled_count, 'disabled': disabled_count, 'failures': failures}
 
 
 @app.post('/api/gemini/populate-aircraft')
@@ -2738,6 +3530,156 @@ class LibraryPopulateRequest(BaseModel):
     provider: Optional[str] = None
     addon_ids: Optional[list[str]] = None
 
+
+class SubtypePopulateRequest(BaseModel):
+    addon_type: str = ''
+    all_types: bool = False
+    provider: Optional[str] = None
+
+
+def _canonical_subtype_match(value: str, allowed: list[str]) -> str | None:
+    raw = str(value or '').strip()
+    if not raw:
+        return None
+    for item in allowed or []:
+        if raw.lower() == str(item).strip().lower():
+            return item
+    return None
+
+
+def _subtype_prompt_for_addon(addon: Addon, allowed: list[str], addon_type: str) -> str:
+    rw = getattr(addon, 'rw', None)
+    pr = getattr(addon, 'pr', None)
+    usr = getattr(addon, 'usr', None)
+    context = {
+        'title': addon.title,
+        'publisher': addon.publisher,
+        'type': addon_type,
+        'current_subtype': addon.sub or '',
+        'summary_text': _html_to_text(addon.summary or '')[:1200],
+        'features_text': _html_to_text((usr.features if usr else '') or '')[:1800],
+        'package_name': addon.package_name or (pr.package_name if pr else '') or '',
+        'manufacturer': (rw.mfr if rw else '') or (pr.manufacturer if pr else '') or '',
+        'manufacturer_full_name': (rw.manufacturer_full_name if rw else '') or '',
+        'model': (rw.model if rw else '') or '',
+        'category': (rw.category if rw else '') or '',
+        'airport_type': (rw.airport_type if rw else '') or '',
+        'icao': (rw.icao if rw else '') or '',
+        'source_store': (pr.source_store if pr else '') or (usr.source_store if usr else '') or '',
+    }
+    return (
+        "You classify Microsoft Flight Simulator library items into subtypes. "
+        "Return ONLY one JSON object with keys subtype, suggested_new_subtype, reason. "
+        f"The add-on type is '{addon_type}'. Allowed existing subtypes for this type are: {json.dumps(allowed, ensure_ascii=False)}. "
+        "Choose one of the allowed subtypes whenever possible. Only use suggested_new_subtype when none of the allowed values fit well. "
+        "Keep reason short. Here is the add-on context as JSON: " + json.dumps(context, ensure_ascii=False)
+    )
+
+
+async def _ai_pick_subtype(addon: Addon, addon_type: str, allowed: list[str], settings: dict, *, provider: str) -> tuple[str | None, str | None, str]:
+    prompt = _subtype_prompt_for_addon(addon, allowed, addon_type)
+    gemini_model = _selected_gemini_bulk_model(settings)
+    openai_model = _selected_openai_model(settings)
+    claude_model = _selected_claude_model(settings)
+    parsed, _sources, raw = await asyncio.to_thread(lambda: _provider_generate_json(provider, prompt, settings, use_search=False, gemini_model=gemini_model, openai_model=openai_model, claude_model=claude_model))
+    if not parsed:
+        parsed = _extract_json_pairs_fallback(raw, ['subtype','suggested_new_subtype','reason'])
+    chosen = _canonical_subtype_match(parsed.get('subtype') if isinstance(parsed, dict) else '', allowed)
+    suggested = str((parsed.get('suggested_new_subtype') if isinstance(parsed, dict) else '') or '').strip()
+    return chosen, suggested, raw[:400]
+
+
+@app.get('/api/ai/populate-subtypes/status')
+async def populate_subtypes_status():
+    return _subtype_enrich_progress
+
+
+@app.post('/api/ai/populate-subtypes/start')
+async def populate_subtypes_start(body: SubtypePopulateRequest):
+    global _subtype_enrich_running, _subtype_enrich_progress
+    if _subtype_enrich_running:
+        raise HTTPException(400, 'Subtype populate already running')
+    settings = await storage.get_all_settings()
+    provider = (body.provider or _selected_ai_provider(settings)).lower().strip()
+    if provider == 'gemini' and not settings.get('google_api_key'):
+        raise HTTPException(400, 'Google API key not configured in Settings')
+    if provider == 'openai' and not settings.get('openai_key'):
+        raise HTTPException(400, 'OpenAI API key not configured in Settings')
+    if provider == 'claude' and not settings.get('claude_api_key'):
+        raise HTTPException(400, 'Claude API key not configured in Settings')
+
+    data_options = _merged_data_options(settings)
+    subtype_map = json.loads(json.dumps(data_options.get('subtypes') or {}))
+    all_types = [t for t in subtype_map.keys() if t and t != 'External Tool']
+    target_types = all_types if body.all_types else [str(body.addon_type or '').strip()]
+    target_types = [t for t in target_types if t in all_types]
+    if not target_types:
+        raise HTTPException(400, 'Choose a valid add-on type or enable All Types.')
+
+    addons = [a for a in (await storage.get_addons()) if getattr(a, 'entry_kind', 'addon') != 'tool' and (a.type in target_types)]
+    total = len(addons)
+    if total == 0:
+        raise HTTPException(400, 'No add-ons found for the selected type scope.')
+
+    _subtype_enrich_running = True
+    _subtype_enrich_progress = {
+        'running': True,
+        'pct': 0,
+        'current': 'Preparing…',
+        'done': 0,
+        'total': total,
+        'message': 'Reviewing add-ons and assigning the best subtype from Data Management.',
+        'type': 'running',
+        'provider': provider,
+        'updated': 0,
+        'added_subtypes': [],
+        'types': target_types,
+    }
+
+    async def runner():
+        global _subtype_enrich_running, _subtype_enrich_progress
+        done = 0
+        updated_count = 0
+        failures = []
+        added_subtypes = []
+        try:
+            for addon in addons:
+                addon_type = addon.type
+                allowed = list(subtype_map.get(addon_type) or [])
+                _subtype_enrich_progress.update({'current': addon.title, 'done': done, 'pct': int((done/max(total,1))*100)})
+                try:
+                    chosen, suggested, raw = await _ai_pick_subtype(addon, addon_type, allowed, settings, provider=provider)
+                    final_subtype = chosen
+                    if not final_subtype and suggested:
+                        final_subtype = suggested
+                        subtype_map.setdefault(addon_type, [])
+                        if not any(final_subtype.lower() == str(x).strip().lower() for x in subtype_map[addon_type]):
+                            subtype_map[addon_type].append(final_subtype)
+                            subtype_map[addon_type] = sorted([str(x).strip() for x in subtype_map[addon_type] if str(x).strip()], key=lambda s: s.lower())
+                            allowed = list(subtype_map[addon_type])
+                            added_subtypes.append({'type': addon_type, 'subtype': final_subtype})
+                    if final_subtype and (addon.sub or '').strip() != final_subtype:
+                        addon.sub = final_subtype
+                        await storage.upsert_addon(addon)
+                        updated_count += 1
+                except Exception as e:
+                    failures.append({'addon': addon.title, 'error': str(e)})
+                    log.error('Subtype populate failed addon=%s error=%s', addon.title, e, exc_info=True)
+                done += 1
+                _subtype_enrich_progress.update({'done': done, 'pct': int((done/max(total,1))*100), 'updated': updated_count, 'added_subtypes': added_subtypes})
+            await storage.set_json_setting('data_options_subtypes', subtype_map)
+            msg = f'Subtype populate complete. Updated {updated_count} add-on(s).'
+            if added_subtypes:
+                msg += f' Added {len(added_subtypes)} new subtype option(s) to Data Management.'
+            if failures:
+                msg += f' {len(failures)} add-on(s) had errors. Check the log for details.'
+            _subtype_enrich_progress.update({'running': False, 'pct': 100, 'message': msg, 'type': 'done', 'updated': updated_count, 'failures': failures, 'added_subtypes': added_subtypes})
+        finally:
+            _subtype_enrich_running = False
+
+    asyncio.create_task(runner())
+    return {'ok': True, 'provider': provider, 'total': total, 'types': target_types}
+
 @app.get('/api/gemini/populate-library/status')
 async def populate_library_status():
     return _enrich_progress
@@ -2783,35 +3725,18 @@ async def populate_library_start(body: LibraryPopulateRequest):
             for addon in addons:
                 _enrich_progress.update({'current': addon.title, 'done': done, 'pct': int((done/max(total,1))*100)})
                 try:
-                    if provider == 'gemini' and (body.include_overview or body.include_features):
-                        parsed, sources, meta = await _run_provider_product_lookup(addon, settings, provider=provider, gemini_model=gemini_model, openai_model=openai_model, claude_model=claude_model)
-                        addon = _merge_product_into_addon(addon, parsed, sources, include_overview=body.include_overview, include_features=body.include_features, override_existing=body.override_existing)
-                        log.info('Bulk populate product addon=%s candidate=%s', addon.title, meta.get('candidate'))
-                    elif body.include_overview or body.include_features:
-                        p1 = _build_product_prompt(addon, _addon_sim_label(settings), include_overview=body.include_overview, include_features=body.include_features, response_language=_preferred_language(settings))
-                        parsed, sources, raw = await asyncio.to_thread(lambda p=p1: _provider_generate_json(provider, p, settings, use_search=(provider=='gemini'), gemini_model=gemini_model, openai_model=openai_model, claude_model=claude_model))
-                        if not parsed:
-                            parsed = _extract_json_pairs_fallback(raw, ['latest_current_version','latest_version_date','release_date','list_price','currency','store_name','summary_html','features_html'])
-                        if parsed:
-                            addon = _merge_product_into_addon(addon, parsed, sources, include_overview=body.include_overview, include_features=body.include_features, override_existing=body.override_existing)
-                    if body.include_aircraft_data and addon.type == 'Aircraft':
-                        lookup_mfr = (addon.rw.manufacturer_full_name or addon.rw.mfr or addon.pr.manufacturer or addon.publisher or '').strip()
-                        model_name = (addon.rw.model or addon.title or '').strip()
-                        if lookup_mfr and model_name:
-                            if provider == 'gemini':
-                                parsed, sources, meta = await _run_provider_aircraft_lookup(provider, settings, lookup_mfr, model_name, fallback_title=addon.title, gemini_model=gemini_model, openai_model=openai_model, claude_model=claude_model)
-                                log.info('Bulk populate aircraft addon=%s candidate=%s', addon.title, meta.get('candidate'))
-                            else:
-                                p2 = _build_aircraft_prompt(lookup_mfr, model_name, response_language=_preferred_language(settings))
-                                parsed, sources, raw = await asyncio.to_thread(lambda p=p2: _provider_generate_json(provider, p, settings, use_search=(provider=='gemini'), gemini_model=gemini_model, openai_model=openai_model, claude_model=claude_model))
-                                if not parsed:
-                                    parsed = _extract_json_pairs_fallback(raw, ['manufacturer_full_name','model','category','engine','engine_type','max_speed','cruise_speed','range','range_nm','ceiling','passenger_capacity','mtow','fuel_capacity','wingspan','length','height','avionics','variants','in_production','aircraft_cost','country_of_origin','date_introduced','summary_html'])
-                            if parsed:
-                                addon = _merge_aircraft_into_addon(addon, parsed, sources)
-                    guessed_sub = _guess_subtype_for_addon(addon, category=(addon.rw.category or ''), title=(addon.title or ''))
-                    if guessed_sub:
-                        addon.sub = guessed_sub
-                    await storage.upsert_addon(addon)
+                    addon, info = await _populate_addon_with_selected_ai(
+                        addon,
+                        settings,
+                        provider=provider,
+                        use_bulk_model=True,
+                        override_existing=body.override_existing,
+                        include_overview=body.include_overview,
+                        include_features=body.include_features,
+                        include_aircraft_data=body.include_aircraft_data,
+                    )
+                    if info.get('search_candidate'):
+                        log.info('Bulk populate product addon=%s candidate=%s', addon.title, info.get('search_candidate'))
                 except Exception as e:
                     failures.append({'addon': addon.title, 'error': str(e)})
                     log.error('Bulk populate failed addon=%s error=%s', addon.title, e, exc_info=True)
@@ -3084,6 +4009,7 @@ async def websocket_scan(ws: WebSocket):
             selected_paths = msg.get("selected_paths")
             if not isinstance(selected_paths, list):
                 selected_paths = await storage.get_json_setting("scan_selected_paths", [])
+            populate_new_ai = bool(msg.get('populate_new_ai'))
             if not addons_root:
                 await ws.send_json({"type": "error", "message": "Set Addons Root in Settings first."})
                 continue
@@ -3091,14 +4017,35 @@ async def websocket_scan(ws: WebSocket):
             _scan_running = True
             try:
                 existing = await storage.get_all_addons(include_removed=True)
+                ignored_rules = await storage.list_ignored_addons()
                 async def progress_cb(m: dict):
+                    if m.get('type') == 'done':
+                        return
                     await ws.send_json(m)
                 activated_only = (await storage.get_setting("scan_activated_only", "0")) == "1"
-                result = await scan_module.scan_addons(addons_root, community, existing, progress_cb, _scan_cancel, selected_paths=selected_paths, activated_only=activated_only)
+                result = await scan_module.scan_addons(addons_root, community, existing, progress_cb, _scan_cancel, selected_paths=selected_paths, activated_only=activated_only, ignored_rules=ignored_rules)
                 if result.added or result.updated:
                     await storage.upsert_many(result.added + result.updated)
                 if result.removed:
                     await storage.mark_removed(result.removed)
+                ai_populated = 0
+                if populate_new_ai and result.added:
+                    settings = await storage.get_all_settings()
+                    provider = _selected_ai_provider(settings)
+                    provider_ok = (provider == 'gemini' and settings.get('google_api_key')) or (provider == 'openai' and settings.get('openai_key')) or (provider == 'claude' and settings.get('claude_api_key'))
+                    if provider_ok:
+                        total_new = len(result.added)
+                        for idx, addon in enumerate(result.added, start=1):
+                            if _scan_cancel.is_set():
+                                break
+                            await ws.send_json({'type':'ai-progress','current':addon.title,'pct':round((idx-1)/max(total_new,1)*100,1),'done':idx-1,'total':total_new,'message':'Populating new add-ons with selected AI...'})
+                            try:
+                                await _populate_addon_with_selected_ai(addon, settings, provider=provider, use_bulk_model=True, override_existing=True, include_overview=True, include_features=True, include_aircraft_data=True)
+                                ai_populated += 1
+                            except Exception as e:
+                                log.warning('Scan follow-up AI populate failed addon=%s error=%s', addon.title, e)
+                        await ws.send_json({'type':'ai-progress','current':'Complete','pct':100,'done':ai_populated,'total':total_new,'message':'Selected-AI populate finished for new add-ons.'})
+                await ws.send_json({'type':'done','scanned':result.skipped_ignored + len(result.added) + len(result.updated),'total':result.skipped_ignored + len(result.added) + len(result.updated),'added':len(result.added),'updated':len(result.updated),'removed':len(result.removed),'ignored':result.skipped_ignored,'ai_populated':ai_populated})
             except Exception as e:
                 log.error("Scan failed: %s", e, exc_info=True)
                 await ws.send_json({"type": "error", "message": str(e)})

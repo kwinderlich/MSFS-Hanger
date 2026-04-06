@@ -81,6 +81,11 @@ class RealWorld:
     util_cat: Optional[str] = None
     compat: Optional[str] = None
     source: Optional[str] = None
+    passenger_count: Optional[str] = None
+    cargo_count: Optional[str] = None
+    us_rank: Optional[str] = None
+    world_rank: Optional[str] = None
+    hub_airlines: Optional[str] = None
 
 @dataclass
 class ProductInfo:
@@ -107,6 +112,11 @@ class UserData:
     resources: List[Dict] = field(default_factory=list)
     research_resources: List[Dict] = field(default_factory=list)
     data_resources: List[Dict] = field(default_factory=list)
+    map_lat: Optional[float] = None
+    map_lon: Optional[float] = None
+    map_zoom: Optional[int] = None
+    map_search_label: str = ""
+    map_polygon: List[Dict] = field(default_factory=list)
 
 @dataclass
 class Document:
@@ -123,7 +133,12 @@ class Addon:
     title: str = ""
     publisher: str = ""
     summary: str = ""
+    entry_kind: str = "addon"
+    managed: bool = True
     addon_path: str = ""
+    launch_path: Optional[str] = None
+    working_dir: Optional[str] = None
+    launch_args: Optional[str] = None
     package_name: Optional[str] = None
     manifest_path: Optional[str] = None
     thumbnail_path: Optional[str] = None
@@ -168,11 +183,16 @@ class Addon:
             "title": self.title,
             "publisher": self.publisher,
             "summary": self.summary,
+            "entry_kind": self.entry_kind,
+            "managed": self.managed,
             "enabled": self.enabled,
             "hasUpdate": self.has_update,
             "lat": self.lat,
             "lon": self.lon,
             "addon_path": self.addon_path,
+            "launch_path": self.launch_path,
+            "working_dir": self.working_dir,
+            "launch_args": self.launch_args,
             "package_name": self.package_name,
             "manifest_path": self.manifest_path,
             "thumbnail_path": self.thumbnail_path,
@@ -191,6 +211,8 @@ class Addon:
                 "scenery_type": rw.scenery_type, "coverage": rw.coverage,
                 "resolution": rw.resolution, "util_cat": rw.util_cat,
                 "compat": rw.compat, "source": rw.source,
+                "passenger_count": rw.passenger_count, "cargo_count": rw.cargo_count,
+                "us_rank": rw.us_rank, "world_rank": rw.world_rank, "hub_airlines": rw.hub_airlines,
             },
             "pr": {
                 "ver": pr.ver, "latest_ver": pr.latest_ver, "latest_ver_date": pr.latest_ver_date, "released": pr.released, "price": pr.price,
@@ -202,6 +224,8 @@ class Addon:
                 "tags": usr.tags, "paid": usr.paid, "source_store": usr.source_store,
                 "avionics": usr.avionics, "features": usr.features, "resources": usr.resources,
                 "research_resources": usr.research_resources, "data_resources": usr.data_resources,
+                "map_lat": usr.map_lat, "map_lon": usr.map_lon, "map_zoom": usr.map_zoom,
+                "map_search_label": usr.map_search_label, "map_polygon": usr.map_polygon,
             },
             "docs": [
                 {"name": d.name, "path": d.path, "url": d.url, "pages": d.pages}

@@ -39,8 +39,21 @@ async def init_db(db_path: Path = DB_PATH):
                 color TEXT DEFAULT '#38BDF8'
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS ignored_addons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                addon_path TEXT,
+                package_name TEXT,
+                title TEXT,
+                publisher TEXT,
+                created_at TEXT,
+                note TEXT DEFAULT ''
+            )
+        """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_addons_path ON addons(addon_path)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_addons_exists ON addons(exists_flag)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_ignored_addons_path ON ignored_addons(addon_path)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_ignored_addons_package ON ignored_addons(package_name)")
         await db.commit()
 
         file_settings = load_settings_file()
@@ -88,6 +101,33 @@ async def upsert_many(addons: list[Addon], db_path: Path = DB_PATH):
                 exists_flag=excluded.exists_flag,
                 last_scanned=excluded.last_scanned,
                 data=excluded.data
+        """, rows)
+        await db.commit()
+
+
+async def update_many_existing(addons: list[Addon], db_path: Path = DB_PATH):
+    if not addons:
+        return
+    rows = []
+    for addon in addons:
+        rows.append((
+            addon.addon_path, addon.type, addon.title, addon.publisher,
+            int(addon.enabled), int(addon.exists), addon.last_scanned,
+            json.dumps(addon.to_dict(), ensure_ascii=False), addon.id,
+        ))
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute("BEGIN")
+        await db.executemany("""
+            UPDATE addons
+               SET addon_path=?,
+                   type=?,
+                   title=?,
+                   publisher=?,
+                   enabled=?,
+                   exists_flag=?,
+                   last_scanned=?,
+                   data=?
+             WHERE id=?
         """, rows)
         await db.commit()
 
@@ -227,3 +267,76 @@ async def get_all_settings(db_path: Path = DB_PATH) -> dict[str, str]:
             async for row in cur:
                 out[row[0]] = row[1]
     return out
+
+
+async def get_addons(include_removed: bool = False, db_path: Path = DB_PATH) -> list[Addon]:
+    return list((await get_all_addons(include_removed=include_removed, db_path=db_path)).values())
+
+
+async def list_ignored_addons(db_path: Path = DB_PATH) -> list[dict]:
+    out = []
+    async with aiosqlite.connect(str(db_path)) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT id, addon_path, package_name, title, publisher, created_at, note FROM ignored_addons ORDER BY COALESCE(title, addon_path) COLLATE NOCASE") as cur:
+            async for row in cur:
+                out.append(dict(row))
+    return out
+
+
+async def add_ignored_addons(entries: list[dict], db_path: Path = DB_PATH):
+    if not entries:
+        return
+    rows = []
+    for entry in entries:
+        rows.append((
+            (entry.get('addon_path') or '').strip(),
+            (entry.get('package_name') or '').strip(),
+            (entry.get('title') or '').strip(),
+            (entry.get('publisher') or '').strip(),
+            (entry.get('created_at') or '').strip(),
+            (entry.get('note') or '').strip(),
+        ))
+    async with aiosqlite.connect(str(db_path)) as db:
+        for addon_path, package_name, title, publisher, created_at, note in rows:
+            if not addon_path and not package_name:
+                continue
+            await db.execute(
+                "DELETE FROM ignored_addons WHERE (? != '' AND LOWER(addon_path)=LOWER(?)) OR (? != '' AND LOWER(package_name)=LOWER(?))",
+                (addon_path, addon_path, package_name, package_name),
+            )
+            await db.execute(
+                "INSERT INTO ignored_addons(addon_path, package_name, title, publisher, created_at, note) VALUES(?,?,?,?,?,?)",
+                (addon_path, package_name, title, publisher, created_at, note),
+            )
+        await db.commit()
+
+
+async def remove_ignored_addons(ignore_ids: list[int], db_path: Path = DB_PATH):
+    if not ignore_ids:
+        return
+    placeholders = ",".join("?" for _ in ignore_ids)
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute(f"DELETE FROM ignored_addons WHERE id IN ({placeholders})", [int(x) for x in ignore_ids])
+        await db.commit()
+
+
+async def remap_ignored_paths(old_root: str, new_root: str, db_path: Path = DB_PATH):
+    old_root_norm = str(old_root or '').strip().replace('/', '\\').rstrip('\\')
+    new_root_norm = str(new_root or '').strip().replace('/', '\\').rstrip('\\')
+    if not old_root_norm or not new_root_norm or old_root_norm.lower() == new_root_norm.lower():
+        return
+    async with aiosqlite.connect(str(db_path)) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT id, addon_path FROM ignored_addons") as cur:
+            rows = await cur.fetchall()
+        for row in rows:
+            path_value = (row['addon_path'] or '').strip()
+            if not path_value:
+                continue
+            low = path_value.lower().replace('/', '\\')
+            old_low = old_root_norm.lower()
+            if low == old_low or low.startswith(old_low + '\\'):
+                suffix = path_value[len(old_root_norm):].lstrip('\\/')
+                next_path = new_root_norm + ('\\' + suffix if suffix else '')
+                await db.execute("UPDATE ignored_addons SET addon_path=? WHERE id=?", (next_path, row['id']))
+        await db.commit()
