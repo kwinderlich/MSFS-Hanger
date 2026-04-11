@@ -236,7 +236,7 @@ def _guess_aircraft_fields(addon: Addon):
         if rw.mfr and model.lower().startswith(rw.mfr.lower() + " "):
             model = model[len(rw.mfr):].strip()
         rw.model = model
-    rw.source = rw.source or ("Manifest + title parsing" if rw.mfr else "Title parsing")
+    rw.source = rw.source or ("Manifest metadata + title parsing" if rw.mfr else "Title parsing only")
 
 
 def enrich_addon(addon: Addon):

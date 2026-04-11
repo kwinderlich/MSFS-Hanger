@@ -30,6 +30,9 @@ RUNWAYS_URL  = "https://davidmegginson.github.io/ourairports-data/runways.csv"
 
 # In-memory cache after first load
 _airports_cache: dict[str, dict] = {}
+_airports_by_local_code: dict[str, str] = {}
+_airports_by_gps_code: dict[str, str] = {}
+_airports_by_iata_code: dict[str, str] = {}
 _runways_cache:  dict[str, list] = {}   # icao → list of runway dicts
 _cache_loaded = False
 
@@ -90,8 +93,15 @@ def _ensure_loaded():
             for row in reader:
                 icao = (row.get("ident") or "").strip().upper()
                 if icao and len(icao) >= 3:
+                    local_code = (row.get("local_code") or "").strip().upper()
+                    gps_code = (row.get("gps_code") or "").strip().upper()
+                    iata_code = (row.get("iata_code") or "").strip().upper()
+                    faa_id = local_code or (gps_code if gps_code and gps_code != icao else "")
                     _airports_cache[icao] = {
                         "icao":       icao,
+                        "faa_id":     faa_id,
+                        "local_code": local_code,
+                        "gps_code":   gps_code,
                         "name":       row.get("name", ""),
                         "city":       row.get("municipality", ""),
                         "municipality": row.get("municipality", ""),
@@ -103,10 +113,13 @@ def _ensure_loaded():
                         "lon":        _safe_float(row.get("longitude_deg")),
                         "elev":       row.get("elevation_ft", ""),
                         "type":       row.get("type", ""),
-                        "iata":       row.get("iata_code", ""),
+                        "iata":       iata_code,
                         "wiki":       row.get("wikipedia_link", ""),
                         "home_link":  row.get("home_link", ""),
                     }
+                    for code, bucket in ((local_code, _airports_by_local_code), (gps_code, _airports_by_gps_code), (iata_code, _airports_by_iata_code)):
+                        if code and code != icao and code not in bucket:
+                            bucket[code] = icao
         log.info("Loaded %d airports from OurAirports", len(_airports_cache))
     except Exception as e:
         log.error("Error loading airports.csv: %s", e)
@@ -243,6 +256,7 @@ def lookup_airport(icao: str) -> Optional[dict]:
 
     return {
         "icao":         icao,
+        "faa_id":       airport.get("faa_id", "") or airport.get("local_code", "") or airport.get("gps_code", ""),
         "name":         airport.get("name", ""),
         "city":         airport.get("city", ""),
         "municipality": airport.get("municipality", ""),
@@ -278,3 +292,28 @@ def get_cache_stats() -> dict:
         "airports_csv":    str(AIRPORTS_CSV),
         "exists":          AIRPORTS_CSV.exists(),
     }
+
+
+def lookup_airport_by_code(code: str) -> Optional[dict]:
+    """Look up an airport by ICAO, FAA/local code, GPS code, or IATA code."""
+    _ensure_loaded()
+    code = (code or '').strip().upper()
+    if not code:
+        return None
+    airport = lookup_airport(code)
+    if airport:
+        return airport
+    for bucket in (_airports_by_local_code, _airports_by_gps_code, _airports_by_iata_code):
+        ident = bucket.get(code)
+        if ident:
+            airport = lookup_airport(ident)
+            if airport:
+                if not airport.get('faa_id') and code not in {airport.get('icao', ''), airport.get('iata', '')}:
+                    airport['faa_id'] = code
+                return airport
+    return None
+
+
+def lookup_airport_by_faa(faa_id: str) -> Optional[dict]:
+    """Backwards-compatible FAA/local-code helper."""
+    return lookup_airport_by_code(faa_id)

@@ -158,9 +158,9 @@ def stop_previous_backend(port: int):
             pass
 
 
-def start_backend(port: int):
+def start_backend(host: str, port: int):
     global _backend_proc
-    cmd = [sys.executable, "-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", str(port), "--log-level", "info"]
+    cmd = [sys.executable, "-m", "uvicorn", "app:app", "--host", str(host), "--port", str(port), "--log-level", "info"]
     print("Starting backend:", " ".join(cmd), flush=True)
     _backend_proc = subprocess.Popen(cmd, cwd=str(BASE_DIR), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     PID_FILE.write_text(str(_backend_proc.pid))
@@ -222,9 +222,45 @@ def wait_for_server(port: int, timeout: float = 30.0) -> bool:
     return False
 
 
+
+
+def _local_browser_url(port: int) -> str:
+    return f"http://127.0.0.1:{port}"
+
+
+def _discover_lan_urls(port: int) -> list[str]:
+    urls=[]
+    try:
+        hostnames={socket.gethostname()}
+        try:
+            hostnames.add(socket.getfqdn())
+        except Exception:
+            pass
+        ips=set()
+        for name in hostnames:
+            try:
+                for info in socket.getaddrinfo(name, None, family=socket.AF_INET):
+                    ip=info[4][0]
+                    if ip and not ip.startswith('127.'):
+                        ips.add(ip)
+            except Exception:
+                pass
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                ip=s.getsockname()[0]
+                if ip and not ip.startswith('127.'):
+                    ips.add(ip)
+        except Exception:
+            pass
+        urls=[f"http://{ip}:{port}" for ip in sorted(ips)]
+    except Exception:
+        pass
+    return urls
+
 def open_system_browser(port: int):
     import webbrowser
-    url = f"http://127.0.0.1:{port}"
+    url = _local_browser_url(port)
     print(f"Opening system browser at {url}", flush=True)
     webbrowser.open(url)
 
@@ -262,7 +298,7 @@ def open_app_shell(port: int):
     if not browser:
         print("No Edge/Chrome browser found for app shell mode.", flush=True)
         return False
-    url = f"http://127.0.0.1:{port}"
+    url = _local_browser_url(port)
     cmd = [browser, f"--app={url}", "--new-window"]
     print("Launching app shell:", " ".join(cmd), flush=True)
     _shell_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -297,12 +333,13 @@ def main():
     print(f"Library DB    : {DB_PATH}", flush=True)
     install_missing()
     port = int(os.environ.get("HANGAR_PORT", "7891"))
+    bind_host = os.environ.get("HANGAR_HOST", os.environ.get("HANGAR_BIND", "127.0.0.1")).strip() or "127.0.0.1"
     use_desktop = os.environ.get("HANGAR_DESKTOP", "0") == "1"
     desktop_mode = os.environ.get("HANGAR_DESKTOP_MODE", "app").lower()
     os.environ["HANGAR_SHELL_MODE"] = desktop_mode if use_desktop else "browser"
     stop_previous_backend(port)
     clear_browser_cache()
-    start_backend(port)
+    start_backend(bind_host, port)
     if not wait_for_server(port):
         print("Backend failed to start.", flush=True)
         print(f"Open diagnostics when available: http://127.0.0.1:{port}/api/diag", flush=True)
@@ -323,6 +360,13 @@ def main():
         open_system_browser(port)
 
     print("Backend is running. Leave this window open while using MSFS Hangar.", flush=True)
+    if bind_host not in ("127.0.0.1", "localhost"):
+        lan_urls=_discover_lan_urls(port)
+        if lan_urls:
+            print("LAN browser access:", flush=True)
+            for url in lan_urls:
+                print(f"  {url}", flush=True)
+            print("If another device cannot connect, allow Python/port 7891 through Windows Firewall.", flush=True)
     if use_desktop and desktop_mode == "app":
         print("Desktop shell mode: Edge/Chrome app window.", flush=True)
         print("Note: keep this console open while using the desktop shell.", flush=True)

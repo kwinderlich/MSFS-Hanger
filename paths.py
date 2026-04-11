@@ -13,6 +13,9 @@ BUNDLED_SETTINGS_PATH = BUNDLED_DATA_DIR / "settings.json"
 
 
 def _user_data_root() -> Path:
+    override = os.environ.get("HANGAR_USER_DATA_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
     if os.name == "nt":
         root = os.environ.get("LOCALAPPDATA")
         if root:
@@ -24,20 +27,28 @@ def _user_data_root() -> Path:
     return Path.home() / ".local" / "share"
 
 
-USER_DATA_DIR = _user_data_root() / APP_NAME
+_USER_DATA_ROOT = _user_data_root()
+USER_DATA_DIR = _USER_DATA_ROOT if _USER_DATA_ROOT.name == APP_NAME else (_USER_DATA_ROOT / APP_NAME)
 DB_PATH = USER_DATA_DIR / "hangar.db"
 SETTINGS_JSON_PATH = USER_DATA_DIR / "settings.json"
 LOG_DIR = USER_DATA_DIR / "logs"
 BROWSER_PROFILE_DIR = USER_DATA_DIR / "browser_profile"
+BACKUP_DIR = USER_DATA_DIR / "backups"
+TEST_DIR = USER_DATA_DIR / "test"
 PID_FILE = USER_DATA_DIR / "backend.pid"
 DESKTOP_PID_FILE = USER_DATA_DIR / "desktop.pid"
 CACHE_ROOT = USER_DATA_DIR / "browser_profile"
+LEGACY_HYBRID_DIR = Path.home() / ".msfs_hangar_hybrid"
+LEGACY_HQ_DIR = Path.home() / ".msfs_hangar_hq"
+LEGACY_QT_DIR = Path.home() / ".msfs_hangar_qt"
 
 
 def ensure_user_data_dirs() -> Path:
     USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    TEST_DIR.mkdir(parents=True, exist_ok=True)
     return USER_DATA_DIR
 
 
@@ -55,13 +66,24 @@ def initialize_user_data() -> None:
         initial = {}
         if BUNDLED_SETTINGS_PATH.exists():
             try:
-                initial = json.loads(BUNDLED_SETTINGS_PATH.read_text(encoding="utf-8"))
+                loaded = json.loads(BUNDLED_SETTINGS_PATH.read_text(encoding="utf-8"))
+                initial = loaded if isinstance(loaded, dict) else {}
             except Exception:
                 initial = {}
         try:
             SETTINGS_JSON_PATH.write_text(json.dumps(initial, indent=2), encoding="utf-8")
         except Exception:
             pass
+    else:
+        try:
+            loaded = json.loads(SETTINGS_JSON_PATH.read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict):
+                SETTINGS_JSON_PATH.write_text(json.dumps({}, indent=2), encoding="utf-8")
+        except Exception:
+            try:
+                SETTINGS_JSON_PATH.write_text(json.dumps({}, indent=2), encoding="utf-8")
+            except Exception:
+                pass
 
 
 def load_settings_file() -> dict[str, str]:

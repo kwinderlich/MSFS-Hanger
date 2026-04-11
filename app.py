@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import base64
 import json
 import mimetypes
 import base64
 import os
 import shlex
+import hashlib
 import subprocess
 from datetime import datetime
 import re
@@ -33,7 +35,7 @@ import scanner as scan_module
 import storage
 from realworld import fetch_aircraft_specs, guess_icao
 from logger import build_diag_report, get_logger, write_startup_snapshot
-from paths import BASE_DIR, USER_DATA_DIR, initialize_user_data, SETTINGS_JSON_PATH, DB_PATH
+from paths import BASE_DIR, USER_DATA_DIR, initialize_user_data, SETTINGS_JSON_PATH, DB_PATH, LOG_DIR, BROWSER_PROFILE_DIR, BACKUP_DIR, TEST_DIR, LEGACY_HYBRID_DIR, LEGACY_HQ_DIR, LEGACY_QT_DIR
 
 log = get_logger(__name__)
 
@@ -65,6 +67,7 @@ _browser_state = {
 }
 
 _search_cache: dict[tuple[str, str], dict] = {}
+_SEARCH_CACHE_VERSION = 'v1'
 _SEARCH_CACHE_TTL = 900
 
 def _update_browser_state(**kwargs):
@@ -81,6 +84,61 @@ async def startup():
     log.info("Using external data dir: %s", USER_DATA_DIR)
     log.info("Settings file: %s", SETTINGS_JSON_PATH)
     log.info("Library DB: %s", DB_PATH)
+
+
+def _file_info(path: Path) -> dict:
+    exists = path.exists()
+    return {
+        'path': str(path),
+        'exists': exists,
+        'size': (path.stat().st_size if exists and path.is_file() else 0),
+        'modified': (datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec='seconds') if exists else ''),
+    }
+
+
+@app.get("/api/application/info")
+async def application_info():
+    sources = await storage.detect_storage_sources()
+    return {
+        "base_dir": str(BASE_DIR),
+        "user_data_dir": str(USER_DATA_DIR),
+        "settings_file": str(SETTINGS_JSON_PATH),
+        "db_path": str(DB_PATH),
+        "log_dir": str(LOG_DIR),
+        "browser_profile_dir": str(BROWSER_PROFILE_DIR),
+        "backup_dir": str(BACKUP_DIR),
+        "test_dir": str(TEST_DIR),
+        "legacy_hybrid_dir": str(LEGACY_HYBRID_DIR),
+        "legacy_hq_dir": str(LEGACY_HQ_DIR),
+        "legacy_qt_dir": str(LEGACY_QT_DIR),
+        "data_dir_override": os.environ.get("HANGAR_USER_DATA_DIR", "").strip(),
+        "host_mode": os.environ.get('HANGAR_SHELL_MODE', 'local_or_desktop'),
+        "user_data_exists": USER_DATA_DIR.exists(),
+        "settings_exists": SETTINGS_JSON_PATH.exists(),
+        "db_exists": DB_PATH.exists(),
+        "log_dir_exists": LOG_DIR.exists(),
+        "browser_profile_exists": BROWSER_PROFILE_DIR.exists(),
+        "settings_file_info": _file_info(SETTINGS_JSON_PATH),
+        "db_file_info": _file_info(DB_PATH),
+        "backup_dir_exists": BACKUP_DIR.exists(),
+        "test_dir_exists": TEST_DIR.exists(),
+        "storage_sources": sources,
+    }
+
+
+@app.post('/api/application/test-storage')
+async def application_test_storage():
+    return await storage.run_storage_test()
+
+
+@app.post('/api/application/backup')
+async def application_backup():
+    return await storage.create_data_backup()
+
+
+@app.post('/api/application/migrate-legacy')
+async def application_migrate_legacy():
+    return await storage.migrate_legacy_storage()
 
 @app.get("/api/diag")
 async def diagnostics():
@@ -201,6 +259,334 @@ async def delete_gallery_image(addon_id: str, index: int):
     await storage.upsert_addon(addon)
     return addon.to_frontend_dict()
 
+
+
+def _path_under_any_root(path: Path, roots: list[Path]) -> bool:
+    try:
+        rp = path.resolve()
+    except Exception:
+        return False
+    for root in roots:
+        try:
+            rr = root.resolve()
+            if str(rp).lower().startswith(str(rr).lower()):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _read_cfg_fields(path: Path) -> dict:
+    wanted = {"base_container", "ui_variation", "variation", "atc_airline", "atc_flight_number", "atc_id", "atc_model", "ui_powerplant", "title", "texture", "model", "atc_type", "ui_type"}
+    out = {}
+    try:
+        for raw in path.read_text(encoding='utf-8', errors='ignore').splitlines():
+            line = raw.strip()
+            if not line or line.startswith(';') or line.startswith('#') or line.startswith('//'):
+                continue
+            if line.startswith('[') and line.endswith(']'):
+                continue
+            if '=' not in line:
+                continue
+            key, value = line.split('=', 1)
+            key = key.strip().lower()
+            if key not in wanted:
+                continue
+            value = value.strip()
+            if value and key not in out:
+                out[key] = value
+    except Exception:
+        return out
+    return out
+
+
+
+def _common_prefix_token_count(a: str, b: str) -> int:
+    ta = [t for t in re.split(r'[-_\s]+', (a or '').lower()) if t]
+    tb = [t for t in re.split(r'[-_\s]+', (b or '').lower()) if t]
+    count = 0
+    for x, y in zip(ta, tb):
+        if x != y:
+            break
+        count += 1
+    return count
+
+
+def _parse_livery_variant_parts(value: str) -> tuple[str, str]:
+    raw = str(value or '').strip()
+    if not raw:
+        return '', ''
+    m = re.match(r'^(.*?)\s*\((.*?)\)\s*$', raw)
+    if not m:
+        return raw, ''
+    base = m.group(1).strip()
+    inside = m.group(2).strip()
+    parts = [p.strip() for p in inside.split('|')]
+    if len(parts) >= 2 and re.fullmatch(r'(19|20)\d{2}', parts[-1]):
+        year = parts[-1]
+        reg = ' | '.join(parts[:-1]).strip()
+        variant = base + (f' ({reg})' if reg else '')
+        return variant.strip(), year
+    return raw, ''
+
+
+def _current_iso_timestamp() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+
+
+def _find_livery_config(subject_dir: Path, package_root: Path) -> tuple[Optional[Path], dict]:
+    checked = set()
+    candidates = []
+    cur = subject_dir
+    while True:
+        candidates.extend([cur / 'livery.cfg', cur / 'aircraft.cfg', cur / 'config' / 'aircraft.cfg'])
+        if cur == package_root or cur.parent == cur:
+            break
+        cur = cur.parent
+    for cand in candidates:
+        try:
+            rc = cand.resolve()
+        except Exception:
+            rc = cand
+        if rc in checked:
+            continue
+        checked.add(rc)
+        if cand.exists() and cand.is_file():
+            return cand, _read_cfg_fields(cand)
+    return None, {}
+
+
+def _norm_key(value: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '', (value or '').lower())
+
+
+def _collect_livery_thumbnail_candidates(root: Path) -> list[Path]:
+    exts = {'.png', '.jpg', '.jpeg', '.webp'}
+    out = []
+    for p in root.rglob('*'):
+        if not p.is_file() or p.suffix.lower() not in exts:
+            continue
+        nm = p.name.lower()
+        if nm in {'thumbnail.png', 'thumbnail.jpg', 'thumbnail.jpeg', 'thumbnail.webp'} or (p.parent.name.lower() == 'thumbnail' and 'thumbnail' in nm):
+            out.append(p)
+    return out
+
+
+def _match_livery_to_aircraft(top_parent: str, cfg: dict, addon: Addon) -> bool:
+    package_candidates = []
+    for raw in [Path(addon.addon_path).name if addon.addon_path else '', addon.package_name or '', addon.pr.package_name or '']:
+        raw = str(raw or '').strip()
+        if raw and raw not in package_candidates:
+            package_candidates.append(raw)
+    if not package_candidates:
+        return False
+    base_raw = str(cfg.get('base_container', '') or '').strip()
+    title_raw = str(cfg.get('title', '') or '').strip()
+    variation_raw = str(cfg.get('ui_variation', '') or cfg.get('variation', '') or '').strip()
+    for cand in package_candidates:
+        cand_norm = _norm_key(cand)
+        top_norm = _norm_key(top_parent)
+        base_norm = _norm_key(base_raw)
+        if cand_norm and top_norm == cand_norm:
+            return True
+        if cand_norm and top_norm.startswith(cand_norm):
+            return True
+        if base_norm and (base_norm == cand_norm or cand_norm in base_norm or base_norm in cand_norm):
+            return True
+        prefix = _common_prefix_token_count(top_parent, cand)
+        cand_tokens = [t for t in re.split(r'[-_\s]+', cand.lower()) if t]
+        if cand_tokens and prefix >= min(len(cand_tokens), 3):
+            return True
+        if title_raw and cand_norm and cand_norm in _norm_key(title_raw):
+            return True
+        if variation_raw and cand_norm and cand_norm in _norm_key(variation_raw):
+            return True
+    return False
+
+
+def _livery_scan_candidates_for_aircraft(addon: Addon, liveries_root: Path) -> list[dict]:
+    if not liveries_root.exists():
+        return []
+    results = []
+    seen = set()
+    thumbs = _collect_livery_thumbnail_candidates(liveries_root)
+    for thumb in thumbs:
+        try:
+            rel = thumb.relative_to(liveries_root)
+        except Exception:
+            continue
+        if not rel.parts:
+            continue
+        package_root = liveries_root / rel.parts[0]
+        subject_dir = thumb.parent.parent if thumb.parent.name.lower() == 'thumbnail' else thumb.parent
+        cfg_path, cfg = _find_livery_config(subject_dir, package_root)
+        if not _match_livery_to_aircraft(rel.parts[0], cfg, addon):
+            continue
+        key = str(subject_dir.resolve()).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append({
+            'thumb': thumb,
+            'rel': rel,
+            'package_root': package_root,
+            'subject_dir': subject_dir,
+            'cfg_path': cfg_path,
+            'cfg': cfg,
+        })
+    return results
+
+
+def _scan_liveries_for_aircraft(addon: Addon, liveries_root: Path, community_dir: Optional[Path]) -> list[dict]:
+    if not liveries_root.exists():
+        return []
+    existing_map = {}
+    try:
+        for ex in list(getattr(addon.usr, 'liveries', []) or []):
+            ex_key = ((ex.get('package_root') or '') + '|' + (ex.get('variant') or '') + '|' + (ex.get('airline') or '') + '|' + (ex.get('thumbnail_path') or '')).lower()
+            if ex_key:
+                existing_map[ex_key] = ex
+    except Exception:
+        existing_map = {}
+    results = []
+    seen = set()
+    candidates = _livery_scan_candidates_for_aircraft(addon, liveries_root)
+    for cand in candidates:
+        thumb = cand['thumb']
+        package_root = cand['package_root']
+        subject_dir = cand['subject_dir']
+        cfg_path = cand['cfg_path']
+        cfg = cand['cfg']
+        airline = str(cfg.get('atc_airline', '') or '').strip()
+        raw_variant = str(cfg.get('ui_variation', '') or cfg.get('variation', '') or cfg.get('title', '') or '').strip()
+        variant, year = _parse_livery_variant_parts(raw_variant)
+        item_key = (str(package_root.resolve()) + '|' + variant + '|' + airline + '|' + str(thumb.resolve())).lower()
+        if item_key in seen:
+            continue
+        seen.add(item_key)
+        existing = existing_map.get(item_key, {})
+        item_id = existing.get('id') or hashlib.md5((str(package_root.resolve())+'|'+str(subject_dir.resolve())+'|'+variant+'|'+str(thumb.resolve())).encode('utf-8', 'ignore')).hexdigest()
+        enabled = bool(community_dir and linker.find_link_in_community(community_dir, package_root))
+        lower_subject = str(subject_dir).lower()
+        category = 'Cabin Pack' if ('cabin' in lower_subject or 'preset' in lower_subject) else 'Livery'
+        results.append({
+            'id': item_id,
+            'name': airline or variant or subject_dir.name,
+            'airline': airline or subject_dir.parent.name.replace('_',' ').replace('-',' '),
+            'variant': variant or raw_variant or subject_dir.name,
+            'year': year,
+            'flight_number': cfg.get('atc_flight_number', ''),
+            'model': cfg.get('atc_model', ''),
+            'powerplant': cfg.get('ui_powerplant', ''),
+            'base_container': cfg.get('base_container', ''),
+            'category': category,
+            'thumbnail_path': str(thumb.resolve()),
+            'package_root': str(package_root.resolve()),
+            'subject_dir': str(subject_dir.resolve()),
+            'config_path': str(cfg_path.resolve()) if cfg_path else '',
+            'enabled': enabled,
+            'fav': bool(existing.get('fav', False)),
+            'scanned_at': _current_iso_timestamp(),
+        })
+    results.sort(key=lambda x: ((x.get('airline') or '').lower(), (x.get('variant') or '').lower(), x.get('name') or ''))
+    return results
+
+
+@app.get('/api/livery-thumb')
+async def livery_thumb(path: str):
+    p = Path(path)
+    roots = [USER_DATA_DIR]
+    addons_root = await storage.get_setting('addons_root')
+    liveries_root = await storage.get_setting('liveries_root')
+    if addons_root:
+        roots.append(Path(addons_root))
+    if liveries_root:
+        roots.append(Path(liveries_root))
+    if not p.exists() or not _path_under_any_root(p, roots):
+        raise HTTPException(404, 'No image')
+    return FileResponse(str(p))
+
+
+class LiveryToggleRequest(BaseModel):
+    package_root: str
+    enabled: bool
+
+
+@app.post('/api/liveries/toggle')
+async def toggle_livery(body: LiveryToggleRequest):
+    community_dir = await storage.get_setting('community_dir')
+    if not community_dir:
+        raise HTTPException(400, 'Community folder not set')
+    ok, msg = linker.toggle_addon(body.package_root, community_dir, body.enabled)
+    if not ok:
+        raise HTTPException(500, msg)
+    enabled = linker.find_link_in_community(Path(community_dir), Path(body.package_root))
+    return {'ok': True, 'message': msg, 'enabled': enabled, 'package_root': body.package_root}
+
+
+
+class LiveryRemoveRequest(BaseModel):
+    ids: list[str] = []
+
+
+@app.get('/api/addons/{addon_id}/scan-liveries-preview')
+async def scan_liveries_preview(addon_id: str):
+    addon = await storage.get_addon(addon_id)
+    if not addon:
+        raise HTTPException(404)
+    if addon.type != 'Aircraft':
+        raise HTTPException(400, 'Livery scanning is only available for aircraft add-ons.')
+    liveries_root = await storage.get_setting('liveries_root')
+    if not liveries_root:
+        raise HTTPException(400, 'Set the Liveries Folder in Settings first.')
+    root = Path(liveries_root)
+    if not root.exists():
+        raise HTTPException(400, 'Configured Liveries Folder does not exist.')
+    candidates = _livery_scan_candidates_for_aircraft(addon, root)
+    package_names = []
+    seen = set()
+    for cand in candidates:
+        name = cand['package_root'].name
+        if name not in seen:
+            seen.add(name)
+            package_names.append(name)
+    return {'ok': True, 'candidate_count': len(package_names), 'candidate_packages': package_names[:200]}
+
+
+@app.post('/api/addons/{addon_id}/remove-liveries')
+async def remove_liveries(addon_id: str, body: LiveryRemoveRequest):
+    addon = await storage.get_addon(addon_id)
+    if not addon:
+        raise HTTPException(404)
+    existing = list(getattr(addon.usr, 'liveries', []) or [])
+    remove_ids = {str(x) for x in (body.ids or []) if str(x)}
+    if not remove_ids:
+        raise HTTPException(400, 'No livery ids provided')
+    kept = [x for x in existing if str(x.get('id') or '') not in remove_ids]
+    addon.usr.liveries = kept
+    await storage.upsert_addon(addon)
+    return {'ok': True, 'removed': len(existing) - len(kept), 'items': kept}
+
+
+@app.post('/api/addons/{addon_id}/scan-liveries')
+async def scan_liveries(addon_id: str):
+    addon = await storage.get_addon(addon_id)
+    if not addon:
+        raise HTTPException(404)
+    if addon.type != 'Aircraft':
+        raise HTTPException(400, 'Livery scanning is only available for aircraft add-ons.')
+    liveries_root = await storage.get_setting('liveries_root')
+    if not liveries_root:
+        raise HTTPException(400, 'Set the Liveries Folder in Settings first.')
+    root = Path(liveries_root)
+    if not root.exists():
+        raise HTTPException(400, 'Configured Liveries Folder does not exist.')
+    community_dir = await storage.get_setting('community_dir')
+    items = _scan_liveries_for_aircraft(addon, root, Path(community_dir) if community_dir else None)
+    addon.usr.liveries = items
+    await storage.upsert_addon(addon)
+    return {'ok': True, 'count': len(items), 'items': items}
+
 async def _sync_enabled_state_from_community(addons: dict[str, object]) -> dict[str, object]:
     """Refresh stored enabled flags from the actual Community folder state.
 
@@ -265,6 +651,7 @@ class UserDataUpdate(BaseModel):
     map_zoom: Optional[int] = None
     map_search_label: Optional[str] = None
     map_polygon: Optional[list] = None
+    liveries: Optional[list] = None
 
 @app.patch("/api/addons/{addon_id}/user")
 async def update_user(addon_id: str, body: UserDataUpdate):
@@ -1040,11 +1427,11 @@ DEFAULT_DATA_OPTIONS = {
     "avionics": sorted(["Analog","G1000","G3000","G430","G530","G550","G750","GTN 750","Unsure"]),
     "tags": ["IFR","VFR","Study Level","Freeware","Payware","Major Hub","Training","Scenic","GA","Helicopter","Military","Business Jet"],
     "airport_sites": [
-        {"name":"SkyVector","url":"https://skyvector.com"},
-        {"name":"Airportdata.com","url":"https://www.airportdata.com"},
-        {"name":"AVIPages","url":"https://aviapages.com"},
-        {"name":"Wikipedia","url":"https://wikipedia.org"},
-        {"name":"AIRNAV","url":"https://www.airnav.com"},
+        {"name":"SkyVector","url":"https://skyvector.com/airport/{CODE}"},
+        {"name":"Airportdata.com","url":"https://www.airportdata.com/search-data/airport-details/icao/{CODE_LOWER}"},
+        {"name":"AVIPages","url":"https://aviapages.com/airport/{CODE}"},
+        {"name":"Wikipedia","url":"https://en.wikipedia.org/wiki/{TITLE_UNDERSCORE}"},
+        {"name":"AIRNAV","url":"https://www.airnav.com/airport/{CODE}"},
     ],
     "aircraft_sites": [
         {"name":"Wikipedia","url":"https://wikipedia.org"},
@@ -1261,6 +1648,7 @@ class AircraftFetchRequest(BaseModel):
 
 class AirportFetchRequest(BaseModel):
     icao: Optional[str] = None
+    faa_id: Optional[str] = None
     title: Optional[str] = None
 
 
@@ -1283,6 +1671,7 @@ class GlobalMapCandidateItem(BaseModel):
     addon_type: Optional[str] = None
     subtype: Optional[str] = None
     icao: Optional[str] = None
+    faa_id: Optional[str] = None
     point: Optional[GlobalMapCandidatePoint] = None
     polygon: Optional[list[dict]] = None
 
@@ -1371,13 +1760,16 @@ def _normalize_airport_region_fields(data: dict) -> dict:
     return out
 
 
-def _airport_lookup_queries(icao: str = '', title: str = '', municipality: str = '', country: str = '') -> list[str]:
+def _airport_lookup_queries(icao: str = '', faa_id: str = '', title: str = '', municipality: str = '', country: str = '') -> list[str]:
     queries = []
     icao = (icao or '').strip().upper()
+    faa_id = (faa_id or '').strip().upper()
     title = (title or '').strip()
     clean_title = _clean_airport_name_for_lookup(title)
     if icao:
         queries.extend([f"{icao} airport", icao])
+    if faa_id and faa_id != icao:
+        queries.extend([f"{faa_id} airport", faa_id])
     for candidate in [clean_title, title]:
         candidate = (candidate or '').strip()
         if not candidate:
@@ -1399,9 +1791,9 @@ def _airport_lookup_queries(icao: str = '', title: str = '', municipality: str =
     return out
 
 
-def _lookup_airport_coords_by_name(icao: str = '', title: str = '', municipality: str = '', country: str = '') -> dict:
+def _lookup_airport_coords_by_name(icao: str = '', faa_id: str = '', title: str = '', municipality: str = '', country: str = '') -> dict:
     headers = {"User-Agent": "MSFSHangar/2.0 (local desktop app)", "Accept-Language": "en-US,en;q=0.9"}
-    for q in _airport_lookup_queries(icao, title, municipality, country):
+    for q in _airport_lookup_queries(icao, faa_id, title, municipality, country):
         try:
             resp = requests.get('https://nominatim.openstreetmap.org/search', params={"q": q, "format": "jsonv2", "limit": 1}, timeout=12, headers=headers)
             resp.raise_for_status()
@@ -1421,20 +1813,22 @@ def _lookup_airport_coords_by_name(icao: str = '', title: str = '', municipality
     return {}
 
 
-def _fetch_airport_data_sync(icao: str = '', title: str = '') -> dict:
+def _fetch_airport_data_sync(icao: str = '', faa_id: str = '', title: str = '') -> dict:
     icao = (icao or '').strip().upper()
+    faa_id = (faa_id or '').strip().upper()
     title = (title or '').strip()
     csv_data = {}
-    if len(icao) >= 3:
+    primary_code = icao or faa_id
+    if len(primary_code) >= 3:
         try:
-            from airports import lookup_airport
-            csv_data = lookup_airport(icao) or {}
+            from airports import lookup_airport_by_code
+            csv_data = lookup_airport_by_code(primary_code) or {}
         except Exception:
             csv_data = {}
     wiki_extra = {}
     wiki_title = ''
     wiki_url = ''
-    for q in _airport_lookup_queries(icao, title):
+    for q in _airport_lookup_queries(icao, faa_id, title):
         try:
             search = _wiki_request({"action": "opensearch", "search": q, "limit": 5, "namespace": 0})
             titles = search[1] if isinstance(search, list) and len(search) > 1 else []
@@ -1451,6 +1845,7 @@ def _fetch_airport_data_sync(icao: str = '', title: str = '') -> dict:
             html = ((((parse or {}).get("parse") or {}).get("text") or {}).get("*")) or ""
             wiki_extra = {
                 "first_opened": _extract_infobox_field(html, ["opened", "first opened", "opening"]),
+                "faa_id": _extract_infobox_field(html, ["faa", "faa lid", "faa airport identifier", "faa identifier"]),
                 "hub_airlines": _extract_infobox_field(html, ["hub for", "focus city for", "operating base for", "airline hubs"]),
                 "passenger_count": _extract_infobox_field(html, ["passengers", "passenger traffic", "annual passenger traffic"]),
                 "cargo_count": _extract_infobox_field(html, ["cargo", "cargo throughput"]),
@@ -1469,7 +1864,7 @@ def _fetch_airport_data_sync(icao: str = '', title: str = '') -> dict:
             pass
     merged = {**csv_data, **wiki_extra}
     if not _coord_valid(merged.get('lat'), merged.get('lon')):
-        coords = _lookup_airport_coords_by_name(icao=icao, title=title or merged.get('name') or wiki_title, municipality=merged.get('municipality') or merged.get('city') or '', country=merged.get('country') or '')
+        coords = _lookup_airport_coords_by_name(icao=icao, faa_id=faa_id, title=title or merged.get('name') or wiki_title, municipality=merged.get('municipality') or merged.get('city') or '', country=merged.get('country') or '')
         if coords:
             merged['lat'] = coords.get('lat')
             merged['lon'] = coords.get('lon')
@@ -1478,6 +1873,8 @@ def _fetch_airport_data_sync(icao: str = '', title: str = '') -> dict:
         merged['name'] = _clean_airport_name_for_lookup(title) or title
     if icao and not merged.get('icao'):
         merged['icao'] = icao
+    if not merged.get('faa_id') and faa_id:
+        merged['faa_id'] = faa_id
     src_parts = []
     if csv_data:
         src_parts.append('OurAirports')
@@ -1493,10 +1890,11 @@ def _fetch_airport_data_sync(icao: str = '', title: str = '') -> dict:
 @app.post("/api/airport/fetch-data")
 async def airport_fetch_data(body: AirportFetchRequest):
     icao = (body.icao or "").strip().upper()
+    faa_id = (body.faa_id or "").strip().upper()
     title = (body.title or "").strip()
-    if len(icao) < 3 and len(title) < 2:
-        raise HTTPException(400, "Airport ICAO or title required")
-    return _fetch_airport_data_sync(icao=icao, title=title)
+    if len(icao) < 3 and len(faa_id) < 2 and len(title) < 2:
+        raise HTTPException(400, "Airport ICAO, FAA ID, or title required")
+    return _fetch_airport_data_sync(icao=icao, faa_id=faa_id, title=title)
 
 
 class PlaceSearchRequest(BaseModel):
@@ -1597,12 +1995,14 @@ def _resolve_addon_coords_sync(addon):
         return {'point': {'lat': float(addon.rw.lat), 'lon': float(addon.rw.lon)}, 'source': getattr(addon.rw, 'source', '') or 'stored', 'polygon': polygon}
 
     icao = ((getattr(addon, 'rw', None) and getattr(addon.rw, 'icao', None)) or '').strip().upper()
-    if icao and len(icao) >= 3:
+    faa_id = ((getattr(addon, 'rw', None) and getattr(addon.rw, 'faa_id', None)) or '').strip().upper()
+    primary_code = icao or faa_id
+    if primary_code and len(primary_code) >= 3:
         try:
-            from airports import lookup_airport
-            csv_data = lookup_airport(icao) or {}
+            from airports import lookup_airport_by_code
+            csv_data = lookup_airport_by_code(primary_code) or {}
             if _coord_valid(csv_data.get('lat'), csv_data.get('lon')):
-                return {'point': {'lat': float(csv_data['lat']), 'lon': float(csv_data['lon'])}, 'source': 'OurAirports', 'icao': icao, 'polygon': polygon}
+                return {'point': {'lat': float(csv_data['lat']), 'lon': float(csv_data['lon'])}, 'source': 'OurAirports', 'icao': csv_data.get('icao') or icao, 'faa_id': csv_data.get('faa_id') or faa_id, 'polygon': polygon}
         except Exception:
             pass
 
@@ -1614,6 +2014,8 @@ def _resolve_addon_coords_sync(addon):
     queries = []
     if icao:
         queries.append(f'{icao} airport')
+    if faa_id and faa_id != icao:
+        queries.append(f'{faa_id} airport')
     if clean_title:
         queries.append(clean_title)
         if (getattr(addon, 'type', '') or '') == 'Airport':
@@ -1641,7 +2043,7 @@ def _resolve_addon_coords_sync(addon):
             if rows:
                 row = rows[0]
                 if _coord_valid(row.get('lat'), row.get('lon')):
-                    return {'point': {'lat': float(row['lat']), 'lon': float(row['lon'])}, 'source': 'Nominatim', 'query': q, 'polygon': polygon}
+                    return {'point': {'lat': float(row['lat']), 'lon': float(row['lon'])}, 'source': 'Nominatim', 'query': q, 'icao': icao, 'faa_id': faa_id, 'polygon': polygon}
         except Exception:
             continue
 
@@ -1660,18 +2062,19 @@ def _resolve_global_marker_item(candidate):
     addon_type = str(getattr(candidate, 'addon_type', '') or '').strip()
     subtype = str(getattr(candidate, 'subtype', '') or '').strip()
     icao = str(getattr(candidate, 'icao', '') or '').strip().upper()
+    faa_id = str(getattr(candidate, 'faa_id', '') or '').strip().upper()
     point = getattr(candidate, 'point', None)
     polygon = _valid_polygon_points(getattr(candidate, 'polygon', None))
     if point and _coord_valid(getattr(point, 'lat', None), getattr(point, 'lon', None)):
         return {
-            'addon_id': addon_id, 'title': title, 'type': addon_type, 'subtype': subtype, 'icao': icao,
+            'addon_id': addon_id, 'title': title, 'type': addon_type, 'subtype': subtype, 'icao': icao, 'faa_id': faa_id,
             'point': {'lat': float(point.lat), 'lon': float(point.lon)}, 'polygon': polygon, 'source': 'frontend-candidate'
         }
     if polygon:
         center = _centroid(polygon)
         if center and _coord_valid(center['lat'], center['lon']):
             return {
-                'addon_id': addon_id, 'title': title, 'type': addon_type, 'subtype': subtype, 'icao': icao,
+                'addon_id': addon_id, 'title': title, 'type': addon_type, 'subtype': subtype, 'icao': icao, 'faa_id': faa_id,
                 'point': {'lat': float(center['lat']), 'lon': float(center['lon'])}, 'polygon': polygon, 'source': 'frontend-polygon'
             }
     return None
@@ -1694,12 +2097,13 @@ async def map_global_markers(body: GlobalMapResolveRequest):
                         'type': getattr(cand, 'addon_type', None) or addon.type,
                         'subtype': getattr(cand, 'subtype', None) or addon.sub,
                         'icao': ((addon.rw and addon.rw.icao) or getattr(cand, 'icao', None) or ''),
+                        'faa_id': ((addon.rw and getattr(addon.rw, 'faa_id', None)) or getattr(cand, 'faa_id', None) or ''),
                         'point': resolved2.get('point'),
                         'polygon': resolved2.get('polygon') or [],
                         'source': resolved2.get('source', ''),
                     }
             if not resolved:
-                unresolved.append({'addon_id': str(getattr(cand, 'addon_id', '') or ''), 'title': str(getattr(cand, 'title', '') or ''), 'icao': str(getattr(cand, 'icao', '') or ''), 'reason': 'unresolved'})
+                unresolved.append({'addon_id': str(getattr(cand, 'addon_id', '') or ''), 'title': str(getattr(cand, 'title', '') or ''), 'icao': str(getattr(cand, 'icao', '') or ''), 'faa_id': str(getattr(cand, 'faa_id', '') or ''), 'reason': 'unresolved'})
                 continue
         items.append(resolved)
     return {'items': items, 'unresolved': unresolved, 'count': len(items)}
@@ -1715,6 +2119,8 @@ async def map_resolve_addon_coords(body: MapResolveRequest):
     payload = {'lat': point.get('lat'), 'lon': point.get('lon'), 'source': resolved.get('source', '')}
     if resolved.get('icao'):
         payload['icao'] = resolved['icao']
+    if resolved.get('faa_id'):
+        payload['faa_id'] = resolved['faa_id']
     if resolved.get('query'):
         payload['query'] = resolved['query']
     if resolved.get('polygon'):
@@ -1742,6 +2148,7 @@ async def map_resolve_addons_coords(body: MapResolveBatchRequest):
             'polygon': resolved.get('polygon') or [],
             'source': resolved.get('source', ''),
             'icao': resolved.get('icao', ''),
+            'faa_id': resolved.get('faa_id', ''),
             'query': resolved.get('query', ''),
         })
     return {'items': items, 'unresolved': unresolved, 'count': len(items)}
@@ -2332,7 +2739,7 @@ def _extract_json_object(text: str) -> dict:
 
 GEMINI_INTERACTIVE_MODEL = 'gemini-2.5-flash'
 GEMINI_BULK_MODEL = 'gemini-2.5-flash-lite'
-OPENAI_DEFAULT_MODEL = 'gpt-5.4-nano'
+OPENAI_DEFAULT_MODEL = 'gpt-5-mini'
 CLAUDE_DEFAULT_MODEL = 'claude-haiku-4-5-20251001'
 
 _last_openai_usage: dict[str, object] = {}
@@ -2344,17 +2751,34 @@ def _selected_ai_provider(settings: dict) -> str:
     raw = (settings.get('ai_provider') or '').strip().lower()
     if raw in {'gemini', 'openai', 'claude'}:
         return raw
+    # Prefer Gemini as the safe default when no explicit saved provider exists.
+    # This avoids new releases silently drifting to OpenAI just because an API key
+    # happens to be present from older testing.
     if settings.get('google_api_key'):
         return 'gemini'
     if settings.get('openai_key'):
         return 'openai'
     if settings.get('claude_api_key'):
         return 'claude'
-    return 'openai'
+    return 'gemini'
 
 
 def _selected_openai_model(settings: dict) -> str:
-    return (settings.get('openai_model') or OPENAI_DEFAULT_MODEL).strip() or OPENAI_DEFAULT_MODEL
+    raw = (settings.get('openai_model') or OPENAI_DEFAULT_MODEL).strip() or OPENAI_DEFAULT_MODEL
+    model_name = raw.lower()
+    legacy = {
+        'gpt-5.4-nano',
+        'gpt-5-nano-preview',
+        'gpt-5.4-mini',
+        'gpt-4o-mini',
+        'gpt-4o',
+        'gpt-4.1-mini',
+    }
+    if model_name in legacy:
+        return OPENAI_DEFAULT_MODEL
+    if not (model_name.startswith('gpt-5') or model_name.startswith('o')):
+        return OPENAI_DEFAULT_MODEL
+    return raw
 
 
 def _selected_gemini_interactive_model(settings: dict) -> str:
@@ -2363,6 +2787,11 @@ def _selected_gemini_interactive_model(settings: dict) -> str:
 
 def _selected_gemini_bulk_model(settings: dict) -> str:
     return (settings.get('gemini_bulk_model') or GEMINI_BULK_MODEL).strip() or GEMINI_BULK_MODEL
+
+
+def _selected_gemini_detail_mode(settings: dict) -> str:
+    raw = (settings.get('gemini_detail_mode') or 'detailed').strip().lower()
+    return raw if raw in {'fast','detailed'} else 'detailed'
 
 
 def _selected_claude_model(settings: dict) -> str:
@@ -2442,26 +2871,209 @@ def _gemini_generate_json(prompt: str, api_key: str, *, use_search: bool = True,
 
 
 
-def _openai_generate_json(prompt: str, api_key: str, *, model: str = OPENAI_DEFAULT_MODEL) -> tuple[dict, list[str], str]:
+def _extract_openai_response_text_and_sources(data: dict) -> tuple[str, list[str]]:
+    text_out = ''
+    sources: list[str] = []
+    seen: set[str] = set()
+
+    def add_source(url: str) -> None:
+        clean = (url or '').strip()
+        if clean and clean not in seen:
+            seen.add(clean)
+            sources.append(clean)
+
+    if isinstance(data.get('output_text'), str) and data.get('output_text').strip():
+        text_out = data.get('output_text').strip()
+
+    for item in data.get('output') or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get('type') == 'web_search_call':
+            action = item.get('action') or {}
+            for src in action.get('sources') or []:
+                if isinstance(src, dict):
+                    add_source(src.get('url') or src.get('source_url') or '')
+        if item.get('type') == 'message':
+            for part in item.get('content') or []:
+                if not isinstance(part, dict):
+                    continue
+                if part.get('type') in {'output_text', 'text'}:
+                    part_text = part.get('text') or ''
+                    if part_text:
+                        text_out += part_text
+                    for ann in part.get('annotations') or []:
+                        if not isinstance(ann, dict):
+                            continue
+                        add_source(ann.get('url') or ((ann.get('url_citation') or {}).get('url') if isinstance(ann.get('url_citation'), dict) else '') or '')
+    return text_out.strip(), sources
+
+
+
+def _openai_reasoning_payload(model: str, *, use_search: bool = False) -> Optional[dict]:
+    model_name = (model or '').strip().lower()
+    if not (model_name.startswith('gpt-5') or model_name.startswith('o')):
+        return None
+    if model_name.startswith('gpt-5.1'):
+        return {'effort': 'low' if use_search else 'none'}
+    return {'effort': 'low'}
+
+
+def _openai_post_responses(payload: dict, headers: dict) -> requests.Response:
+    work = copy.deepcopy(payload)
+    for _attempt in range(4):
+        resp = requests.post('https://api.openai.com/v1/responses', headers=headers, json=work, timeout=120)
+        _capture_openai_usage_headers(resp.headers)
+        if resp.status_code < 400:
+            return resp
+        try:
+            err = resp.json()
+        except Exception:
+            err = {}
+        message = ((err.get('error') or {}).get('message') or '') if isinstance(err, dict) else ''
+        param = ((err.get('error') or {}).get('param') or '') if isinstance(err, dict) else ''
+        lower_message = message.lower()
+        unsupported_reasoning = (
+            ('reasoning.effort' in message) or (param == 'reasoning.effort') or ("Unsupported parameter: 'reasoning" in message)
+        )
+        if unsupported_reasoning and 'reasoning' in work:
+            work.pop('reasoning', None)
+            continue
+        unsupported_verbosity = (param == 'text.verbosity') or ('text.verbosity' in lower_message and 'supported values' in lower_message)
+        if unsupported_verbosity and isinstance(work.get('text'), dict):
+            supported = re.findall(r"'(low|medium|high)'", lower_message)
+            if 'medium' in supported:
+                work['text']['verbosity'] = 'medium'
+            elif supported:
+                work['text']['verbosity'] = supported[0]
+            else:
+                work['text'].pop('verbosity', None)
+            continue
+        if ('web search cannot be used with json mode' in lower_message or param == 'response_format') and isinstance(work.get('text'), dict):
+            work['text'].pop('format', None)
+            continue
+        break
+    return resp
+
+
+def _openai_build_search_memo(original_prompt: str) -> str:
+    return f"""Use live web search to research the flight simulator add-on or aircraft described below.
+Do NOT return the final JSON object yet.
+Instead, return a detailed research memo in plain text for a second-pass writer.
+
+Research memo requirements:
+- Identify the best matching add-on or aircraft and mention any ambiguity.
+- Prefer official developer pages, official storefronts, official aircraft manufacturer pages, and reputable aviation references.
+- Capture as many concrete details as possible: current version, version dates, original release date, list price, currency, store name, compatibility, included content, features, variants, avionics, systems depth, scenery scope, installation notes, and other specifics when available.
+- Gather enough detail that a second-pass writer can produce 2 to 3 substantial overview paragraphs and a rich, well-structured features section without needing to search again.
+- Preserve exact factual details and units when available.
+- Organize the memo with clear headings and bullets where useful.
+- End with a short Sources section that lists the most useful source URLs or page titles you found.
+- Write the memo in English.
+
+Original extraction request:
+{original_prompt}
+"""
+
+
+def _openai_generate_json(prompt: str, api_key: str, *, model: str = OPENAI_DEFAULT_MODEL, use_search: bool = True) -> tuple[dict, list[str], str]:
     if not api_key:
         raise ValueError('OpenAI API key not configured')
-    payload = {
+    headers = {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}
+
+    def single_pass_json_write(write_prompt: str, *, model_name: str = model) -> tuple[dict, list[str], str]:
+        system_prompt = (
+            'Return only valid JSON matching the requested schema. '
+            'Favor completeness over brevity. When the schema asks for purpose_paragraphs, feature_intro, feature_groups, '
+            'summary_html, or features_html, provide detailed, specific content rather than terse marketing blurbs. '
+            'Preserve concrete product details, included content, systems depth, scenery scope, variants, compatibility, '
+            'and implementation notes whenever the prompt asks for them. '
+            'Write rich, comprehensive prose when the source material supports it. '
+            'Return a single valid JSON object with no markdown fences or commentary before or after the JSON.'
+        )
+        payload = {
+            'model': model_name,
+            'input': [
+                {'role': 'system', 'content': [{'type': 'input_text', 'text': system_prompt}]},
+                {'role': 'user', 'content': [{'type': 'input_text', 'text': write_prompt}]},
+            ],
+            'max_output_tokens': 9000,
+            'text': {
+                'format': {
+                    'type': 'json_object'
+                },
+                'verbosity': 'high',
+            },
+        }
+        reasoning = _openai_reasoning_payload(model_name, use_search=False)
+        if reasoning:
+            payload['reasoning'] = reasoning
+        resp = _openai_post_responses(payload, headers)
+        resp.raise_for_status()
+        data = resp.json()
+        text_out, sources = _extract_openai_response_text_and_sources(data)
+        parsed = _extract_json_object(text_out)
+        return parsed, sources, text_out
+
+    if not use_search:
+        return single_pass_json_write(prompt)
+
+    search_payload = {
         'model': model,
-        'response_format': {'type': 'json_object'},
-        'messages': [
-            {'role': 'system', 'content': 'Return only valid JSON matching the requested schema.'},
-            {'role': 'user', 'content': prompt},
+        'input': [
+            {
+                'role': 'system',
+                'content': [{
+                    'type': 'input_text',
+                    'text': 'You are a research assistant for a flight simulator add-on manager. Use web search to gather detailed, current facts from official and reputable sources. Return a detailed plain-text research memo, not JSON.'
+                }],
+            },
+            {
+                'role': 'user',
+                'content': [{
+                    'type': 'input_text',
+                    'text': _openai_build_search_memo(prompt)
+                }],
+            },
         ],
-        'temperature': 0.1,
-        'max_tokens': 2500,
+        'max_output_tokens': 6000,
+        'text': {
+            'verbosity': 'high'
+        },
+        'tools': [{
+            'type': 'web_search',
+            'search_context_size': 'high',
+            'user_location': {
+                'type': 'approximate',
+                'country': 'US',
+                'region': 'Florida',
+                'timezone': 'America/New_York',
+            },
+        }],
+        'tool_choice': 'auto',
+        'include': ['web_search_call.action.sources'],
     }
-    resp = requests.post('https://api.openai.com/v1/chat/completions', headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}, json=payload, timeout=90)
-    _capture_openai_usage_headers(resp.headers)
-    resp.raise_for_status()
-    data = resp.json()
-    text_out = (((data.get('choices') or [{}])[0].get('message') or {}).get('content') or '')
-    parsed = _extract_json_object(text_out)
-    return parsed, [], text_out
+    reasoning = _openai_reasoning_payload(model, use_search=True)
+    if reasoning:
+        search_payload['reasoning'] = reasoning
+    search_resp = _openai_post_responses(search_payload, headers)
+    search_resp.raise_for_status()
+    search_data = search_resp.json()
+    research_memo, sources = _extract_openai_response_text_and_sources(search_data)
+    sources_block = '\n'.join(f'- {u}' for u in sources[:12]) if sources else '- (no cited URLs returned)'
+    write_prompt = f"""{prompt}
+
+Use ONLY the research memo and source list below as your source material for the final JSON object.
+Do not compress the content more than necessary. If the memo contains enough detail for multiple substantial overview paragraphs and a rich feature breakdown, preserve that detail in the JSON fields.
+Make purpose_paragraphs polished and substantial. Make feature_groups detailed and specific. When helpful, use feature_intro, notes, compatibility, and installation_notes to keep structured detail instead of collapsing everything into summary_html.
+
+Research memo from first-pass web search:
+{research_memo}
+
+Source URLs from first-pass web search:
+{sources_block}
+"""
+    parsed, _unused_sources, text_out = single_pass_json_write(write_prompt, model_name=model)
+    return parsed, sources, text_out
 
 
 def _claude_generate_json(prompt: str, api_key: str, *, model: str = CLAUDE_DEFAULT_MODEL) -> tuple[dict, list[str], str]:
@@ -2515,7 +3127,7 @@ def _provider_generate_json(provider: str, prompt: str, settings: dict, *, use_s
         )
     if provider == 'claude':
         return _claude_generate_json(prompt, settings.get('claude_api_key',''), model=(claude_model or _selected_claude_model(settings)))
-    return _openai_generate_json(prompt, settings.get('openai_key',''), model=(openai_model or _selected_openai_model(settings)))
+    return _openai_generate_json(prompt, settings.get('openai_key',''), model=(openai_model or _selected_openai_model(settings)), use_search=use_search)
 
 
 def _normalize_html_fragment(html: str) -> str:
@@ -2742,6 +3354,39 @@ def _clean_provider_source_label(value: str) -> str:
     return raw
 
 
+def _source_summary_label(sources: list[str] | tuple[str, ...] | None, provider_name: str = '', *, fallback: str = '') -> str:
+    labels = []
+    for item in list(sources or []):
+        label = _clean_provider_source_label(item)
+        if not label:
+            continue
+        if label not in labels:
+            labels.append(label)
+    if labels:
+        if len(labels) == 1:
+            return labels[0]
+        if len(labels) == 2:
+            return f"{labels[0]} + {labels[1]}"
+        return f"{labels[0]} + {labels[1]} + {len(labels)-2} more"
+    return fallback or provider_name
+
+
+def _product_content_is_thin(parsed: dict) -> bool:
+    if not isinstance(parsed, dict):
+        return True
+    purpose = _coerce_text_list(parsed.get('purpose_paragraphs') or parsed.get('summary_paragraphs') or parsed.get('overview_paragraphs'))
+    feature_intro = _coerce_text_list(parsed.get('feature_intro') or parsed.get('feature_paragraphs') or parsed.get('features_paragraphs'))
+    groups = parsed.get('feature_groups') or []
+    summary_html = str(parsed.get('summary_html') or '')
+    features_html = str(parsed.get('features_html') or '')
+    purpose_chars = sum(len(p) for p in purpose)
+    bullets = 0
+    for g in groups if isinstance(groups, list) else []:
+        bullets += len(_coerce_text_list((g or {}).get('bullets')))
+    feature_chars = sum(len(p) for p in feature_intro) + len(features_html)
+    return (len(purpose) < 2 or purpose_chars < 450 or len(groups) < 3 or bullets < 8 or feature_chars < 700 or len(summary_html) < 350)
+
+
 def _coerce_text_list(value) -> list[str]:
     if value is None:
         return []
@@ -2888,7 +3533,7 @@ def _gemini_log_context(kind: str, addon_title: str, candidate: str, attempt: in
     log.info('Gemini %s attempt=%s model=%s addon=%s candidate=%s', kind, attempt, model, addon_title, candidate)
 
 
-def _build_product_prompt(addon, sim_label: str, include_overview: bool = True, include_features: bool = True, *, search_term: Optional[str] = None, response_language: str = 'English') -> str:
+def _build_product_prompt(addon, sim_label: str, include_overview: bool = True, include_features: bool = True, *, search_term: Optional[str] = None, response_language: str = 'English', detail_mode: str = 'detailed') -> str:
     lookup = (search_term or f"{(addon.publisher or '').strip()} {(addon.title or '').strip()}").strip()
     addon_type = (getattr(addon, 'type', '') or '').strip() or 'Addon'
     feature_guidance = "general addon capability categories"
@@ -2898,6 +3543,14 @@ def _build_product_prompt(addon, sim_label: str, include_overview: bool = True, 
         feature_guidance = 'feature categories such as scenery scope, terminals and buildings, ground textures, lighting, landside detail, terrain, custom objects, and compatibility'
     elif addon_type == 'Scenery':
         feature_guidance = 'feature categories such as coverage area, landmarks, photogrammetry or textures, terrain, lighting, included points of interest, and compatibility'
+    paragraph_range = '3 or 4' if detail_mode == 'detailed' else '2 or 3'
+    sentence_range = '4 to 7' if detail_mode == 'detailed' else '3 to 5'
+    selling_points_range = '6 to 10' if detail_mode == 'detailed' else '4 to 6'
+    feature_intro_range = '2 or 3' if detail_mode == 'detailed' else '1 or 2'
+    feature_groups_range = '4 to 8' if detail_mode == 'detailed' else '3 to 5'
+    feature_bullets_range = '4 to 10' if detail_mode == 'detailed' else '3 to 6'
+    summary_html_guidance = 'at least three paragraphs with real descriptive substance' if detail_mode == 'detailed' else 'at least two substantial paragraphs'
+    verbosity_note = 'Favor depth and specificity over brevity. If the evidence supports a richer write-up, return the fuller version instead of a compressed summary.' if detail_mode == 'detailed' else 'Keep the write-up concise but still specific and grounded.'
     return f"""Use grounded web search to find product metadata for the flight simulator add-on '{lookup}' for '{sim_label}'.
 Return ONLY one valid JSON object with these exact keys:
 latest_current_version, latest_version_date, release_date, list_price, currency, store_name, summary_title, purpose_paragraphs, key_selling_points, feature_intro, feature_groups, notes, compatibility, installation_notes, summary_html, features_html.
@@ -2909,16 +3562,17 @@ Rules:
 - release_date should be the add-on's original/first public release date when known.
 - list_price must be numeric when possible, otherwise null.
 - summary_title should be a concise headline for the addon.
-- purpose_paragraphs should be an array with 2 or 3 substantial paragraphs describing the addon purpose, scope, and what it adds to the simulator. Do not turn these paragraphs into a feature list.
-- key_selling_points should be an array of short, specific bullets.
-- feature_intro should be 1 or 2 short introductory paragraphs for a detailed features section and must not repeat the same ideas already used in purpose_paragraphs.
-- feature_groups should be an array of objects with heading and bullets keys. The grouped bullets should cover {feature_guidance}.
+- purpose_paragraphs should be an array with {paragraph_range} substantial paragraphs describing the addon purpose, scope, immersion, and what it adds to the simulator. Each paragraph should usually be {sentence_range} sentences and should read like polished website copy, not bullet notes. Do not turn these paragraphs into a feature list.
+- key_selling_points should be an array of {selling_points_range} short, specific bullets when enough evidence exists.
+- feature_intro should be {feature_intro_range} short introductory paragraphs for a detailed features section and must not repeat the same ideas already used in purpose_paragraphs.
+- feature_groups should be an array of {feature_groups_range} objects with heading and bullets keys when enough evidence exists. Each group should usually have {feature_bullets_range} detailed bullets. The grouped bullets should cover {feature_guidance}.
 - When the official product page has a Features, Details, Included, or Specifications section, mirror that detail and specificity in feature_groups instead of generic marketing phrasing.
 - Prefer concrete implementation details from the product page such as modeled systems, included airports or variants, avionics packages, terminal/building scope, custom objects, textures, lighting, sounds, flight model notes, performance options, and included extras.
 - notes, compatibility, and installation_notes should each be arrays of short strings when useful, otherwise empty arrays.
 - compatibility should be limited to simulator/platform compatibility and should not be repeated inside feature_intro or feature_groups.
+- summary_html and features_html should be rich, readable HTML fallbacks that preserve the same level of detail as the structured fields. summary_html should normally be {summary_html_guidance}. features_html should normally include a short intro plus multiple grouped lists or sections when supported by the source material.
 - Do not use generic filler such as '<<Type>> addon by <<publisher>>'.
-- summary_html and features_html are optional fallback fields only. Prefer filling the structured fields above.
+- {verbosity_note}
 - Do not include markdown or code fences.
 - If unknown, use empty strings, empty arrays, or null for list_price."""
 
@@ -3051,6 +3705,9 @@ class GeminiAircraftRequest(BaseModel):
     manufacturer: str = ''
     manufacturer_full_name: Optional[str] = None
     model: str
+    provider: Optional[str] = None
+    screen: Optional[str] = None
+    action: Optional[str] = None
 
 
 async def _run_gemini_aircraft_lookup(settings: dict, lookup_mfr: str, model: str, *, fallback_title: str = '', gemini_model: Optional[str] = None):
@@ -3081,15 +3738,29 @@ async def _run_gemini_aircraft_lookup(settings: dict, lookup_mfr: str, model: st
 async def _run_gemini_product_lookup(addon, settings: dict, *, model: str = GEMINI_INTERACTIVE_MODEL):
     api_key = settings.get('google_api_key', '')
     response_language = _preferred_language(settings)
+    detail_mode = _selected_gemini_detail_mode(settings)
     attempts = []
     last_error = None
     for idx, candidate in enumerate(_addon_query_candidates(addon), start=1):
-        prompt = _build_product_prompt(addon, _addon_sim_label(settings), include_overview=True, include_features=True, search_term=candidate, response_language=response_language)
+        prompt = _build_product_prompt(addon, _addon_sim_label(settings), include_overview=True, include_features=True, search_term=candidate, response_language=response_language, detail_mode=detail_mode)
         _gemini_log_context('product', addon.title, candidate, idx, model)
         try:
             parsed, sources, raw = await asyncio.to_thread(lambda p=prompt, m=model: _gemini_generate_json(p, api_key, use_search=True, model=m))
             if not parsed:
                 parsed = _extract_json_pairs_fallback(raw, ['latest_current_version','latest_version_date','release_date','list_price','currency','store_name','summary_html','features_html'])
+            if detail_mode == 'detailed' and parsed and _product_content_is_thin(parsed):
+                try:
+                    expansion_prompt = (
+                        prompt
+                        + "\n\nThe first draft was too thin. Search again and return the same JSON keys, but make the overview and features materially fuller and more specific based on the best grounded product sources."
+                    )
+                    parsed2, sources2, raw2 = await asyncio.to_thread(lambda p=expansion_prompt, m=model: _gemini_generate_json(p, api_key, use_search=True, model=m))
+                    if not parsed2:
+                        parsed2 = _extract_json_pairs_fallback(raw2, ['latest_current_version','latest_version_date','release_date','list_price','currency','store_name','summary_html','features_html'])
+                    if parsed2 and not _product_content_is_thin(parsed2):
+                        parsed, sources = parsed2, (sources2 or sources)
+                except Exception as expand_err:
+                    log.warning('Gemini product expansion attempt failed addon=%s candidate=%s error=%s', addon.title, candidate, str(expand_err))
             if parsed:
                 log.info('Gemini product success addon=%s candidate=%s sources=%s', addon.title, candidate, len(sources))
                 return parsed, sources, {'candidate': candidate, 'attempt': idx}
@@ -3100,7 +3771,6 @@ async def _run_gemini_product_lookup(addon, settings: dict, *, model: str = GEMI
             last_error = detail
             log.warning('Gemini product attempt failed addon=%s candidate=%s error=%s', addon.title, candidate, detail)
     raise HTTPException(502, f'Gemini product lookup failed after {len(attempts)} attempts. Last error: {last_error or "No structured data"}')
-
 
 
 
@@ -3204,7 +3874,7 @@ async def _run_provider_product_lookup(addon, settings: dict, *, provider: Optio
                     prv,
                     p,
                     settings,
-                    use_search=False,
+                    use_search=(provider == 'openai'),
                     openai_model=(openai_model or _selected_openai_model(settings)),
                     claude_model=(claude_model or _selected_claude_model(settings)),
                 )
@@ -3243,6 +3913,7 @@ async def ai_usage_status():
         'claude_model': _selected_claude_model(settings),
         'gemini_interactive_model': _selected_gemini_interactive_model(settings),
         'gemini_bulk_model': _selected_gemini_bulk_model(settings),
+        'gemini_detail_mode': _selected_gemini_detail_mode(settings),
         'openai_rate_limits': _last_openai_usage,
         'gemini_status': _last_gemini_status,
         'claude_status': _last_claude_status,
@@ -3255,7 +3926,7 @@ async def ai_usage_status():
 @app.post('/api/ai/populate-aircraft')
 async def ai_populate_aircraft(body: GeminiAircraftRequest):
     settings = await storage.get_all_settings()
-    provider = _selected_ai_provider(settings)
+    provider = (body.provider or _selected_ai_provider(settings) or '').strip().lower() or _selected_ai_provider(settings)
     if provider == 'gemini' and not settings.get('google_api_key'):
         raise HTTPException(400, 'Google API key not configured in Settings')
     if provider == 'openai' and not settings.get('openai_key'):
@@ -3266,43 +3937,52 @@ async def ai_populate_aircraft(body: GeminiAircraftRequest):
     model = (body.model or '').strip()
     if not lookup_mfr or not model:
         raise HTTPException(400, 'Manufacturer Full Name and Model are required')
-    parsed, sources, meta = await _run_provider_aircraft_lookup(provider, settings, lookup_mfr, model, fallback_title=body.model)
-    range_nm = _range_nm_from_any(parsed.get('range'), parsed.get('range_nm'))
-    provider_name = ('Gemini Flash-Lite + Google Search' if provider == 'gemini' else (f'OpenAI ({_selected_openai_model(settings)})' if provider == 'openai' else f'Claude ({_selected_claude_model(settings)})'))
-    # The Web Data Source field is meant to show the likely public source page,
-    # not merely the model name. Only fall back to the provider label when no
-    # useful evidence URL could be identified.
-    return {
-        'provider': provider,
-        'provider_name': provider_name,
-        'manufacturer_full_name': parsed.get('manufacturer_full_name') or lookup_mfr,
-        'manufacturer': body.manufacturer or lookup_mfr,
-        'model': parsed.get('model') or model,
-        'category': parsed.get('category') or '',
-        'engine': parsed.get('engine') or '',
-        'engine_type': parsed.get('engine_type') or '',
-        'max_speed': parsed.get('max_speed') or '',
-        'cruise': parsed.get('cruise_speed') or '',
-        'range': (f"{range_nm} nm" if range_nm is not None else (parsed.get('range') or '')),
-        'range_nm': range_nm,
-        'ceiling': parsed.get('ceiling') or '',
-        'seats': parsed.get('passenger_capacity') or '',
-        'mtow': parsed.get('mtow') or '',
-        'fuel_capacity': parsed.get('fuel_capacity') or '',
-        'wingspan': parsed.get('wingspan') or '',
-        'length': parsed.get('length') or '',
-        'height': parsed.get('height') or '',
-        'avionics': parsed.get('avionics') or '',
-        'variants': parsed.get('variants') or '',
-        'in_production': parsed.get('in_production') or '',
-        'aircraft_cost': parsed.get('aircraft_cost') or '',
-        'country_of_origin': parsed.get('country_of_origin') or '',
-        'introduced': parsed.get('date_introduced') or '',
-        'source': _clean_provider_source_label(sources[0]) if sources else provider_name,
-        'sources': sources,
-        'search_candidate': meta.get('candidate'),
-        'summary_html': parsed.get('summary_html') or '',
-    }
+    provider_name = ('Gemini Flash-Lite + Google Search' if provider == 'gemini' else (f'OpenAI ({_selected_openai_model(settings)} + two-pass web search)' if provider == 'openai' else f'Claude ({_selected_claude_model(settings)})'))
+    model_name = (_selected_gemini_interactive_model(settings) if provider == 'gemini' else (_selected_openai_model(settings) if provider == 'openai' else _selected_claude_model(settings)))
+    started_at = datetime.now()
+    status = 'success'
+    error_message = ''
+    try:
+        parsed, sources, meta = await _run_provider_aircraft_lookup(provider, settings, lookup_mfr, model, fallback_title=body.model)
+        range_nm = _range_nm_from_any(parsed.get('range'), parsed.get('range_nm'))
+        return {
+            'provider': provider,
+            'provider_name': provider_name,
+            'manufacturer_full_name': parsed.get('manufacturer_full_name') or lookup_mfr,
+            'manufacturer': body.manufacturer or lookup_mfr,
+            'model': parsed.get('model') or model,
+            'category': parsed.get('category') or '',
+            'engine': parsed.get('engine') or '',
+            'engine_type': parsed.get('engine_type') or '',
+            'max_speed': parsed.get('max_speed') or '',
+            'cruise': parsed.get('cruise_speed') or '',
+            'range': (f"{range_nm} nm" if range_nm is not None else (parsed.get('range') or '')),
+            'range_nm': range_nm,
+            'ceiling': parsed.get('ceiling') or '',
+            'seats': parsed.get('passenger_capacity') or '',
+            'mtow': parsed.get('mtow') or '',
+            'fuel_capacity': parsed.get('fuel_capacity') or '',
+            'wingspan': parsed.get('wingspan') or '',
+            'length': parsed.get('length') or '',
+            'height': parsed.get('height') or '',
+            'avionics': parsed.get('avionics') or '',
+            'variants': parsed.get('variants') or '',
+            'in_production': parsed.get('in_production') or '',
+            'aircraft_cost': parsed.get('aircraft_cost') or '',
+            'country_of_origin': parsed.get('country_of_origin') or '',
+            'introduced': parsed.get('date_introduced') or '',
+            'source': _source_summary_label(sources, provider_name, fallback=('Grounded web search + title parsing' if provider == 'gemini' else provider_name)),
+            'sources': sources,
+            'search_candidate': meta.get('candidate'),
+            'summary_html': parsed.get('summary_html') or '',
+        }
+    except Exception as e:
+        status = 'error'
+        error_message = str(getattr(e, 'detail', '') or e)
+        raise
+    finally:
+        ended_at = datetime.now()
+        await _record_ai_log(action=(body.action or 'populate_aircraft_data'), screen=(body.screen or 'detail_aircraft_data'), provider=provider, provider_name=provider_name, model=model_name, addon_title=(body.model or ''), status=status, started_at=started_at, ended_at=ended_at, duration_seconds=(ended_at-started_at).total_seconds(), error_message=error_message, details={'requested_provider': body.provider or '', 'resolved_provider': provider, 'manufacturer': lookup_mfr, 'model': model})
 
 
 @app.post('/api/ai/populate-product/{addon_id}')
@@ -3318,26 +3998,38 @@ async def ai_populate_product(addon_id: str):
         raise HTTPException(400, 'OpenAI API key not configured in Settings')
     if provider == 'claude' and not settings.get('claude_api_key'):
         raise HTTPException(400, 'Claude API key not configured in Settings')
-    parsed, sources, meta = await _run_provider_product_lookup(addon, settings, provider=provider)
-    addon = _merge_product_into_addon(addon, parsed, sources, include_overview=True, include_features=True, override_existing=True)
-    await storage.upsert_addon(addon)
-    provider_name = ('Gemini Flash-Lite + Google Search' if provider == 'gemini' else (f'OpenAI ({_selected_openai_model(settings)})' if provider == 'openai' else f'Claude ({_selected_claude_model(settings)})'))
-    return {
-        'provider': provider,
-        'provider_name': provider_name,
-        'latest_version': addon.pr.latest_ver or '',
-        'latest_version_date': addon.pr.latest_ver_date or '',
-        'released': addon.pr.released or '',
-        'price': addon.pr.price,
-        'currency': parsed.get('currency') or '',
-        'store_name': addon.pr.source_store or '',
-        'sources': sources,
-        'source_url': sources[0] if sources else '',
-        'source': provider_name,
-        'search_candidate': meta.get('candidate'),
-        'summary_html': addon.summary or '',
-        'features_html': addon.usr.features or '',
-    }
+    provider_name = ('Gemini Flash-Lite + Google Search' if provider == 'gemini' else (f'OpenAI ({_selected_openai_model(settings)} + two-pass web search)' if provider == 'openai' else f'Claude ({_selected_claude_model(settings)})'))
+    model_name = (_selected_gemini_interactive_model(settings) if provider == 'gemini' else (_selected_openai_model(settings) if provider == 'openai' else _selected_claude_model(settings)))
+    started_at = datetime.now()
+    status = 'success'
+    error_message = ''
+    try:
+        parsed, sources, meta = await _run_provider_product_lookup(addon, settings, provider=provider)
+        addon = _merge_product_into_addon(addon, parsed, sources, include_overview=True, include_features=True, override_existing=True)
+        await storage.upsert_addon(addon)
+        return {
+            'provider': provider,
+            'provider_name': provider_name,
+            'latest_version': addon.pr.latest_ver or '',
+            'latest_version_date': addon.pr.latest_ver_date or '',
+            'released': addon.pr.released or '',
+            'price': addon.pr.price,
+            'currency': parsed.get('currency') or '',
+            'store_name': addon.pr.source_store or '',
+            'sources': sources,
+            'source_url': sources[0] if sources else '',
+            'source': provider_name,
+            'search_candidate': meta.get('candidate'),
+            'summary_html': addon.summary or '',
+            'features_html': addon.usr.features or '',
+        }
+    except Exception as e:
+        status = 'error'
+        error_message = str(getattr(e, 'detail', '') or e)
+        raise
+    finally:
+        ended_at = datetime.now()
+        await _record_ai_log(action='populate_product_full', screen='detail_overview', provider=provider, provider_name=provider_name, model=model_name, addon_id=addon_id, addon_title=(addon.title if addon else ''), status=status, started_at=started_at, ended_at=ended_at, duration_seconds=(ended_at-started_at).total_seconds(), error_message=error_message)
 
 
 async def _populate_addon_with_selected_ai(addon, settings: dict, *, provider: Optional[str] = None, use_bulk_model: bool = True, override_existing: bool = True, include_overview: bool = True, include_features: bool = True, include_aircraft_data: bool = True):
@@ -3349,9 +4041,8 @@ async def _populate_addon_with_selected_ai(addon, settings: dict, *, provider: O
     sources = []
     meta = {}
     aircraft_meta = None
-    if include_overview or include_features:
-        parsed, sources, meta = await _run_provider_product_lookup(addon, settings, provider=provider, gemini_model=gemini_model, openai_model=openai_model, claude_model=claude_model)
-        addon = _merge_product_into_addon(addon, parsed, sources, include_overview=include_overview, include_features=include_features, override_existing=override_existing)
+    parsed, sources, meta = await _run_provider_product_lookup(addon, settings, provider=provider, gemini_model=gemini_model, openai_model=openai_model, claude_model=claude_model)
+    addon = _merge_product_into_addon(addon, parsed, sources, include_overview=include_overview, include_features=include_features, override_existing=override_existing)
     if include_aircraft_data and addon.type == 'Aircraft':
         try:
             lookup_mfr = (addon.rw.manufacturer_full_name or addon.rw.mfr or addon.pr.manufacturer or addon.publisher or '').strip()
@@ -3364,10 +4055,14 @@ async def _populate_addon_with_selected_ai(addon, settings: dict, *, provider: O
             log.warning('AI aircraft follow-up failed addon=%s error=%s', addon.title, e)
     if addon.type == 'Airport':
         try:
-            airport_data = _fetch_airport_data_sync(icao=(addon.rw.icao or ''), title=(addon.rw.name or addon.title or ''))
+            airport_data = _fetch_airport_data_sync(icao=(addon.rw.icao or ''), faa_id=(getattr(addon.rw, 'faa_id', None) or ''), title=(addon.rw.name or addon.title or ''))
             if airport_data:
                 addon.rw.icao = airport_data.get('icao') or addon.rw.icao
-                addon.rw.name = airport_data.get('name') or addon.rw.name
+                addon.rw.faa_id = airport_data.get('faa_id') or getattr(addon.rw, 'faa_id', None)
+                _current_code = str((addon.rw.icao or getattr(addon.rw, 'faa_id', None) or '')).strip().upper()
+                _returned_code = str((airport_data.get('icao') or airport_data.get('faa_id') or '')).strip().upper()
+                if (not addon.rw.name) or (_current_code and _returned_code and _current_code == _returned_code):
+                    addon.rw.name = airport_data.get('name') or addon.rw.name
                 addon.rw.city = airport_data.get('city') or addon.rw.city
                 addon.rw.municipality = airport_data.get('municipality') or airport_data.get('city') or addon.rw.municipality
                 addon.rw.country = airport_data.get('country') or addon.rw.country
@@ -3397,18 +4092,19 @@ async def _populate_addon_with_selected_ai(addon, settings: dict, *, provider: O
     if guessed_sub:
         addon.sub = guessed_sub
     await storage.upsert_addon(addon)
-    return addon, {'provider': provider, 'provider_name': ('Gemini Flash-Lite' if provider == 'gemini' else (f'OpenAI ({openai_model})' if provider == 'openai' else f'Claude ({claude_model})')), 'search_candidate': meta.get('candidate'), 'product_sources': sources, 'product_source': _clean_provider_source_label(sources[0]) if sources else '', 'aircraft_meta': aircraft_meta, 'aircraft_sources': list((aircraft_meta or {}).get('sources') or []), 'aircraft_source': _clean_provider_source_label((((aircraft_meta or {}).get('sources') or [addon.rw.source or ''])[0]) if ((aircraft_meta or {}).get('sources') or [addon.rw.source or '']) else '')}
+    return addon, {'provider': provider, 'provider_name': ('Gemini Flash-Lite' if provider == 'gemini' else (f'OpenAI ({openai_model} + two-pass web search)' if provider == 'openai' else f'Claude ({claude_model})')), 'search_candidate': meta.get('candidate'), 'product_sources': sources, 'product_source': _source_summary_label(sources, '', fallback=''), 'aircraft_meta': aircraft_meta, 'aircraft_sources': list((aircraft_meta or {}).get('sources') or []), 'aircraft_source': _source_summary_label(list((aircraft_meta or {}).get('sources') or []), '', fallback=(addon.rw.source or ''))}
 
 
 @app.post('/api/ai/populate-lite/{addon_id}')
-async def ai_populate_product_lite(addon_id: str):
+async def ai_populate_product_lite(addon_id: str, body: Optional[PopulateLiteOptions] = None):
     """Populate the selected add-on from the right sidebar using the low-cost path."""
 
     addon = await storage.get_addon(addon_id)
     if not addon:
         raise HTTPException(404)
     settings = await storage.get_all_settings()
-    provider = _selected_ai_provider(settings)
+    options = body or PopulateLiteOptions()
+    provider = (options.provider or _selected_ai_provider(settings)).lower().strip()
     if provider == 'gemini' and not settings.get('google_api_key'):
         raise HTTPException(400, 'Google API key not configured in Settings')
     if provider == 'openai' and not settings.get('openai_key'):
@@ -3416,55 +4112,68 @@ async def ai_populate_product_lite(addon_id: str):
     if provider == 'claude' and not settings.get('claude_api_key'):
         raise HTTPException(400, 'Claude API key not configured in Settings')
 
-    addon, info = await _populate_addon_with_selected_ai(addon, settings, provider=provider, use_bulk_model=True, override_existing=True, include_overview=True, include_features=True, include_aircraft_data=True)
-    return {
-        'ok': True,
-        'addon_id': addon_id,
-        'provider': info['provider'],
-        'provider_name': info['provider_name'],
-        'search_candidate': info.get('search_candidate'),
-        'sources': info.get('product_sources') or [],
-        'product_sources': info.get('product_sources') or [],
-        'product_source': info.get('product_source') or '',
-        'aircraft_meta': info.get('aircraft_meta'),
-        'aircraft_sources': info.get('aircraft_sources') or [],
-        'aircraft_source': info.get('aircraft_source') or '',
-        'subtype': addon.sub or '',
-        'latest_version': addon.pr.latest_ver or '',
-        'latest_version_date': addon.pr.latest_ver_date or '',
-        'released': addon.pr.released or '',
-        'price': addon.pr.price,
-        'store_name': addon.pr.source_store or '',
-        'summary_html': addon.summary or '',
-        'features_html': addon.usr.features or '',
-        'manufacturer': addon.rw.mfr or addon.pr.manufacturer or '',
-        'manufacturer_full_name': addon.rw.manufacturer_full_name or addon.rw.mfr or '',
-        'model': addon.rw.model or '',
-        'category': addon.rw.category or '',
-        'engine': addon.rw.engine or '',
-        'engine_type': addon.rw.engine_type or '',
-        'max_speed': addon.rw.max_speed or '',
-        'cruise': addon.rw.cruise or '',
-        'range_nm': addon.rw.range_nm,
-        'ceiling': addon.rw.ceiling or '',
-        'seats': addon.rw.seats or '',
-        'mtow': addon.rw.mtow or '',
-        'fuel_capacity': addon.rw.fuel_capacity or '',
-        'wingspan': addon.rw.wingspan or '',
-        'length': addon.rw.length or '',
-        'height': addon.rw.height or '',
-        'avionics': addon.rw.avionics or '',
-        'variants': addon.rw.variants or '',
-        'in_production': addon.rw.in_production or '',
-        'aircraft_cost': addon.rw.aircraft_cost or '',
-        'country_of_origin': addon.rw.country_of_origin or '',
-        'introduced': addon.rw.introduced or '',
-        'source': addon.rw.source or info.get('product_source') or info['provider_name'],
-        'aircraft_source_raw': addon.rw.source or '',
-    }
+    provider_name = ('Gemini Flash-Lite + Google Search' if provider == 'gemini' else (f'OpenAI ({_selected_openai_model(settings)} + two-pass web search)' if provider == 'openai' else f'Claude ({_selected_claude_model(settings)})'))
+    model_name = (_selected_gemini_bulk_model(settings) if provider == 'gemini' else (_selected_openai_model(settings) if provider == 'openai' else _selected_claude_model(settings)))
+    started_at = datetime.now()
+    status = 'success'
+    error_message = ''
+    try:
+        addon, info = await _populate_addon_with_selected_ai(addon, settings, provider=provider, use_bulk_model=True, override_existing=options.override_existing, include_overview=options.include_overview, include_features=options.include_features, include_aircraft_data=options.include_aircraft_data)
+        return {
+            'ok': True,
+            'addon_id': addon_id,
+            'provider': info['provider'],
+            'provider_name': info['provider_name'],
+            'search_candidate': info.get('search_candidate'),
+            'sources': info.get('product_sources') or [],
+            'product_sources': info.get('product_sources') or [],
+            'product_source': info.get('product_source') or '',
+            'aircraft_meta': info.get('aircraft_meta'),
+            'aircraft_sources': info.get('aircraft_sources') or [],
+            'aircraft_source': info.get('aircraft_source') or '',
+            'subtype': addon.sub or '',
+            'latest_version': addon.pr.latest_ver or '',
+            'latest_version_date': addon.pr.latest_ver_date or '',
+            'released': addon.pr.released or '',
+            'price': addon.pr.price,
+            'store_name': addon.pr.source_store or '',
+            'summary_html': addon.summary or '',
+            'features_html': addon.usr.features or '',
+            'manufacturer': addon.rw.mfr or addon.pr.manufacturer or '',
+            'manufacturer_full_name': addon.rw.manufacturer_full_name or addon.rw.mfr or '',
+            'model': addon.rw.model or '',
+            'category': addon.rw.category or '',
+            'engine': addon.rw.engine or '',
+            'engine_type': addon.rw.engine_type or '',
+            'max_speed': addon.rw.max_speed or '',
+            'cruise': addon.rw.cruise or '',
+            'range_nm': addon.rw.range_nm,
+            'ceiling': addon.rw.ceiling or '',
+            'seats': addon.rw.seats or '',
+            'mtow': addon.rw.mtow or '',
+            'fuel_capacity': addon.rw.fuel_capacity or '',
+            'wingspan': addon.rw.wingspan or '',
+            'length': addon.rw.length or '',
+            'height': addon.rw.height or '',
+            'avionics': addon.rw.avionics or '',
+            'variants': addon.rw.variants or '',
+            'in_production': addon.rw.in_production or '',
+            'aircraft_cost': addon.rw.aircraft_cost or '',
+            'country_of_origin': addon.rw.country_of_origin or '',
+            'introduced': addon.rw.introduced or '',
+            'source': addon.rw.source or info.get('product_source') or info['provider_name'],
+            'aircraft_source_raw': addon.rw.source or '',
+        }
+    except Exception as e:
+        status = 'error'
+        error_message = str(getattr(e, 'detail', '') or e)
+        raise
+    finally:
+        ended_at = datetime.now()
+        await _record_ai_log(action=(options.action or 'populate_selected_addon'), screen=(options.screen or 'library_selected_addon'), provider=provider, provider_name=provider_name, model=model_name, addon_id=addon_id, addon_title=(addon.title if addon else ''), status=status, started_at=started_at, ended_at=ended_at, duration_seconds=(ended_at-started_at).total_seconds(), error_message=error_message, details={'requested_provider': options.provider or '', 'resolved_provider': provider, 'include_overview': bool(options.include_overview), 'include_features': bool(options.include_features), 'include_aircraft_data': bool(options.include_aircraft_data), 'override_existing': bool(options.override_existing)})
 
 
-
+@app.post('/api/gemini/populate-aircraft')
 @app.post('/api/gemini/populate-aircraft')
 async def gemini_populate_aircraft(body: GeminiAircraftRequest):
     return await ai_populate_aircraft(body)
@@ -3489,11 +4198,18 @@ async def addon_overview_lookup(addon_id: str):
     return payload
 
 
+class DeleteLogsRequest(BaseModel):
+    category: Optional[str] = None
+    start_at: Optional[str] = None
+    end_at: Optional[str] = None
+
+
 class AIRequest(BaseModel):
     provider: str = 'gemini'
     mode: str = 'enrich'
     prompt: Optional[str] = None
     addon_id: Optional[str] = None
+    screen: Optional[str] = None
 
 @app.post('/api/ai/enrich')
 async def ai_enrich(body: AIRequest):
@@ -3507,19 +4223,34 @@ async def ai_enrich(body: AIRequest):
         prompt = custom + "\n\nUse this addon context: " + addon_ctx + "\n\nReturn ONLY one valid JSON object with keys: answer_title, answer_text, answer_html, bullets, sources_text, bodyHtml, featuresHtml. answer_text, sources_text, bodyHtml, and featuresHtml must be plain strings or HTML strings. bullets may be an array of short strings. Do not return nested objects. Answer the user's question directly instead of generating a generic addon brief."
     else:
         prompt = f"You are an expert flight simulator addon curator. For the addon '{addon.title if addon else 'Addon'}' by '{addon.publisher if addon else ''}', return ONLY one valid JSON object with keys: headline, description, realWorldInfo, highlights, pilotBriefing, bestFor, compatibility, suggestedTags, verdict, bodyHtml, featuresHtml. All fields except highlights and suggestedTags must be plain strings or HTML strings, not nested objects. {addon_ctx} Rules: bodyHtml and featuresHtml should be rich readable HTML fragments if useful. Do not include markdown fences."
+    provider = (body.provider or 'gemini').strip().lower()
+    provider_name = ('Gemini Flash-Lite + Google Search' if provider == 'gemini' else (f'OpenAI ({_selected_openai_model(settings)} + two-pass web search)' if provider == 'openai' else f'Claude ({_selected_claude_model(settings)})'))
+    model_name = (_selected_gemini_interactive_model(settings) if provider == 'gemini' else (_selected_openai_model(settings) if provider == 'openai' else _selected_claude_model(settings)))
+    started_at = datetime.now()
     try:
-        parsed, sources, raw = await asyncio.to_thread(lambda: _provider_generate_json(body.provider, prompt, settings, use_search=(body.provider=='gemini'), claude_model=_selected_claude_model(settings)))
+        parsed, sources, raw = await asyncio.to_thread(lambda: _provider_generate_json(provider, prompt, settings, use_search=(provider=='gemini'), claude_model=_selected_claude_model(settings)))
     except requests.HTTPError as e:
-        raise HTTPException(502, f'AI request failed: {e.response.text[:400] if e.response is not None else e}')
+        msg = f'AI request failed: {e.response.text[:400] if e.response is not None else e}'
+        ended_at = datetime.now()
+        await _record_ai_log(action=('execute_prompt' if body.mode=='prompt' else 'generate_ai_brief'), screen=(body.screen or 'ai_tab'), provider=provider, provider_name=provider_name, model=model_name, addon_id=(body.addon_id or ''), addon_title=(addon.title if addon else ''), status='error', started_at=started_at, ended_at=ended_at, duration_seconds=(ended_at-started_at).total_seconds(), error_message=msg, prompt_preview=custom, details={'requested_provider': body.provider or '', 'resolved_provider': provider, 'mode': body.mode})
+        raise HTTPException(502, msg)
     except Exception as e:
-        raise HTTPException(502, f'AI request failed: {e}')
+        msg = f'AI request failed: {e}'
+        ended_at = datetime.now()
+        await _record_ai_log(action=('execute_prompt' if body.mode=='prompt' else 'generate_ai_brief'), screen=(body.screen or 'ai_tab'), provider=provider, provider_name=provider_name, model=model_name, addon_id=(body.addon_id or ''), addon_title=(addon.title if addon else ''), status='error', started_at=started_at, ended_at=ended_at, duration_seconds=(ended_at-started_at).total_seconds(), error_message=msg, prompt_preview=custom, details={'requested_provider': body.provider or '', 'resolved_provider': provider, 'mode': body.mode})
+        raise HTTPException(502, msg)
     if not parsed:
         fallback_keys = ['headline','description','realWorldInfo','pilotBriefing','bestFor','compatibility','verdict','bodyHtml','featuresHtml','answer_title','answer_text','answer_html','sources_text']
         parsed = _extract_json_pairs_fallback(raw, fallback_keys)
     if not parsed:
-        raise HTTPException(502, f'AI returned no structured data: {raw[:300]}')
+        msg = f'AI returned no structured data: {raw[:300]}'
+        ended_at = datetime.now()
+        await _record_ai_log(action=('execute_prompt' if body.mode=='prompt' else 'generate_ai_brief'), screen=(body.screen or 'ai_tab'), provider=provider, provider_name=provider_name, model=model_name, addon_id=(body.addon_id or ''), addon_title=(addon.title if addon else ''), status='error', started_at=started_at, ended_at=ended_at, duration_seconds=(ended_at-started_at).total_seconds(), error_message=msg, prompt_preview=custom, details={'requested_provider': body.provider or '', 'resolved_provider': provider, 'mode': body.mode})
+        raise HTTPException(502, msg)
     parsed['sources'] = sources
     parsed['mode'] = body.mode
+    ended_at = datetime.now()
+    await _record_ai_log(action=('execute_prompt' if body.mode=='prompt' else 'generate_ai_brief'), screen=(body.screen or 'ai_tab'), provider=provider, provider_name=provider_name, model=model_name, addon_id=(body.addon_id or ''), addon_title=(addon.title if addon else ''), status='success', started_at=started_at, ended_at=ended_at, duration_seconds=(ended_at-started_at).total_seconds(), prompt_preview=custom, details={'requested_provider': body.provider or '', 'resolved_provider': provider, 'mode': body.mode, 'sources': len(sources or [])})
     return parsed
 
 class LibraryPopulateRequest(BaseModel):
@@ -3529,6 +4260,16 @@ class LibraryPopulateRequest(BaseModel):
     override_existing: bool = False
     provider: Optional[str] = None
     addon_ids: Optional[list[str]] = None
+
+
+class PopulateLiteOptions(BaseModel):
+    include_overview: bool = True
+    include_features: bool = True
+    include_aircraft_data: bool = True
+    override_existing: bool = True
+    provider: Optional[str] = None
+    screen: Optional[str] = None
+    action: Optional[str] = None
 
 
 class SubtypePopulateRequest(BaseModel):
@@ -3712,7 +4453,15 @@ async def populate_library_start(body: LibraryPopulateRequest):
         'current': 'Preparing...',
         'done': 0,
         'total': total,
-        'message': ('Bulk populate will use Gemini Flash-Lite. Existing overview/features are preserved unless Override Existing is enabled.' if provider == 'gemini' else (f'Bulk populate will use OpenAI {openai_model}. Existing overview/features are preserved unless Override Existing is enabled.' if provider == 'openai' else f'Bulk populate will use Claude {claude_model}. Existing overview/features are preserved unless Override Existing is enabled.')),
+        'message': (
+            'Bulk populate will use Gemini Flash-Lite. Existing overview/features are preserved unless Override Existing is enabled.'
+            if provider == 'gemini'
+            else (
+                f'Bulk populate will use OpenAI {openai_model} with two-pass web search. Existing overview/features are preserved unless Override Existing is enabled.'
+                if provider == 'openai'
+                else f'Bulk populate will use Claude {claude_model}. Existing overview/features are preserved unless Override Existing is enabled.'
+            )
+        ),
         'type': 'running',
         'provider': provider,
         'model': gemini_model if provider == 'gemini' else (openai_model if provider == 'openai' else claude_model),
@@ -3742,7 +4491,7 @@ async def populate_library_start(body: LibraryPopulateRequest):
                     log.error('Bulk populate failed addon=%s error=%s', addon.title, e, exc_info=True)
                 done += 1
                 _enrich_progress.update({'done': done, 'pct': int((done/max(total,1))*100)})
-            msg = ('Populate complete using Gemini Flash-Lite.' if provider == 'gemini' else (f'Populate complete using OpenAI {openai_model}.' if provider == 'openai' else f'Populate complete using Claude {claude_model}.'))
+            msg = ('Populate complete using Gemini Flash-Lite.' if provider == 'gemini' else (f'Populate complete using OpenAI {openai_model} with two-pass web search.' if provider == 'openai' else f'Populate complete using Claude {claude_model}.'))
             if failures:
                 msg += f' {len(failures)} addon(s) had errors. Check the log for details.'
             _enrich_progress.update({'running': False, 'pct': 100, 'message': msg, 'type': 'done', 'failures': failures})
@@ -3985,6 +4734,196 @@ async def research_readable(url: str):
         raise HTTPException(502, f'Could not read article: {e}')
 
 
+
+async def _record_scan_log(*, result, addons_root: str, selected_paths: list[str], populate_new_ai: bool, ai_provider: str | None, ai_populated: int, duration_seconds: float, cancelled: bool = False, error_message: str = ''):
+    try:
+        entry = {
+            'id': uuid.uuid4().hex,
+            'timestamp': datetime.now().isoformat(timespec='seconds'),
+            'addons_root': addons_root or '',
+            'selected_paths': selected_paths or [],
+            'populate_new_ai': bool(populate_new_ai),
+            'ai_provider': ai_provider or '',
+            'ai_populated': int(ai_populated or 0),
+            'duration_seconds': round(float(duration_seconds or 0.0), 1),
+            'cancelled': bool(cancelled),
+            'error_message': error_message or '',
+            'summary': {
+                'added': len(getattr(result, 'added', []) or []),
+                'updated': len(getattr(result, 'updated', []) or []),
+                'removed': len(getattr(result, 'removed', []) or []),
+                'ignored': int(getattr(result, 'skipped_ignored', 0) or 0),
+                'version_updates': len(getattr(result, 'version_updates', []) or []),
+            },
+            'added_items': [
+                {
+                    'title': a.title,
+                    'publisher': a.publisher,
+                    'type': a.type,
+                    'version': a.pr.ver or '',
+                    'path': a.addon_path,
+                }
+                for a in (getattr(result, 'added', []) or [])
+            ][:500],
+            'version_updates': list(getattr(result, 'version_updates', []) or [])[:500],
+        }
+        logs = await storage.get_json_setting('scan_logs', [])
+        if not isinstance(logs, list):
+            logs = []
+        logs = [entry] + logs[:49]
+        await storage.set_json_setting('scan_logs', logs)
+        await storage.add_event_log({
+            'id': entry['id'],
+            'category': 'scan',
+            'action': 'library_scan',
+            'started_at': entry['timestamp'],
+            'ended_at': entry['timestamp'],
+            'duration_seconds': entry['duration_seconds'],
+            'screen': 'library_scan',
+            'status': 'cancelled' if entry['cancelled'] else ('error' if entry['error_message'] else 'success'),
+            'error_message': entry['error_message'],
+            'details': {
+                'addons_root': entry['addons_root'],
+                'selected_paths': entry['selected_paths'],
+                'populate_new_ai': entry['populate_new_ai'],
+                'ai_provider': entry['ai_provider'],
+                'ai_populated': entry['ai_populated'],
+                'cancelled': entry['cancelled'],
+                'added_items': entry['added_items'],
+                'version_updates': entry['version_updates'],
+            },
+            'summary': entry['summary'],
+        })
+    except Exception as e:
+        log.warning('Could not record scan log: %s', e)
+
+
+async def _record_ai_log(*, action: str, screen: str, provider: str, provider_name: str = '', model: str = '', addon_id: str = '', addon_title: str = '', status: str = 'success', started_at: Optional[datetime] = None, ended_at: Optional[datetime] = None, duration_seconds: float = 0.0, error_message: str = '', prompt_preview: str = '', details: Optional[dict] = None):
+    try:
+        started_at = started_at or datetime.now()
+        ended_at = ended_at or datetime.now()
+        entry = {
+            'id': uuid.uuid4().hex,
+            'action': action or '',
+            'screen': screen or '',
+            'provider': provider or '',
+            'provider_name': provider_name or provider or '',
+            'model': model or '',
+            'addon_id': addon_id or '',
+            'addon_title': addon_title or '',
+            'status': status or 'success',
+            'started_at': started_at.isoformat(timespec='seconds'),
+            'ended_at': ended_at.isoformat(timespec='seconds'),
+            'duration_seconds': round(float(duration_seconds or 0.0), 1),
+            'error_message': (error_message or '')[:1200],
+            'prompt_preview': (prompt_preview or '')[:240],
+            'details': details or {},
+        }
+        logs = await storage.get_json_setting('ai_logs', [])
+        if not isinstance(logs, list):
+            logs = []
+        logs = [entry] + logs[:199]
+        await storage.set_json_setting('ai_logs', logs)
+        await storage.add_event_log({'category':'ai', **entry})
+    except Exception as e:
+        log.warning('Could not record AI log: %s', e)
+
+
+@app.get('/api/logs/scan')
+async def get_scan_logs():
+    logs = await storage.list_event_logs('scan', limit=120)
+    if logs:
+        items = []
+        for item in logs:
+            details = item.get('details') or {}
+            items.append({
+                'id': item.get('id'),
+                'timestamp': item.get('started_at') or item.get('created_at') or '',
+                'duration_seconds': item.get('duration_seconds') or 0,
+                'selected_paths': details.get('selected_paths') or [],
+                'summary': item.get('summary') or {},
+                'populate_new_ai': bool(details.get('populate_new_ai')),
+                'ai_provider': details.get('ai_provider') or '',
+                'ai_populated': details.get('ai_populated') or 0,
+                'cancelled': bool(details.get('cancelled')),
+                'error_message': item.get('error_message') or '',
+                'added_items': details.get('added_items') or [],
+                'version_updates': details.get('version_updates') or [],
+            })
+        return {'items': items}
+    logs = await storage.get_json_setting('scan_logs', [])
+    if not isinstance(logs, list):
+        logs = []
+    return {'items': logs}
+
+
+@app.get('/api/logs/ai')
+async def get_ai_logs():
+    items = []
+    seen = set()
+    for item in await storage.list_event_logs('ai', limit=250):
+        row = {
+            'id': item.get('id'),
+            'action': item.get('action') or '',
+            'screen': item.get('screen') or '',
+            'provider': item.get('provider') or '',
+            'provider_name': item.get('provider_name') or item.get('provider') or '',
+            'model': item.get('model') or '',
+            'addon_id': item.get('addon_id') or '',
+            'addon_title': item.get('addon_title') or '',
+            'status': item.get('status') or '',
+            'started_at': item.get('started_at') or item.get('created_at') or '',
+            'ended_at': item.get('ended_at') or item.get('created_at') or '',
+            'duration_seconds': item.get('duration_seconds') or 0,
+            'error_message': item.get('error_message') or '',
+            'prompt_preview': item.get('prompt_preview') or '',
+            'details': item.get('details') or {},
+        }
+        key = str(row.get('id') or '') or f"{row.get('started_at','')}|{row.get('action','')}|{row.get('addon_title','')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(row)
+    logs = await storage.get_json_setting('ai_logs', [])
+    if isinstance(logs, list):
+        for item in logs:
+            row = {
+                'id': item.get('id'),
+                'action': item.get('action') or '',
+                'screen': item.get('screen') or '',
+                'provider': item.get('provider') or '',
+                'provider_name': item.get('provider_name') or item.get('provider') or '',
+                'model': item.get('model') or '',
+                'addon_id': item.get('addon_id') or '',
+                'addon_title': item.get('addon_title') or '',
+                'status': item.get('status') or '',
+                'started_at': item.get('started_at') or '',
+                'ended_at': item.get('ended_at') or '',
+                'duration_seconds': item.get('duration_seconds') or 0,
+                'error_message': item.get('error_message') or '',
+                'prompt_preview': item.get('prompt_preview') or '',
+                'details': item.get('details') or {},
+            }
+            key = str(row.get('id') or '') or f"{row.get('started_at','')}|{row.get('action','')}|{row.get('addon_title','')}"
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(row)
+    items.sort(key=lambda x: str(x.get('started_at') or x.get('ended_at') or ''), reverse=True)
+    return {'items': items[:250]}
+
+
+@app.get('/api/logs/events')
+async def get_event_logs(category: Optional[str] = None, limit: int = 250):
+    return {'items': await storage.list_event_logs(category, limit=limit)}
+
+
+@app.post('/api/logs/delete-range')
+async def delete_logs_range(body: DeleteLogsRequest):
+    result = await storage.delete_event_logs_range(category=(body.category or None), start_at=(body.start_at or None), end_at=(body.end_at or None))
+    return {'ok': True, **result}
+
+
 @app.websocket("/ws/scan")
 async def websocket_scan(ws: WebSocket):
     global _scan_cancel, _scan_running
@@ -4015,6 +4954,10 @@ async def websocket_scan(ws: WebSocket):
                 continue
             _scan_cancel = asyncio.Event()
             _scan_running = True
+            scan_started = time.time()
+            result = scan_module.ScanResult()
+            ai_populated = 0
+            provider = ''
             try:
                 existing = await storage.get_all_addons(include_removed=True)
                 ignored_rules = await storage.list_ignored_addons()
@@ -4028,26 +4971,35 @@ async def websocket_scan(ws: WebSocket):
                     await storage.upsert_many(result.added + result.updated)
                 if result.removed:
                     await storage.mark_removed(result.removed)
-                ai_populated = 0
                 if populate_new_ai and result.added:
                     settings = await storage.get_all_settings()
                     provider = _selected_ai_provider(settings)
                     provider_ok = (provider == 'gemini' and settings.get('google_api_key')) or (provider == 'openai' and settings.get('openai_key')) or (provider == 'claude' and settings.get('claude_api_key'))
+                    provider_name = ('Gemini Flash-Lite + Google Search' if provider == 'gemini' else (f'OpenAI ({_selected_openai_model(settings)} + two-pass web search)' if provider == 'openai' else f'Claude ({_selected_claude_model(settings)})'))
                     if provider_ok:
                         total_new = len(result.added)
+                        await ws.send_json({'type':'ai-progress','current':'Preparing AI populate','pct':0,'done':0,'total':total_new,'provider_name':provider_name,'message':'Populate new add-ons with AI is running after the manifest scan. This can take a while, and you can keep using the app, but the system may feel slower until it finishes.'})
                         for idx, addon in enumerate(result.added, start=1):
                             if _scan_cancel.is_set():
                                 break
-                            await ws.send_json({'type':'ai-progress','current':addon.title,'pct':round((idx-1)/max(total_new,1)*100,1),'done':idx-1,'total':total_new,'message':'Populating new add-ons with selected AI...'})
+                            await ws.send_json({'type':'ai-progress','current':addon.title,'pct':round((idx-1)/max(total_new,1)*100,1),'done':idx-1,'total':total_new,'provider_name':provider_name,'message':'Running selected-AI populate for new add-ons. Rich overview/features generation can take a while.'})
+                            ai_started = datetime.now()
                             try:
                                 await _populate_addon_with_selected_ai(addon, settings, provider=provider, use_bulk_model=True, override_existing=True, include_overview=True, include_features=True, include_aircraft_data=True)
                                 ai_populated += 1
+                                ai_ended = datetime.now()
+                                await _record_ai_log(action='scan_populate_new_addon', screen='scan_followup_ai', provider=provider, provider_name=provider_name, model=(_selected_gemini_bulk_model(settings) if provider == 'gemini' else (_selected_openai_model(settings) if provider == 'openai' else _selected_claude_model(settings))), addon_id=addon.id, addon_title=addon.title, status='success', started_at=ai_started, ended_at=ai_ended, duration_seconds=(ai_ended-ai_started).total_seconds(), details={'requested_provider': provider, 'resolved_provider': provider})
                             except Exception as e:
+                                ai_ended = datetime.now()
+                                await _record_ai_log(action='scan_populate_new_addon', screen='scan_followup_ai', provider=provider, provider_name=provider_name, model=(_selected_gemini_bulk_model(settings) if provider == 'gemini' else (_selected_openai_model(settings) if provider == 'openai' else _selected_claude_model(settings))), addon_id=addon.id, addon_title=addon.title, status='error', started_at=ai_started, ended_at=ai_ended, duration_seconds=(ai_ended-ai_started).total_seconds(), error_message=str(e), details={'requested_provider': provider, 'resolved_provider': provider})
                                 log.warning('Scan follow-up AI populate failed addon=%s error=%s', addon.title, e)
-                        await ws.send_json({'type':'ai-progress','current':'Complete','pct':100,'done':ai_populated,'total':total_new,'message':'Selected-AI populate finished for new add-ons.'})
-                await ws.send_json({'type':'done','scanned':result.skipped_ignored + len(result.added) + len(result.updated),'total':result.skipped_ignored + len(result.added) + len(result.updated),'added':len(result.added),'updated':len(result.updated),'removed':len(result.removed),'ignored':result.skipped_ignored,'ai_populated':ai_populated})
+                        await ws.send_json({'type':'ai-progress','current':'Complete','pct':100,'done':ai_populated,'total':total_new,'provider_name':provider_name,'message':'Selected-AI populate finished for new add-ons.'})
+                duration_seconds = time.time() - scan_started
+                await _record_scan_log(result=result, addons_root=addons_root, selected_paths=selected_paths or [], populate_new_ai=populate_new_ai, ai_provider=provider, ai_populated=ai_populated, duration_seconds=duration_seconds, cancelled=_scan_cancel.is_set())
+                await ws.send_json({'type':'done','scanned':result.skipped_ignored + len(result.added) + len(result.updated),'total':result.skipped_ignored + len(result.added) + len(result.updated),'added':len(result.added),'updated':len(result.updated),'removed':len(result.removed),'ignored':result.skipped_ignored,'ai_populated':ai_populated,'version_updates':len(result.version_updates)})
             except Exception as e:
                 log.error("Scan failed: %s", e, exc_info=True)
+                await _record_scan_log(result=result, addons_root=addons_root, selected_paths=selected_paths or [], populate_new_ai=populate_new_ai, ai_provider=provider, ai_populated=ai_populated, duration_seconds=(time.time()-scan_started if 'scan_started' in locals() else 0), cancelled=_scan_cancel.is_set() if _scan_cancel else False, error_message=str(e))
                 await ws.send_json({"type": "error", "message": str(e)})
             finally:
                 _scan_running = False

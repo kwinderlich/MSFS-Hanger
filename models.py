@@ -33,6 +33,7 @@ class Runway:
 @dataclass
 class RealWorld:
     icao: Optional[str] = None
+    faa_id: Optional[str] = None
     name: Optional[str] = None
     city: Optional[str] = None
     municipality: Optional[str] = None
@@ -117,6 +118,7 @@ class UserData:
     map_zoom: Optional[int] = None
     map_search_label: str = ""
     map_polygon: List[Dict] = field(default_factory=list)
+    liveries: List[Dict] = field(default_factory=list)
 
 @dataclass
 class Document:
@@ -145,6 +147,7 @@ class Addon:
     gallery_paths: List[str] = field(default_factory=list)
     enabled: bool = False
     has_update: bool = False
+    date_added: Optional[str] = None
     last_scanned: Optional[str] = None
     exists: bool = True
     lat: Optional[float] = None
@@ -187,6 +190,7 @@ class Addon:
             "managed": self.managed,
             "enabled": self.enabled,
             "hasUpdate": self.has_update,
+            "date_added": self.date_added,
             "lat": self.lat,
             "lon": self.lon,
             "addon_path": self.addon_path,
@@ -198,7 +202,7 @@ class Addon:
             "thumbnail_path": self.thumbnail_path,
             "gallery_paths": self.gallery_paths,
             "rw": {
-                "icao": rw.icao, "name": rw.name, "city": rw.city, "municipality": rw.municipality, "state": rw.state,
+                "icao": rw.icao, "faa_id": rw.faa_id, "name": rw.name, "city": rw.city, "municipality": rw.municipality, "state": rw.state,
                 "province": rw.province, "region": rw.region, "region_code": rw.region_code, "country": rw.country, "country_code": rw.country_code,
                 "continent": rw.continent, "elev": rw.elev, "lat": rw.lat, "lon": rw.lon, "scheduled": rw.scheduled, "airport_type": rw.airport_type,
                 "home_link": rw.home_link, "wiki_url": rw.wiki_url,
@@ -226,6 +230,7 @@ class Addon:
                 "research_resources": usr.research_resources, "data_resources": usr.data_resources,
                 "map_lat": usr.map_lat, "map_lon": usr.map_lon, "map_zoom": usr.map_zoom,
                 "map_search_label": usr.map_search_label, "map_polygon": usr.map_polygon,
+                "liveries": usr.liveries,
             },
             "docs": [
                 {"name": d.name, "path": d.path, "url": d.url, "pages": d.pages}

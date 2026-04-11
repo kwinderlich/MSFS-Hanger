@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
+import zipfile
 from typing import Optional
+from datetime import datetime
 
 import aiosqlite
 
 from models import Addon, UserData
-from paths import DB_PATH, load_settings_file, save_settings_file, initialize_user_data
+from paths import DB_PATH, LOG_DIR, BACKUP_DIR, TEST_DIR, LEGACY_HYBRID_DIR, LEGACY_HQ_DIR, LEGACY_QT_DIR, load_settings_file, save_settings_file, initialize_user_data
+
+EVENT_LOG_FILE = LOG_DIR / 'event_logs.jsonl'
 
 async def init_db(db_path: Path = DB_PATH):
     initialize_user_data()
@@ -22,6 +27,7 @@ async def init_db(db_path: Path = DB_PATH):
                 publisher TEXT,
                 enabled INTEGER DEFAULT 0,
                 exists_flag INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 last_scanned TEXT,
                 data TEXT
             )
@@ -52,8 +58,50 @@ async def init_db(db_path: Path = DB_PATH):
         """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_addons_path ON addons(addon_path)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_addons_exists ON addons(exists_flag)")
+        async with db.execute("PRAGMA table_info(addons)") as cur:
+            addon_cols = {str(row[1]) for row in await cur.fetchall()}
+        if 'created_at' not in addon_cols:
+            # SQLite does not allow ALTER TABLE ... ADD COLUMN with a non-constant default
+            # such as CURRENT_TIMESTAMP. Add the column without a default, then backfill.
+            await db.execute("ALTER TABLE addons ADD COLUMN created_at TEXT")
+        await db.execute("UPDATE addons SET created_at = COALESCE(NULLIF(created_at,''), NULLIF(last_scanned,''), CURRENT_TIMESTAMP) WHERE created_at IS NULL OR created_at=''")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_ignored_addons_path ON ignored_addons(addon_path)")
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS event_logs (
+                id TEXT PRIMARY KEY,
+                category TEXT,
+                action TEXT,
+                started_at TEXT,
+                ended_at TEXT,
+                duration_seconds REAL DEFAULT 0,
+                screen TEXT DEFAULT '',
+                provider TEXT DEFAULT '',
+                provider_name TEXT DEFAULT '',
+                model TEXT DEFAULT '',
+                addon_id TEXT DEFAULT '',
+                addon_title TEXT DEFAULT '',
+                status TEXT DEFAULT '',
+                error_message TEXT DEFAULT '',
+                prompt_preview TEXT DEFAULT '',
+                details_json TEXT DEFAULT '{}',
+                summary_json TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_ignored_addons_package ON ignored_addons(package_name)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_event_logs_category_started ON event_logs(category, started_at DESC)")
+        async with db.execute("PRAGMA table_info(event_logs)") as cur:
+            cols = {str(row[1]) for row in await cur.fetchall()}
+        expected = {
+            'category': "TEXT", 'action': "TEXT", 'started_at': "TEXT", 'ended_at': "TEXT", 'duration_seconds': "REAL DEFAULT 0",
+            'screen': "TEXT DEFAULT ''", 'provider': "TEXT DEFAULT ''", 'provider_name': "TEXT DEFAULT ''", 'model': "TEXT DEFAULT ''",
+            'addon_id': "TEXT DEFAULT ''", 'addon_title': "TEXT DEFAULT ''", 'status': "TEXT DEFAULT ''", 'error_message': "TEXT DEFAULT ''",
+            'prompt_preview': "TEXT DEFAULT ''", 'details_json': "TEXT DEFAULT '{}'", 'summary_json': "TEXT DEFAULT '{}'", 'created_at': "TEXT"
+        }
+        for name, ddl in expected.items():
+            if name not in cols:
+                await db.execute(f"ALTER TABLE event_logs ADD COLUMN {name} {ddl}")
+        await db.execute("UPDATE event_logs SET created_at = COALESCE(NULLIF(created_at,''), NULLIF(started_at,''), CURRENT_TIMESTAMP) WHERE created_at IS NULL OR created_at=''")
         await db.commit()
 
         file_settings = load_settings_file()
@@ -85,13 +133,13 @@ async def upsert_many(addons: list[Addon], db_path: Path = DB_PATH):
     for addon in addons:
         rows.append((
             addon.id, addon.addon_path, addon.type, addon.title, addon.publisher,
-            int(addon.enabled), int(addon.exists), addon.last_scanned,
+            int(addon.enabled), int(addon.exists), (addon.date_added or ''), addon.last_scanned,
             json.dumps(addon.to_dict(), ensure_ascii=False),
         ))
     async with aiosqlite.connect(str(db_path)) as db:
         await db.executemany("""
-            INSERT INTO addons (id, addon_path, type, title, publisher, enabled, exists_flag, last_scanned, data)
-            VALUES (?,?,?,?,?,?,?,?,?)
+            INSERT INTO addons (id, addon_path, type, title, publisher, enabled, exists_flag, created_at, last_scanned, data)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(addon_path) DO UPDATE SET
                 id=excluded.id,
                 type=excluded.type,
@@ -99,6 +147,7 @@ async def upsert_many(addons: list[Addon], db_path: Path = DB_PATH):
                 publisher=excluded.publisher,
                 enabled=excluded.enabled,
                 exists_flag=excluded.exists_flag,
+                created_at=COALESCE(NULLIF(addons.created_at,''), excluded.created_at),
                 last_scanned=excluded.last_scanned,
                 data=excluded.data
         """, rows)
@@ -157,10 +206,11 @@ async def get_all_addons(include_removed: bool = False, db_path: Path = DB_PATH)
     where = "" if include_removed else "WHERE exists_flag=1"
     async with aiosqlite.connect(str(db_path)) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute(f"SELECT data FROM addons {where} ORDER BY title COLLATE NOCASE") as cur:
+        async with db.execute(f"SELECT data, created_at FROM addons {where} ORDER BY title COLLATE NOCASE") as cur:
             async for row in cur:
                 try:
                     addon = Addon.from_dict(json.loads(row["data"]))
+                    addon.date_added = addon.date_added or row["created_at"]
                     out[addon.id] = addon
                 except Exception:
                     continue
@@ -169,10 +219,12 @@ async def get_all_addons(include_removed: bool = False, db_path: Path = DB_PATH)
 async def get_addon(addon_id: str, db_path: Path = DB_PATH) -> Optional[Addon]:
     async with aiosqlite.connect(str(db_path)) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT data FROM addons WHERE id=?", (addon_id,)) as cur:
+        async with db.execute("SELECT data, created_at FROM addons WHERE id=?", (addon_id,)) as cur:
             row = await cur.fetchone()
             if row:
-                return Addon.from_dict(json.loads(row["data"]))
+                addon = Addon.from_dict(json.loads(row["data"]))
+                addon.date_added = addon.date_added or row["created_at"]
+                return addon
     return None
 
 async def update_addon_user_data(addon_id: str, usr_dict: dict, db_path: Path = DB_PATH):
@@ -340,3 +392,344 @@ async def remap_ignored_paths(old_root: str, new_root: str, db_path: Path = DB_P
                 next_path = new_root_norm + ('\\' + suffix if suffix else '')
                 await db.execute("UPDATE ignored_addons SET addon_path=? WHERE id=?", (next_path, row['id']))
         await db.commit()
+
+
+def _read_event_log_file() -> list[dict]:
+    initialize_user_data()
+    out = []
+    try:
+        if EVENT_LOG_FILE.exists():
+            for line in EVENT_LOG_FILE.read_text(encoding='utf-8', errors='replace').splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except Exception:
+                    continue
+    except Exception:
+        return []
+    return out
+
+def _append_event_log_file(entry: dict):
+    initialize_user_data()
+    payload = dict(entry or {})
+    if 'created_at' not in payload:
+        payload['created_at'] = datetime.now().isoformat(timespec='seconds')
+    try:
+        with EVENT_LOG_FILE.open('a', encoding='utf-8') as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False) + '\n')
+    except Exception:
+        pass
+
+async def add_event_log(entry: dict, db_path: Path = DB_PATH):
+    payload = dict(entry or {})
+    details = payload.pop('details', {}) or {}
+    summary = payload.pop('summary', {}) or {}
+    async with aiosqlite.connect(str(db_path)) as db:
+        await db.execute(
+            """
+            INSERT OR REPLACE INTO event_logs(
+                id, category, action, started_at, ended_at, duration_seconds,
+                screen, provider, provider_name, model, addon_id, addon_title,
+                status, error_message, prompt_preview, details_json, summary_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                str(payload.get('id') or ''),
+                str(payload.get('category') or ''),
+                str(payload.get('action') or ''),
+                str(payload.get('started_at') or payload.get('timestamp') or ''),
+                str(payload.get('ended_at') or ''),
+                float(payload.get('duration_seconds') or 0),
+                str(payload.get('screen') or ''),
+                str(payload.get('provider') or ''),
+                str(payload.get('provider_name') or ''),
+                str(payload.get('model') or ''),
+                str(payload.get('addon_id') or ''),
+                str(payload.get('addon_title') or ''),
+                str(payload.get('status') or ''),
+                str(payload.get('error_message') or ''),
+                str(payload.get('prompt_preview') or ''),
+                json.dumps(details, ensure_ascii=False),
+                json.dumps(summary, ensure_ascii=False),
+            ),
+        )
+        await db.commit()
+    _append_event_log_file({**payload, 'details': details, 'summary': summary})
+
+
+async def list_event_logs(category: Optional[str] = None, limit: int = 200, db_path: Path = DB_PATH) -> list[dict]:
+    where = ""
+    args: list = []
+    if category:
+        where = "WHERE category=?"
+        args.append(category)
+    args.append(int(limit))
+    out = []
+    seen = set()
+    async with aiosqlite.connect(str(db_path)) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            f"SELECT * FROM event_logs {where} ORDER BY COALESCE(started_at, created_at) DESC LIMIT ?",
+            args,
+        ) as cur:
+            async for row in cur:
+                item = dict(row)
+                for src, dst in (("details_json", "details"), ("summary_json", "summary")):
+                    raw = item.pop(src, None)
+                    try:
+                        item[dst] = json.loads(raw) if raw else {}
+                    except Exception:
+                        item[dst] = {}
+                key = str(item.get('id') or '') or f"{item.get('created_at','')}|{item.get('action','')}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(item)
+    for item in _read_event_log_file():
+        if category and str(item.get('category') or '') != category:
+            continue
+        key = str(item.get('id') or '') or f"{item.get('created_at','')}|{item.get('action','')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    out.sort(key=lambda item: str(item.get('started_at') or item.get('created_at') or ''), reverse=True)
+    return out[: int(limit)]
+
+
+async def delete_event_logs_range(category: Optional[str] = None, start_at: Optional[str] = None, end_at: Optional[str] = None, db_path: Path = DB_PATH) -> dict:
+    clauses = []
+    args: list = []
+    if category:
+        clauses.append("category=?")
+        args.append(str(category))
+    if start_at:
+        clauses.append("COALESCE(started_at, created_at) >= ?")
+        args.append(str(start_at))
+    if end_at:
+        clauses.append("COALESCE(started_at, created_at) <= ?")
+        args.append(str(end_at))
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    deleted = 0
+    async with aiosqlite.connect(str(db_path)) as db:
+        async with db.execute(f"SELECT COUNT(*) FROM event_logs {where}", args) as cur:
+            row = await cur.fetchone()
+            deleted = int((row or [0])[0] or 0)
+        await db.execute(f"DELETE FROM event_logs {where}", args)
+        await db.commit()
+    # rewrite JSONL fallback file
+    try:
+        kept = []
+        for item in _read_event_log_file():
+            ts = str(item.get('started_at') or item.get('created_at') or '')
+            if category and str(item.get('category') or '') != str(category):
+                kept.append(item); continue
+            if start_at and ts < str(start_at):
+                kept.append(item); continue
+            if end_at and ts > str(end_at):
+                kept.append(item); continue
+        initialize_user_data()
+        with EVENT_LOG_FILE.open('w', encoding='utf-8') as fh:
+            for item in kept:
+                fh.write(json.dumps(item, ensure_ascii=False) + '\n')
+    except Exception:
+        pass
+    return {'deleted': deleted, 'category': category or 'all', 'start_at': start_at or '', 'end_at': end_at or ''}
+
+
+def _safe_json_load(path: Path, default):
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+            return data
+    except Exception:
+        pass
+    return default
+
+
+async def detect_storage_sources(db_path: Path = DB_PATH) -> dict:
+    initialize_user_data()
+    return {
+        'sqlite': {
+            'path': str(db_path),
+            'exists': db_path.exists(),
+            'size': (db_path.stat().st_size if db_path.exists() else 0),
+            'modified': (datetime.fromtimestamp(db_path.stat().st_mtime).isoformat(timespec='seconds') if db_path.exists() else ''),
+        },
+        'legacy_hybrid': {
+            'dir': str(LEGACY_HYBRID_DIR),
+            'exists': LEGACY_HYBRID_DIR.exists(),
+            'addons_json': str(LEGACY_HYBRID_DIR / 'addons.json'),
+            'addons_exists': (LEGACY_HYBRID_DIR / 'addons.json').exists(),
+            'collections_exists': (LEGACY_HYBRID_DIR / 'collections.json').exists(),
+            'settings_exists': (LEGACY_HYBRID_DIR / 'settings.json').exists(),
+        },
+        'legacy_hq': {
+            'dir': str(LEGACY_HQ_DIR),
+            'exists': LEGACY_HQ_DIR.exists(),
+            'db': str(LEGACY_HQ_DIR / 'hangar_hq.db'),
+            'db_exists': (LEGACY_HQ_DIR / 'hangar_hq.db').exists(),
+        },
+        'legacy_qt': {
+            'dir': str(LEGACY_QT_DIR),
+            'exists': LEGACY_QT_DIR.exists(),
+            'settings_exists': (LEGACY_QT_DIR / 'settings.json').exists(),
+        },
+    }
+
+
+async def migrate_legacy_storage(db_path: Path = DB_PATH) -> dict:
+    initialize_user_data()
+    await init_db(db_path)
+    report = {
+        'imported_addons': 0,
+        'imported_settings': 0,
+        'imported_collections': 0,
+        'sources': [],
+        'notes': [],
+    }
+
+    hybrid = LEGACY_HYBRID_DIR
+    if hybrid.exists():
+        report['sources'].append(str(hybrid))
+        addons_path = hybrid / 'addons.json'
+        if addons_path.exists():
+            raw = _safe_json_load(addons_path, [])
+            items = []
+            if isinstance(raw, list):
+                items = [item for item in raw if isinstance(item, dict)]
+            elif isinstance(raw, dict):
+                if isinstance(raw.get('addons'), list):
+                    items = [item for item in raw.get('addons', []) if isinstance(item, dict)]
+                else:
+                    items = [v for v in raw.values() if isinstance(v, dict)]
+            parsed = []
+            for item in items:
+                try:
+                    addon = Addon.from_dict(item)
+                    parsed.append(addon)
+                except Exception:
+                    continue
+            if parsed:
+                await upsert_many(parsed, db_path=db_path)
+                report['imported_addons'] = len(parsed)
+            else:
+                report['notes'].append('No importable legacy add-ons were found in addons.json.')
+
+        settings_path = hybrid / 'settings.json'
+        settings_raw = _safe_json_load(settings_path, {})
+        if isinstance(settings_raw, dict):
+            for key, value in settings_raw.items():
+                await set_setting(str(key), json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value), db_path=db_path)
+                report['imported_settings'] += 1
+
+        collections_path = hybrid / 'collections.json'
+        collections_raw = _safe_json_load(collections_path, None)
+        if collections_raw is not None:
+            profiles = []
+            if isinstance(collections_raw, list):
+                for idx, item in enumerate(collections_raw):
+                    if isinstance(item, dict):
+                        name = str(item.get('name') or item.get('title') or f'Collection {idx+1}')
+                        addon_ids = item.get('addon_ids') or item.get('addons') or item.get('ids') or []
+                        if isinstance(addon_ids, list):
+                            profiles.append({'id': str(item.get('id') or f'legacy-{idx+1}'), 'name': name, 'addon_ids': addon_ids, 'created_at': str(item.get('created_at') or '')})
+            elif isinstance(collections_raw, dict):
+                maybe = collections_raw.get('profiles') or collections_raw.get('collections')
+                if isinstance(maybe, list):
+                    for idx, item in enumerate(maybe):
+                        if isinstance(item, dict):
+                            name = str(item.get('name') or item.get('title') or f'Collection {idx+1}')
+                            addon_ids = item.get('addon_ids') or item.get('addons') or item.get('ids') or []
+                            if isinstance(addon_ids, list):
+                                profiles.append({'id': str(item.get('id') or f'legacy-{idx+1}'), 'name': name, 'addon_ids': addon_ids, 'created_at': str(item.get('created_at') or '')})
+            if profiles:
+                await set_setting('profiles_json', json.dumps(profiles, ensure_ascii=False), db_path=db_path)
+                report['imported_collections'] = len(profiles)
+
+    hq_db = LEGACY_HQ_DIR / 'hangar_hq.db'
+    if hq_db.exists():
+        report['sources'].append(str(hq_db))
+        report['notes'].append('Legacy HQ database detected and preserved for backup, but automatic row-level migration is not implemented in this build.')
+
+    qt_settings = LEGACY_QT_DIR / 'settings.json'
+    if qt_settings.exists():
+        report['sources'].append(str(qt_settings))
+        qt_raw = _safe_json_load(qt_settings, {})
+        if isinstance(qt_raw, dict):
+            for key, value in qt_raw.items():
+                if key and not await get_setting(str(key), '', db_path=db_path):
+                    await set_setting(str(key), json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value), db_path=db_path)
+                    report['imported_settings'] += 1
+
+    return report
+
+
+async def create_data_backup(db_path: Path = DB_PATH) -> dict:
+    initialize_user_data()
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    backup_zip = BACKUP_DIR / f'msfs_hangar_backup_{stamp}.zip'
+    manifest = {
+        'created_at': datetime.now().isoformat(timespec='seconds'),
+        'user_data_dir': str(DB_PATH.parent),
+        'db_path': str(db_path),
+        'legacy_hybrid_dir': str(LEGACY_HYBRID_DIR),
+        'legacy_hq_dir': str(LEGACY_HQ_DIR),
+        'legacy_qt_dir': str(LEGACY_QT_DIR),
+    }
+    with zipfile.ZipFile(backup_zip, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr('backup_manifest.json', json.dumps(manifest, indent=2, ensure_ascii=False))
+        for base in [DB_PATH.parent, LEGACY_HYBRID_DIR, LEGACY_HQ_DIR, LEGACY_QT_DIR]:
+            if not base.exists():
+                continue
+            for path in base.rglob('*'):
+                if path.is_dir():
+                    continue
+                try:
+                    if path == backup_zip:
+                        continue
+                    arcname = f'{base.name}/{path.relative_to(base)}'
+                    zf.write(path, arcname)
+                except Exception:
+                    continue
+    return {
+        'ok': True,
+        'backup_zip': str(backup_zip),
+        'size': backup_zip.stat().st_size if backup_zip.exists() else 0,
+    }
+
+
+async def run_storage_test(db_path: Path = DB_PATH) -> dict:
+    initialize_user_data()
+    await init_db(db_path)
+    stamp = datetime.now().isoformat(timespec='seconds')
+    key = 'storage_test_last_run'
+    value = {'timestamp': stamp, 'db_path': str(db_path)}
+    await set_json_setting(key, value, db_path=db_path)
+    roundtrip = await get_json_setting(key, {}, db_path=db_path)
+    marker = TEST_DIR / 'storage_test_marker.json'
+    marker.write_text(json.dumps({'timestamp': stamp, 'marker': 'ok'}, indent=2), encoding='utf-8')
+    await add_event_log({
+        'id': f'storage-test-{stamp}',
+        'category': 'system',
+        'action': 'storage_test',
+        'started_at': stamp,
+        'ended_at': stamp,
+        'duration_seconds': 0,
+        'screen': 'settings_application',
+        'status': 'ok',
+        'details': {'marker_file': str(marker), 'db_path': str(db_path)},
+        'summary': {'roundtrip_ok': roundtrip == value},
+    }, db_path=db_path)
+    return {
+        'ok': True,
+        'timestamp': stamp,
+        'db_path': str(db_path),
+        'db_exists_after_test': db_path.exists(),
+        'settings_roundtrip_ok': roundtrip == value,
+        'marker_file': str(marker),
+        'marker_exists': marker.exists(),
+    }

@@ -278,13 +278,15 @@ def _prefer(old, new):
 
 def _merge_existing_addon(old: Addon, scanned: Addon) -> Addon:
     merged = old
+    scanned_version = str(scanned.pr.ver or '').strip()
+    old_version = str(old.pr.ver or '').strip()
     merged.enabled = scanned.enabled
     merged.exists = True
     merged.last_scanned = scanned.last_scanned
     merged.addon_path = scanned.addon_path or old.addon_path
     merged.manifest_path = scanned.manifest_path or old.manifest_path
-    merged.package_name = old.package_name or scanned.package_name
-    merged.docs = old.docs or scanned.docs
+    merged.package_name = scanned.package_name or old.package_name
+    merged.docs = scanned.docs or old.docs
     merged.gallery_paths = _merge_gallery(old.gallery_paths, scanned.gallery_paths)
     if scanned.thumbnail_path and Path(scanned.thumbnail_path).exists():
         if not old.thumbnail_path or not Path(old.thumbnail_path).exists():
@@ -311,9 +313,17 @@ def _merge_existing_addon(old: Addon, scanned: Addon) -> Addon:
     if not merged.rw.runways and scanned.rw.runways:
         merged.rw.runways = scanned.rw.runways
 
-    for attr in ["ver","released","price","source_store","size_mb","package_name","manufacturer"]:
+    for attr in ["released","price","source_store","manufacturer"]:
         if getattr(merged.pr, attr) in (None, "", 0):
             setattr(merged.pr, attr, getattr(scanned.pr, attr))
+    if scanned_version and scanned_version != old_version:
+        merged.pr.ver = scanned.pr.ver
+    elif getattr(merged.pr, 'ver', None) in (None, '', 0):
+        merged.pr.ver = scanned.pr.ver
+    if getattr(scanned.pr, 'size_mb', None) not in (None, '', 0):
+        merged.pr.size_mb = scanned.pr.size_mb
+    if getattr(scanned.pr, 'package_name', None) not in (None, ''):
+        merged.pr.package_name = scanned.pr.package_name
     return merged
 
 class ScanResult:
@@ -322,6 +332,7 @@ class ScanResult:
         self.updated: list[Addon] = []
         self.removed: list[str] = []
         self.skipped_ignored: int = 0
+        self.version_updates: list[dict] = []
 
 
 def _expand_scan_targets(root: Path, selected_paths: Optional[list[str]] = None) -> list[tuple[Path, Path]]:
@@ -409,7 +420,19 @@ async def scan_addons(
             seen_paths.add(addon.addon_path)
             old = existing_by_path.get(addon.addon_path)
             if old:
+                old_version = str(getattr(getattr(old, 'pr', None), 'ver', '') or '').strip()
+                new_version = str(getattr(getattr(addon, 'pr', None), 'ver', '') or '').strip()
                 addon = _merge_existing_addon(old, addon)
+                if new_version and new_version != old_version:
+                    result.version_updates.append({
+                        'addon_id': old.id,
+                        'title': addon.title,
+                        'publisher': addon.publisher,
+                        'type': addon.type,
+                        'from_version': old_version,
+                        'to_version': new_version,
+                        'addon_path': addon.addon_path,
+                    })
                 result.updated.append(addon)
             else:
                 result.added.append(addon)
