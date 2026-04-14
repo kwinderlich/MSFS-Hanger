@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import base64
+import configparser
 import json
 import mimetypes
 import base64
@@ -15,6 +16,7 @@ import re
 import shutil
 import time
 import uuid
+import sys
 import unicodedata
 from html import escape, unescape
 from pathlib import Path
@@ -34,20 +36,25 @@ import linker
 import scanner as scan_module
 import storage
 from realworld import fetch_aircraft_specs, guess_icao
-from logger import build_diag_report, get_logger, write_startup_snapshot
-from paths import BASE_DIR, USER_DATA_DIR, initialize_user_data, SETTINGS_JSON_PATH, DB_PATH, LOG_DIR, BROWSER_PROFILE_DIR, BACKUP_DIR, TEST_DIR, LEGACY_HYBRID_DIR, LEGACY_HQ_DIR, LEGACY_QT_DIR
+from logger import build_diag_report, get_logger, write_startup_snapshot, setup_logging
+from paths import BASE_DIR, USER_DATA_DIR, initialize_user_data, SETTINGS_JSON_PATH, DB_PATH, LOG_DIR, BROWSER_PROFILE_DIR, BACKUP_DIR, TEST_DIR, LEGACY_HYBRID_DIR, LEGACY_HQ_DIR, LEGACY_QT_DIR, BOOTSTRAP_CONFIG_PATH, get_forced_storage_root, save_bootstrap_config, load_bootstrap_config, storage_mode, get_library_profiles, get_active_profile, get_active_profile_id
+from native_dialogs import pick_or_create_folder
 
 log = get_logger(__name__)
 
-app = FastAPI(title="MSFS Hangar", version="2.0.0")
+app = FastAPI(title="MSFS Hangar", version="2.0.134")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 BASE_DIR = Path(__file__).parent
 FRONTEND_DIR = BASE_DIR / "frontend"
 initialize_user_data()
+setup_logging()
 DATA_DIR = USER_DATA_DIR
 if DATA_DIR.exists():
     app.mount("/data", StaticFiles(directory=str(DATA_DIR)), name="data")
+ASSETS_DIR = FRONTEND_DIR / "assets"
+if ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 
 _scan_cancel: Optional[asyncio.Event] = None
 _scan_running = False
@@ -81,9 +88,11 @@ async def startup():
     await storage.init_db()
     settings = await storage.get_all_settings()
     write_startup_snapshot(settings)
+    settings_info = _file_info(SETTINGS_JSON_PATH)
+    db_info = _file_info(DB_PATH)
     log.info("Using external data dir: %s", USER_DATA_DIR)
-    log.info("Settings file: %s", SETTINGS_JSON_PATH)
-    log.info("Library DB: %s", DB_PATH)
+    log.info("Settings file: %s | exists=%s | size=%s | modified=%s", settings_info["path"], settings_info["exists"], settings_info["size"], settings_info["modified"] or "")
+    log.info("Library DB: %s | exists=%s | size=%s | modified=%s", db_info["path"], db_info["exists"], db_info["size"], db_info["modified"] or "")
 
 
 def _file_info(path: Path) -> dict:
@@ -96,11 +105,121 @@ def _file_info(path: Path) -> dict:
     }
 
 
+def _dir_listing(path: Path) -> list[dict]:
+    items = []
+    try:
+        if path.exists():
+            for child in sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+                items.append({
+                    'name': child.name,
+                    'path': str(child),
+                    'type': 'dir' if child.is_dir() else 'file',
+                    'size': (child.stat().st_size if child.is_file() else 0),
+                    'modified': datetime.fromtimestamp(child.stat().st_mtime).isoformat(timespec='seconds'),
+                })
+    except Exception:
+        pass
+    return items
+
+
+def _search_live_datastore() -> dict:
+    base = USER_DATA_DIR
+    targets = {
+        'hangar.db': base / 'hangar.db',
+        'storage_test_marker.json': TEST_DIR / 'storage_test_marker.json',
+        'settings.json': SETTINGS_JSON_PATH,
+    }
+    found = {name: _file_info(path) for name, path in targets.items()}
+    legacy = []
+    for path in base.glob('*.json'):
+        if path.name not in {'settings.json'}:
+            legacy.append(_file_info(path))
+    return {'targets': found, 'legacy_json': legacy}
+
+
+def _open_in_explorer(path_value: str) -> bool:
+    path = Path(path_value)
+    target = path if path.exists() else path.parent
+    if not target:
+        return False
+    try:
+        if os.name == 'nt':
+            os.startfile(str(target))
+        elif sys.platform == 'darwin':
+            subprocess.Popen(['open', str(target)])
+        else:
+            subprocess.Popen(['xdg-open', str(target)])
+        return True
+    except Exception:
+        return False
+
+
+def _native_pick_folder(initial_dir: str = '', title: str = 'Choose MSFS Hangar App Folder') -> str:
+    return pick_or_create_folder(initial_dir or str(USER_DATA_DIR), title)
+
+
+def _native_pick_save_path(initial_dir: str = '', initial_file: str = '') -> str:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        selected = filedialog.asksaveasfilename(
+            initialdir=initial_dir or str(BACKUP_DIR),
+            initialfile=initial_file or f"MSFSHangar Backup {datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+            title='Save MSFSHangar Backup',
+            defaultextension='.zip',
+            filetypes=[('Zip files', '*.zip')],
+        )
+        root.destroy()
+        return selected or ''
+    except Exception:
+        return ''
+
+
+class ApplicationFolderUpdate(BaseModel):
+    path: str
+    copy_current_data: bool = True
+    verify_copy: bool = True
+    remove_old_after_copy: bool = False
+
+
+class BackupTargetRequest(BaseModel):
+    path: Optional[str] = None
+
+
+class LibraryProfileCreateRequest(BaseModel):
+    name: str
+    platform: str = 'msfs2024'
+    storage_root: str
+    copy_current_data: bool = False
+    switch_to: bool = False
+
+
+class LibraryProfileSwitchRequest(BaseModel):
+    profile_id: str
+
+
+class WindowStateUpdate(BaseModel):
+    x: Optional[int] = None
+    y: Optional[int] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    maximized: bool = False
+    shell_mode: str = ''
+    saved_at: str = ''
+
+
 @app.get("/api/application/info")
 async def application_info():
     sources = await storage.detect_storage_sources()
+    override = get_forced_storage_root()
+    active_profile = get_active_profile() or {}
+    profiles = get_library_profiles()
     return {
         "base_dir": str(BASE_DIR),
+        "base_app_folder": str(USER_DATA_DIR),
         "user_data_dir": str(USER_DATA_DIR),
         "settings_file": str(SETTINGS_JSON_PATH),
         "db_path": str(DB_PATH),
@@ -108,11 +227,13 @@ async def application_info():
         "browser_profile_dir": str(BROWSER_PROFILE_DIR),
         "backup_dir": str(BACKUP_DIR),
         "test_dir": str(TEST_DIR),
-        "legacy_hybrid_dir": str(LEGACY_HYBRID_DIR),
-        "legacy_hq_dir": str(LEGACY_HQ_DIR),
-        "legacy_qt_dir": str(LEGACY_QT_DIR),
-        "data_dir_override": os.environ.get("HANGAR_USER_DATA_DIR", "").strip(),
+        "storage_mode": storage_mode(),
+        "forced_storage_root": override,
+        "pending_delete_root": str(load_bootstrap_config().get('pending_delete_root') or ''),
+        "bootstrap_config": str(BOOTSTRAP_CONFIG_PATH),
+        "bootstrap_exists": BOOTSTRAP_CONFIG_PATH.exists(),
         "host_mode": os.environ.get('HANGAR_SHELL_MODE', 'local_or_desktop'),
+        "shell_mode": os.environ.get('HANGAR_SHELL_MODE', 'local_or_desktop'),
         "user_data_exists": USER_DATA_DIR.exists(),
         "settings_exists": SETTINGS_JSON_PATH.exists(),
         "db_exists": DB_PATH.exists(),
@@ -123,7 +244,106 @@ async def application_info():
         "backup_dir_exists": BACKUP_DIR.exists(),
         "test_dir_exists": TEST_DIR.exists(),
         "storage_sources": sources,
+        "active_data_listing": _dir_listing(USER_DATA_DIR),
+        "live_datastore_search": _search_live_datastore(),
+        "library_profiles": profiles,
+        "active_profile_id": get_active_profile_id(),
+        "active_profile": active_profile,
+        "window_state": await storage.get_json_setting('window_state', {}),
     }
+
+
+@app.get('/api/application/window-state')
+async def application_window_state():
+    return await storage.get_json_setting('window_state', {})
+
+
+@app.post('/api/application/window-state')
+async def application_save_window_state(body: WindowStateUpdate):
+    payload = body.model_dump()
+    payload['saved_at'] = payload.get('saved_at') or datetime.utcnow().isoformat() + 'Z'
+    await storage.set_json_setting('window_state', payload)
+    return {'ok': True, 'window_state': payload}
+
+
+@app.post('/api/frontend-log')
+async def frontend_log(body: FrontendLogRequest):
+    level = str(body.level or 'info').lower().strip()
+    msg = str(body.message or '').strip() or 'frontend-log'
+    ctx = body.context or {}
+    logger = get_logger('frontend')
+    line = f"FRONTEND {level.upper()} — {msg} | {ctx}"
+    print(line, flush=True)
+    if level in {'error','exception','fatal'}:
+        logger.error('%s | %s', msg, ctx)
+    elif level in {'warning','warn'}:
+        logger.warning('%s | %s', msg, ctx)
+    else:
+        logger.info('%s | %s', msg, ctx)
+    return {'ok': True}
+
+@app.get('/api/library-profiles')
+async def application_library_profiles():
+    return {'profiles': get_library_profiles(), 'active_profile_id': get_active_profile_id(), 'active_profile': get_active_profile() or {}}
+
+
+@app.post('/api/library-profiles')
+async def application_create_library_profile(body: LibraryProfileCreateRequest):
+    name = (body.name or '').strip()
+    if not name:
+        raise HTTPException(400, 'A profile name is required')
+    storage_root = str(Path((body.storage_root or '').strip()).expanduser())
+    if not storage_root:
+        raise HTTPException(400, 'A storage folder is required')
+    target = Path(storage_root)
+    target.mkdir(parents=True, exist_ok=True)
+    cfg = load_bootstrap_config()
+    profiles = get_library_profiles()
+    if any((p.get('name') or '').strip().lower() == name.lower() for p in profiles):
+        raise HTTPException(400, 'A library profile with that name already exists')
+    profile_id = uuid.uuid4().hex[:10]
+    profile = {
+        'id': profile_id,
+        'name': name,
+        'platform': (body.platform or 'msfs2024').strip() or 'msfs2024',
+        'storage_root': str(target),
+        'created_at': datetime.utcnow().isoformat() + 'Z',
+        'updated_at': datetime.utcnow().isoformat() + 'Z',
+    }
+    if body.copy_current_data and target.resolve() != USER_DATA_DIR.resolve():
+        for child in USER_DATA_DIR.iterdir():
+            dest = target / child.name
+            if child.name.lower() == 'backend.pid':
+                continue
+            try:
+                if child.is_dir():
+                    shutil.copytree(child, dest, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(child, dest)
+            except Exception:
+                continue
+    profiles.append(profile)
+    cfg['library_profiles'] = profiles
+    if body.switch_to:
+        cfg['active_profile_id'] = profile_id
+        cfg['forced_storage_root'] = str(target)
+    save_bootstrap_config(cfg)
+    return {'ok': True, 'profile': profile, 'restart_required': bool(body.switch_to), 'active_profile_id': cfg.get('active_profile_id')}
+
+
+@app.post('/api/library-profiles/switch')
+async def application_switch_library_profile(body: LibraryProfileSwitchRequest):
+    profile_id = (body.profile_id or '').strip()
+    cfg = load_bootstrap_config()
+    profiles = get_library_profiles()
+    profile = next((p for p in profiles if p.get('id') == profile_id), None)
+    if not profile:
+        raise HTTPException(404, 'Library profile not found')
+    cfg['library_profiles'] = profiles
+    cfg['active_profile_id'] = profile_id
+    cfg['forced_storage_root'] = str(profile.get('storage_root') or '')
+    save_bootstrap_config(cfg)
+    return {'ok': True, 'profile': profile, 'restart_required': True}
 
 
 @app.post('/api/application/test-storage')
@@ -134,6 +354,214 @@ async def application_test_storage():
 @app.post('/api/application/backup')
 async def application_backup():
     return await storage.create_data_backup()
+
+
+@app.post('/api/application/backup-choose')
+async def application_backup_choose():
+    target = _native_pick_save_path(str(BACKUP_DIR), '')
+    if not target:
+        raise HTTPException(400, 'No backup destination selected')
+    return await storage.create_data_backup(destination=Path(target))
+
+
+@app.post('/api/application/pick-app-folder')
+async def application_pick_app_folder():
+    chosen = _native_pick_folder(str(USER_DATA_DIR))
+    if not chosen:
+        raise HTTPException(400, 'No folder selected')
+    return {'path': chosen}
+
+
+@app.post('/api/application/reveal-active-folder')
+async def application_reveal_active_folder():
+    if not _open_in_explorer(str(USER_DATA_DIR)):
+        raise HTTPException(500, 'Could not open the active app folder')
+    return {'ok': True, 'path': str(USER_DATA_DIR)}
+
+
+def _copy_tree_with_report(source: Path, target: Path) -> tuple[list[str], list[dict]]:
+    copied = []
+    errors = []
+    if not source.exists():
+        return copied, errors
+    for child in source.iterdir():
+        dest = target / child.name
+        try:
+            if child.is_dir():
+                shutil.copytree(child, dest, dirs_exist_ok=True)
+            else:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(child, dest)
+            copied.append(child.name)
+        except Exception as exc:
+            errors.append({'item': child.name, 'error': str(exc)})
+    return copied, errors
+
+
+def _verify_copied_items(source: Path, target: Path) -> dict:
+    report = {'ok': True, 'checked': [], 'missing': [], 'mismatched': [], 'source_exists': source.exists(), 'target_exists': target.exists()}
+    if not source.exists() or not target.exists():
+        report['ok'] = False
+        return report
+    for child in source.iterdir():
+        src = child
+        dst = target / child.name
+        entry = {'item': child.name, 'type': 'dir' if child.is_dir() else 'file'}
+        if not dst.exists():
+            report['missing'].append({'item': child.name, 'path': str(dst)})
+            report['ok'] = False
+            continue
+        if child.is_file():
+            try:
+                src_stat = child.stat()
+                dst_stat = dst.stat()
+                entry.update({'size': src_stat.st_size, 'dest_size': dst_stat.st_size})
+                if src_stat.st_size != dst_stat.st_size:
+                    report['mismatched'].append({'item': child.name, 'reason': 'size', 'source_size': src_stat.st_size, 'dest_size': dst_stat.st_size})
+                    report['ok'] = False
+                else:
+                    try:
+                        with child.open('rb') as s, dst.open('rb') as d:
+                            if s.read(4096) != d.read(4096):
+                                report['mismatched'].append({'item': child.name, 'reason': 'content_prefix'})
+                                report['ok'] = False
+                    except Exception as exc:
+                        report['mismatched'].append({'item': child.name, 'reason': f'readback: {exc}'})
+                        report['ok'] = False
+            except Exception as exc:
+                report['mismatched'].append({'item': child.name, 'reason': str(exc)})
+                report['ok'] = False
+        else:
+            src_files = [f for f in child.rglob('*') if f.is_file()]
+            dst_files = [f for f in dst.rglob('*') if f.is_file()]
+            entry.update({'source_files': len(src_files), 'dest_files': len(dst_files)})
+            if len(src_files) != len(dst_files):
+                report['mismatched'].append({'item': child.name, 'reason': 'file_count', 'source_files': len(src_files), 'dest_files': len(dst_files)})
+                report['ok'] = False
+            else:
+                for src_file in src_files:
+                    rel = src_file.relative_to(child)
+                    dst_file = dst / rel
+                    if not dst_file.exists():
+                        report['missing'].append({'item': child.name, 'path': str(dst_file)})
+                        report['ok'] = False
+                        continue
+                    try:
+                        src_stat = src_file.stat()
+                        dst_stat = dst_file.stat()
+                        if src_stat.st_size != dst_stat.st_size:
+                            report['mismatched'].append({'item': child.name, 'path': str(rel), 'reason': 'size', 'source_size': src_stat.st_size, 'dest_size': dst_stat.st_size})
+                            report['ok'] = False
+                            break
+                    except Exception as exc:
+                        report['mismatched'].append({'item': child.name, 'path': str(rel), 'reason': str(exc)})
+                        report['ok'] = False
+                        break
+        report['checked'].append(entry)
+    return report
+
+
+def _build_move_verification(target: Path) -> dict:
+    settings_info = {'path': str(target / 'settings.json'), 'exists': (target / 'settings.json').exists()}
+    if settings_info['exists']:
+        try:
+            raw = json.loads((target / 'settings.json').read_text(encoding='utf-8') or '{}')
+            settings_info['readable'] = isinstance(raw, dict)
+            settings_info['keys'] = len(raw) if isinstance(raw, dict) else 0
+        except Exception as exc:
+            settings_info['readable'] = False
+            settings_info['error'] = str(exc)
+    db_info = {'path': str(target / 'hangar.db'), 'exists': (target / 'hangar.db').exists()}
+    if db_info['exists']:
+        try:
+            import sqlite3
+            conn = sqlite3.connect(str(target / 'hangar.db'))
+            try:
+                cur = conn.execute("select name from sqlite_master where type='table'")
+                tables = sorted(r[0] for r in cur.fetchall())
+                db_info['readable'] = True
+                db_info['tables'] = tables
+            finally:
+                conn.close()
+        except Exception as exc:
+            db_info['readable'] = False
+            db_info['error'] = str(exc)
+    marker_info = {'path': str(target / 'tests' / 'storage_test_marker.json'), 'exists': (target / 'tests' / 'storage_test_marker.json').exists()}
+    if marker_info['exists']:
+        try:
+            marker_info['readable'] = isinstance(json.loads((target / 'tests' / 'storage_test_marker.json').read_text(encoding='utf-8')), dict)
+        except Exception as exc:
+            marker_info['readable'] = False
+            marker_info['error'] = str(exc)
+    ok = settings_info['exists'] == False or settings_info.get('readable', False)
+    ok = ok and (db_info['exists'] == False or db_info.get('readable', False))
+    ok = ok and (marker_info['exists'] == False or marker_info.get('readable', False))
+    return {'ok': ok, 'settings': settings_info, 'database': db_info, 'storage_marker': marker_info}
+
+
+@app.post('/api/application/set-app-folder')
+async def application_set_app_folder(body: ApplicationFolderUpdate):
+    target = Path((body.path or '').strip()).expanduser()
+    if not str(target).strip():
+        raise HTTPException(400, 'A target folder is required')
+    if not target.is_absolute():
+        raise HTTPException(400, 'Please choose an absolute folder path')
+    current_root = USER_DATA_DIR.resolve()
+    target.mkdir(parents=True, exist_ok=True)
+    same_target = target.resolve() == current_root
+    copied: list[str] = []
+    copy_errors: list[dict] = []
+    verification = {'ok': True, 'skipped': True, 'reason': 'copy not requested or target already active'}
+    old_folder_removed = False
+    old_folder_remove_error = None
+    old_folder_removal_deferred = False
+    if body.copy_current_data and not same_target:
+        copied, copy_errors = _copy_tree_with_report(current_root, target)
+        if copy_errors:
+            raise HTTPException(500, {'message': 'Copy to the new app-data folder failed.', 'copied_items': copied, 'copy_errors': copy_errors})
+        verification = _verify_copied_items(current_root, target) if body.verify_copy else {'ok': True, 'skipped': True, 'reason': 'verification disabled'}
+        move_check = _build_move_verification(target)
+        verification['move_check'] = move_check
+        if not verification.get('ok') or not move_check.get('ok'):
+            raise HTTPException(500, {'message': 'The new app-data folder could not be verified after copy.', 'copied_items': copied, 'verification': verification})
+        if body.remove_old_after_copy:
+            old_folder_removal_deferred = True
+    cfg = load_bootstrap_config()
+    profiles = get_library_profiles()
+    active_id = get_active_profile_id()
+    updated = False
+    for profile in profiles:
+        if profile.get('id') == active_id:
+            profile['storage_root'] = str(target)
+            profile['updated_at'] = datetime.utcnow().isoformat() + 'Z'
+            updated = True
+            break
+    if not updated and not profiles:
+        profiles = [{
+            'id': 'default-msfs2024',
+            'name': 'MSFS 2024',
+            'platform': 'msfs2024',
+            'storage_root': str(target),
+            'created_at': datetime.utcnow().isoformat() + 'Z',
+            'updated_at': datetime.utcnow().isoformat() + 'Z',
+        }]
+        cfg['active_profile_id'] = 'default-msfs2024'
+    cfg['library_profiles'] = profiles
+    cfg['forced_storage_root'] = str(target)
+    if old_folder_removal_deferred and not same_target:
+        cfg['pending_delete_root'] = str(current_root)
+    save_bootstrap_config(cfg)
+    return {
+        'ok': True,
+        'forced_storage_root': str(target),
+        'copied_items': copied,
+        'verification': verification,
+        'old_folder_removed': old_folder_removed,
+        'old_folder_removal_deferred': old_folder_removal_deferred,
+        'old_folder_remove_error': old_folder_remove_error,
+        'restart_required': True,
+        'active_profile_id': cfg.get('active_profile_id'),
+    }
 
 
 @app.post('/api/application/migrate-legacy')
@@ -276,8 +704,15 @@ def _path_under_any_root(path: Path, roots: list[Path]) -> bool:
     return False
 
 
+def _strip_cfg_quotes(value: str) -> str:
+    v = str(value or '').strip()
+    if len(v) >= 2 and ((v[0] == '"' and v[-1] == '"') or (v[0] == "'" and v[-1] == "'")):
+        return v[1:-1].strip()
+    return v
+
+
 def _read_cfg_fields(path: Path) -> dict:
-    wanted = {"base_container", "ui_variation", "variation", "atc_airline", "atc_flight_number", "atc_id", "atc_model", "ui_powerplant", "title", "texture", "model", "atc_type", "ui_type"}
+    wanted = {"base_container", "ui_variation", "variation", "atc_airline", "atc_flight_number", "atc_id", "atc_model", "ui_powerplant", "title", "texture", "model", "atc_type", "ui_type", "name"}
     out = {}
     try:
         for raw in path.read_text(encoding='utf-8', errors='ignore').splitlines():
@@ -292,13 +727,153 @@ def _read_cfg_fields(path: Path) -> dict:
             key = key.strip().lower()
             if key not in wanted:
                 continue
-            value = value.strip()
+            value = _strip_cfg_quotes(value.strip())
             if value and key not in out:
                 out[key] = value
     except Exception:
         return out
     return out
 
+
+def _read_ini_sections(path: Path) -> dict[str, dict[str, str]]:
+    sections: dict[str, dict[str, str]] = {}
+    try:
+        parser = configparser.ConfigParser(interpolation=None, strict=False, inline_comment_prefixes=(';','#'))
+        parser.optionxform = str.lower
+        parser.read(path, encoding='utf-8')
+        for section in parser.sections():
+            sec = {}
+            for key, value in parser.items(section):
+                sec[str(key).lower()] = _clean_cfg_value(str(value))
+            sections[str(section).lower()] = sec
+    except Exception:
+        return sections
+    return sections
+
+
+def _first_existing(paths: list[Path]) -> Optional[Path]:
+    for p in paths:
+        try:
+            if p.exists() and p.is_file():
+                return p
+        except Exception:
+            continue
+    return None
+
+
+def _addon_is_inibuilds(addon: Addon) -> bool:
+    values = [
+        str(getattr(addon, 'publisher', '') or ''),
+        str(getattr(addon, 'package_name', '') or ''),
+        str(getattr(addon, 'title', '') or ''),
+        str(getattr(getattr(addon, 'pr', None), 'package_name', '') or ''),
+        str(Path(addon.addon_path).name if getattr(addon, 'addon_path', '') else ''),
+    ]
+    joined = ' '.join(values).lower()
+    return 'inibuild' in joined
+
+
+def _addon_allows_external_liveries(addon: Addon) -> bool:
+    values = [
+        str(getattr(addon, 'publisher', '') or ''),
+        str(getattr(addon, 'package_name', '') or ''),
+        str(getattr(addon, 'title', '') or ''),
+        str(getattr(getattr(addon, 'pr', None), 'package_name', '') or ''),
+        str(Path(addon.addon_path).name if getattr(addon, 'addon_path', '') else ''),
+    ]
+    joined = ' '.join(values).lower()
+    allowed_tokens = ('inibuild', 'pmdg', 'ifly', 'tfdi', 'tfdidesign')
+    return any(tok in joined for tok in allowed_tokens)
+
+
+def _aircraft_family_tokens(values: list[str]) -> set[str]:
+    out: set[str] = set()
+    for raw in values:
+        for tok in re.split(r'[^a-z0-9]+', str(raw or '').lower()):
+            tok = tok.strip()
+            if not tok:
+                continue
+            compact = re.sub(r'[^a-z0-9]+', '', tok)
+            if not compact:
+                continue
+            m = re.match(r'^([a-z]{1,4})(\d{3,4})([a-z]{0,2})$', compact)
+            if m:
+                prefix = m.group(1)
+                digits = m.group(2)
+                out.add(prefix + digits)
+                if len(digits) >= 3:
+                    out.add(prefix + digits[:3])
+                continue
+            m = re.match(r'^(\d{3})([a-z]{0,2})$', compact)
+            if m:
+                digits = m.group(1)
+                if digits[0] == '7':
+                    out.add('7' + digits[1] + '7')
+                    out.add(digits)
+                else:
+                    out.add(digits)
+                continue
+            if any(ch.isdigit() for ch in compact):
+                out.add(compact)
+    return out
+
+
+def _addon_family_tokens(addon: Addon) -> set[str]:
+    return _aircraft_family_tokens(_package_token_candidates(addon))
+
+
+def _candidate_matches_aircraft_family(addon: Addon, *values: str) -> bool:
+    addon_tokens = _addon_family_tokens(addon)
+    if not addon_tokens:
+        return False
+    cand_tokens = _aircraft_family_tokens(list(values))
+    if not cand_tokens:
+        return False
+    return bool(addon_tokens & cand_tokens)
+
+
+def _package_token_candidates(addon: Addon) -> list[str]:
+    out = []
+    raw_values = [
+        Path(addon.addon_path).name if addon.addon_path else '',
+        addon.package_name or '',
+        addon.pr.package_name or '',
+        addon.title or '',
+    ]
+    for raw in raw_values:
+        raw = str(raw or '').strip()
+        if raw and raw not in out:
+            out.append(raw)
+    return out
+
+
+_LIVERY_IGNORE_TOKENS = {
+    'inibuilds','ini','livery','liveries','cabin','cabins','pack','packs','preset','presets','config','thumbnail','variation','aircraft','texture','textures','community','msfs','microsoft','flight','simulator'
+}
+
+
+def _model_like_tokens(values: list[str]) -> set[str]:
+    out: set[str] = set()
+    for raw in values:
+        for tok in re.split(r'[^a-z0-9]+', str(raw or '').lower()):
+            tok = tok.strip()
+            if not tok or tok in _LIVERY_IGNORE_TOKENS:
+                continue
+            if any(ch.isdigit() for ch in tok):
+                out.add(tok)
+    return out
+
+
+def _candidate_matches_aircraft_model(addon: Addon, *values: str) -> bool:
+    if _candidate_matches_aircraft_family(addon, *values):
+        return True
+    addon_tokens = _model_like_tokens(_package_token_candidates(addon))
+    if not addon_tokens:
+        return False
+    candidate_tokens = _model_like_tokens(list(values))
+    if not candidate_tokens:
+        return False
+    return bool(addon_tokens & candidate_tokens)
 
 
 def _common_prefix_token_count(a: str, b: str) -> int:
@@ -367,46 +942,410 @@ def _collect_livery_thumbnail_candidates(root: Path) -> list[Path]:
         if not p.is_file() or p.suffix.lower() not in exts:
             continue
         nm = p.name.lower()
-        if nm in {'thumbnail.png', 'thumbnail.jpg', 'thumbnail.jpeg', 'thumbnail.webp'} or (p.parent.name.lower() == 'thumbnail' and 'thumbnail' in nm):
+        if nm in {'thumbnail.png', 'thumbnail.jpg', 'thumbnail.jpeg', 'thumbnail.webp', 'thumbnail_variation.png'} or (p.parent.name.lower() == 'thumbnail' and 'thumbnail' in nm):
             out.append(p)
     return out
 
 
-def _match_livery_to_aircraft(top_parent: str, cfg: dict, addon: Addon) -> bool:
-    package_candidates = []
-    for raw in [Path(addon.addon_path).name if addon.addon_path else '', addon.package_name or '', addon.pr.package_name or '']:
-        raw = str(raw or '').strip()
-        if raw and raw not in package_candidates:
-            package_candidates.append(raw)
-    if not package_candidates:
+def _strip_cfg_quotes(value: str) -> str:
+    raw = str(value or '').strip()
+    if len(raw) >= 2 and ((raw[0] == '"' and raw[-1] == '"') or (raw[0] == "'" and raw[-1] == "'")):
+        return raw[1:-1].strip()
+    return raw
+
+
+def _clean_cfg_value(value: str) -> str:
+    raw = str(value or '')
+    out = []
+    quote = ''
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if quote:
+            if ch == quote:
+                quote = ''
+            out.append(ch)
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch in (';', '#'):
+            break
+        out.append(ch)
+        i += 1
+    return _strip_cfg_quotes(''.join(out).strip())
+
+def _parse_aircraft_cfg_variants(path: Path) -> tuple[dict[str, str], list[dict[str, str]]]:
+    general: dict[str, str] = {}
+    variants: list[dict[str, str]] = []
+    current_section = ''
+    current_variant: dict[str, str] | None = None
+    try:
+        for raw in path.read_text(encoding='utf-8', errors='ignore').splitlines():
+            line = raw.strip()
+            if not line or line.startswith(';') or line.startswith('#') or line.startswith('//'):
+                continue
+            if line.startswith('[') and line.endswith(']'):
+                sec = line[1:-1].strip().lower()
+                current_section = sec
+                if sec == 'general':
+                    current_variant = None
+                elif sec.startswith('fltsim.'):
+                    current_variant = {'section': sec}
+                    variants.append(current_variant)
+                else:
+                    current_variant = None
+                continue
+            if '=' not in line:
+                continue
+            key, value = line.split('=', 1)
+            key = key.strip().lower()
+            value = _clean_cfg_value(value)
+            if current_section == 'general':
+                if value:
+                    general[key] = value
+            elif current_section.startswith('fltsim.') and current_variant is not None:
+                current_variant[key] = value
+    except Exception:
+        return general, variants
+    return general, variants
+
+
+def _display_title_for_internal_variant(is_airliner: bool, general_title: str, ui_variation: str, package_name: str, texture_token: str) -> str:
+    general_title = _clean_cfg_value(general_title)
+    ui_variation = _clean_cfg_value(ui_variation)
+    texture_token = _clean_cfg_value(texture_token)
+    if is_airliner:
+        return ui_variation or general_title or package_name or texture_token or 'Livery'
+    return general_title or ui_variation or package_name or texture_token or 'Livery'
+
+
+def _secondary_variant_for_internal_variant(is_airliner: bool, general_title: str, ui_variation: str, reg: str, texture_token: str) -> str:
+    ui_variation = _clean_cfg_value(ui_variation)
+    reg = _clean_cfg_value(reg)
+    texture_token = _clean_cfg_value(texture_token)
+    if is_airliner:
+        return ''
+    return ui_variation or reg or texture_token or ''
+
+
+def _looks_like_registration(value: str) -> bool:
+    v = _clean_cfg_value(value)
+    if not v:
         return False
-    base_raw = str(cfg.get('base_container', '') or '').strip()
-    title_raw = str(cfg.get('title', '') or '').strip()
-    variation_raw = str(cfg.get('ui_variation', '') or cfg.get('variation', '') or '').strip()
-    for cand in package_candidates:
-        cand_norm = _norm_key(cand)
-        top_norm = _norm_key(top_parent)
-        base_norm = _norm_key(base_raw)
-        if cand_norm and top_norm == cand_norm:
-            return True
-        if cand_norm and top_norm.startswith(cand_norm):
-            return True
-        if base_norm and (base_norm == cand_norm or cand_norm in base_norm or base_norm in cand_norm):
-            return True
-        prefix = _common_prefix_token_count(top_parent, cand)
-        cand_tokens = [t for t in re.split(r'[-_\s]+', cand.lower()) if t]
-        if cand_tokens and prefix >= min(len(cand_tokens), 3):
-            return True
-        if title_raw and cand_norm and cand_norm in _norm_key(title_raw):
-            return True
-        if variation_raw and cand_norm and cand_norm in _norm_key(variation_raw):
+    return bool(re.fullmatch(r'[A-Za-z0-9-]{3,10}', v))
+
+
+def _find_child_dir_case_insensitive(base: Path, name: str) -> Optional[Path]:
+    if not base.exists() or not base.is_dir():
+        return None
+    low = str(name or '').strip().lower()
+    for child in base.iterdir():
+        try:
+            if child.is_dir() and child.name.strip().lower() == low:
+                return child
+        except Exception:
+            continue
+    return None
+
+
+def _norm_fs_token(value: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '', str(value or '').strip().lower())
+
+
+def _resolve_texture_dir(base_dir: Path, texture_token: str) -> Optional[Path]:
+    token = str(texture_token or '').strip()
+    if not token or not base_dir.exists() or not base_dir.is_dir():
+        return None
+    candidates = []
+    if token.lower().startswith('texture.'):
+        candidates.append(token)
+    else:
+        candidates.append(f'texture.{token}')
+        candidates.append(token)
+    seen = set()
+    for cand in candidates:
+        match = _find_child_dir_case_insensitive(base_dir, cand)
+        if match:
+            return match
+        seen.add(_norm_fs_token(cand))
+    try:
+        for child in base_dir.rglob('*'):
+            if not child.is_dir():
+                continue
+            nm = _norm_fs_token(child.name)
+            if nm in seen:
+                return child
+    except Exception:
+        pass
+    return None
+
+
+def _find_thumbnail_in_dir(base_dir: Optional[Path]) -> Optional[Path]:
+    if not base_dir or not base_dir.exists() or not base_dir.is_dir():
+        return None
+    direct = _first_existing([
+        base_dir / 'thumbnail.jpg', base_dir / 'thumbnail.jpeg', base_dir / 'thumbnail.png', base_dir / 'thumbnail.webp',
+        base_dir / 'Thumbnail.jpg', base_dir / 'Thumbnail.jpeg', base_dir / 'Thumbnail.png', base_dir / 'Thumbnail.webp',
+    ])
+    if direct:
+        return direct
+    try:
+        for child in base_dir.iterdir():
+            if child.is_file() and child.suffix.lower() in {'.jpg','.jpeg','.png','.webp'} and child.name.lower().startswith('thumbnail'):
+                return child
+    except Exception:
+        pass
+    return None
+
+
+def _ui_variation_contains_model(icao_model: str, ui_variation: str) -> bool:
+    model = _strip_cfg_quotes(icao_model)
+    variation = _strip_cfg_quotes(ui_variation)
+    if not model or not variation:
+        return False
+    model_norm = _norm_key(model)
+    variation_norm = _norm_key(variation)
+    if model_norm and model_norm in variation_norm:
+        return True
+    tokens = set()
+    tokens.update(_aircraft_family_tokens([model]))
+    tokens.update(_model_like_tokens([model]))
+    for tok in tokens:
+        compact = _norm_key(tok)
+        if compact and compact in variation_norm:
             return True
     return False
+
+
+def _internal_livery_header_and_secondary(general_title: str, ui_variation: str, atc_airline: str, reg: str, texture_token: str) -> tuple[str, str]:
+    general_title = _clean_cfg_value(general_title)
+    ui_variation = _clean_cfg_value(ui_variation)
+    atc_airline = _clean_cfg_value(atc_airline)
+    reg = _clean_cfg_value(reg)
+    texture_token = _clean_cfg_value(texture_token)
+    if ui_variation and _ui_variation_contains_model(general_title, ui_variation):
+        header = ui_variation
+        secondary = reg if _looks_like_registration(reg) else ''
+        return header or general_title or texture_token, secondary
+    header = general_title or ui_variation or texture_token or reg
+    secondary = ui_variation or (reg if _looks_like_registration(reg) else '') or texture_token
+    if _norm_key(secondary) == _norm_key(header):
+        secondary = reg if _looks_like_registration(reg) and _norm_key(reg) != _norm_key(header) else ''
+    return header, secondary
+
+
+def _read_manifest_match_values(package_root: Path) -> list[str]:
+    values = [package_root.name]
+    try:
+        mf = package_root / 'manifest.json'
+        if mf.exists() and mf.is_file():
+            import json as _json
+            raw = _json.loads(mf.read_text(encoding='utf-8', errors='ignore') or '{}')
+            for key in ('title','package_name','creator','manufacturer','name'):
+                val = str(raw.get(key) or '').strip()
+                if val and val not in values:
+                    values.append(val)
+            content = raw.get('content_type')
+            if isinstance(content, str) and content.strip() and content not in values:
+                values.append(content.strip())
+    except Exception:
+        pass
+    return values
+
+
+def _external_package_matches_aircraft(addon: Addon, package_root: Path, *values: str) -> bool:
+    candidate_values = list(_read_manifest_match_values(package_root)) + [str(v or '') for v in values]
+    if _candidate_matches_aircraft_model(addon, *candidate_values):
+        return True
+    addon_title_norm = _norm_key(str(getattr(addon, 'title', '') or ''))
+    for raw in candidate_values:
+        norm = _norm_key(str(raw or ''))
+        if addon_title_norm and norm and (addon_title_norm in norm or norm in addon_title_norm):
+            return True
+    return False
+
+
+def _addon_is_airliner(addon: Addon) -> bool:
+    values = [
+        str(getattr(addon, 'sub', '') or ''),
+        str(getattr(addon, 'type', '') or ''),
+        str(getattr(addon, 'title', '') or ''),
+        str(getattr(addon, 'package_name', '') or ''),
+    ]
+    joined = ' '.join(values).lower()
+    if 'airliner' in joined:
+        return True
+    tokens = {'a220','a300','a310','a318','a319','a320','a321','a330','a340','a350','a380','b707','b717','b727','b737','b747','b757','b767','b777','b787','rj','146','crj','atr','q400','md11','md-11','e170','e175','e190','e195','f28','f70','f100'}
+    norm = _norm_key(joined)
+    return any(_norm_key(tok) in norm for tok in tokens)
+
+
+def _scan_internal_liveries_for_aircraft(addon: Addon, community_dir: Optional[Path]) -> list[dict]:
+    addon_root = Path(getattr(addon, 'addon_path', '') or '')
+    if not addon_root.exists():
+        return []
+    airplanes_root = addon_root / 'SimObjects' / 'Airplanes'
+    if not airplanes_root.exists() or not airplanes_root.is_dir():
+        return []
+    results = []
+    seen = set()
+    is_airliner = _addon_is_airliner(addon)
+    direct_aircraft_dirs = [p for p in airplanes_root.iterdir() if p.is_dir()]
+    for aircraft_dir in direct_aircraft_dirs:
+        cfg_path = aircraft_dir / 'aircraft.cfg'
+        if not cfg_path.exists() or not cfg_path.is_file():
+            continue
+        try:
+            cfg_path.resolve().relative_to(addon_root.resolve())
+        except Exception:
+            continue
+        package_name = aircraft_dir.name
+        general, variants = _parse_aircraft_cfg_variants(cfg_path)
+        general_title = _clean_cfg_value(general.get('icao_model', '') or general.get('ui_type', '') or general.get('title', '') or package_name)
+        powerplant = _clean_cfg_value(general.get('icao_engine_type', '') or '')
+        for fields in variants:
+            sec_low = str(fields.get('section') or '').strip().lower()
+            texture_token = _clean_cfg_value(fields.get('texture', '') or '')
+            ui_variation = _clean_cfg_value(fields.get('ui_variation', '') or '')
+            atc_airline = _clean_cfg_value(fields.get('atc_airline', '') or fields.get('icao_airline', '') or '')
+            reg = _clean_cfg_value(fields.get('atc_id', '') or '')
+            header = _display_title_for_internal_variant(is_airliner, general_title, ui_variation, package_name, texture_token)
+            display_variant = _secondary_variant_for_internal_variant(is_airliner, general_title, ui_variation, reg, texture_token)
+            texture_dir = _resolve_texture_dir(aircraft_dir, texture_token) if texture_token else None
+            if not texture_dir and reg:
+                texture_dir = _resolve_texture_dir(aircraft_dir, reg)
+            if not texture_dir:
+                ui_thumb = _clean_cfg_value(fields.get('ui_thumbnailfile', '') or '')
+                if ui_thumb:
+                    try:
+                        cand = (aircraft_dir / ui_thumb).resolve()
+                        if cand.exists() and cand.is_file():
+                            texture_dir = cand.parent
+                    except Exception:
+                        pass
+            thumb = _find_thumbnail_in_dir(texture_dir)
+            item_id = hashlib.md5((str(cfg_path.resolve()) + '|' + sec_low + '|' + package_name + '|' + reg + '|' + texture_token).encode('utf-8', 'ignore')).hexdigest()
+            subject_dir = texture_dir or aircraft_dir
+            item = {
+                'id': item_id,
+                'name': header,
+                'airline': atc_airline or '',
+                'variant': display_variant or '',
+                'year': '',
+                'flight_number': '',
+                'model': general_title or getattr(addon, 'title', '') or package_name,
+                'powerplant': powerplant,
+                'base_container': '',
+                'category': 'Livery',
+                'thumbnail_path': str(thumb.resolve()) if thumb else '',
+                'package_root': f'internal:{addon.id}:{package_name}',
+                'package_name': package_name,
+                'subject_dir': str(subject_dir.resolve()),
+                'config_path': str(cfg_path.resolve()),
+                'enabled': False,
+                'fav': False,
+                'scanned_at': _current_iso_timestamp(),
+                'parser': 'internal-variant',
+                'title_override': header,
+                'internal': True,
+                'is_airliner': is_airliner,
+                'texture_token': texture_token,
+                'debug_thumb': str(thumb.resolve()) if thumb else '',
+            }
+            key = (item['package_root'] + '|' + sec_low + '|' + texture_token + '|' + reg).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(item)
+    results.sort(key=lambda x: ((x.get('package_name') or '').lower(), (x.get('title_override') or x.get('name') or '').lower(), (x.get('variant') or '').lower()))
+    return results
+
+
+def _scan_inibuilds_livery_candidates_for_aircraft(addon: Addon, liveries_root: Path) -> list[dict]:
+    if not liveries_root.exists():
+        return []
+    results = []
+    seen = set()
+    family_tokens = _inibuilds_family_tokens_for_addon(addon)
+    if not family_tokens:
+        return []
+    for package_root in [p for p in liveries_root.iterdir() if p.is_dir()]:
+        pkg_name_lower = package_root.name.lower()
+        if 'inibuild' not in pkg_name_lower:
+            continue
+        if not _path_matches_inibuilds_family(addon, package_root.name):
+            continue
+        # Cabin pack structure: presets/**/config/aircraft.cfg with thumbnail/thumbnail_variation.png
+        for cfg_path in package_root.rglob('config/aircraft.cfg'):
+            lower_parts = [x.lower() for x in cfg_path.parts]
+            if 'presets' not in lower_parts:
+                continue
+            variation_root = cfg_path.parent.parent
+            thumb = _first_existing([variation_root / 'thumbnail' / 'thumbnail_variation.png', package_root / 'thumbnail' / 'thumbnail_variation.png'])
+            cfg = _read_cfg_fields(cfg_path)
+            extra_names = [package_root.name, variation_root.name]
+            if not _external_package_matches_aircraft(addon, package_root, package_root.name, variation_root.name, cfg.get('base_container',''), cfg.get('title',''), cfg.get('ui_variation',''), cfg.get('variation','')):
+                continue
+            key = ('cabin|' + str(cfg_path.resolve())).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append({
+                'kind': 'cabin',
+                'package_root': package_root,
+                'subject_dir': variation_root,
+                'cfg_path': cfg_path,
+                'cfg': cfg,
+                'thumb': thumb,
+            })
+        # Separate livery packages with lowest livery.cfg and thumbnail/thumbnail.png
+        for livery_cfg in package_root.rglob('livery.cfg'):
+            subject_dir = livery_cfg.parent
+            thumb = _first_existing([subject_dir / 'thumbnail' / 'thumbnail.png', package_root / 'thumbnail' / 'thumbnail.png'])
+            sections = _read_ini_sections(livery_cfg)
+            cfg = {}
+            cfg.update(_read_cfg_fields(livery_cfg))
+            cfg['name'] = sections.get('general', {}).get('name', '') or cfg.get('name', '')
+            extra_names = [package_root.name, subject_dir.name]
+            if not _external_package_matches_aircraft(addon, package_root, package_root.name, subject_dir.name, cfg.get('base_container',''), cfg.get('title',''), cfg.get('name','')):
+                continue
+            key = ('livery|' + str(livery_cfg.resolve())).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append({
+                'kind': 'livery',
+                'package_root': package_root,
+                'subject_dir': subject_dir,
+                'cfg_path': livery_cfg,
+                'cfg': cfg,
+                'thumb': thumb,
+            })
+    return results
 
 
 def _livery_scan_candidates_for_aircraft(addon: Addon, liveries_root: Path) -> list[dict]:
     if not liveries_root.exists():
         return []
+    if _addon_is_inibuilds(addon):
+        filtered = []
+        seen = set()
+        for item in _scan_inibuilds_livery_candidates_for_aircraft(addon, liveries_root):
+            pkg_name = str(item.get('package_root').name if item.get('package_root') else '')
+            subject_name = str(item.get('subject_dir').name if item.get('subject_dir') else '')
+            cfg = item.get('cfg') or {}
+            if not _candidate_matches_aircraft_family(addon, pkg_name, subject_name, cfg.get('base_container',''), cfg.get('title',''), cfg.get('ui_variation',''), cfg.get('variation',''), cfg.get('name','')):
+                continue
+            key = (str(item.get('kind') or '') + '|' + str(item['subject_dir'].resolve())).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            filtered.append(item)
+        return filtered
     results = []
     seen = set()
     thumbs = _collect_livery_thumbnail_candidates(liveries_root)
@@ -420,7 +1359,7 @@ def _livery_scan_candidates_for_aircraft(addon: Addon, liveries_root: Path) -> l
         package_root = liveries_root / rel.parts[0]
         subject_dir = thumb.parent.parent if thumb.parent.name.lower() == 'thumbnail' else thumb.parent
         cfg_path, cfg = _find_livery_config(subject_dir, package_root)
-        if not _match_livery_to_aircraft(rel.parts[0], cfg, addon):
+        if not _external_package_matches_aircraft(addon, package_root, rel.parts[0], subject_dir.name, cfg.get('base_container',''), cfg.get('title',''), cfg.get('ui_variation',''), cfg.get('variation',''), cfg.get('name','')):
             continue
         key = str(subject_dir.resolve()).lower()
         if key in seen:
@@ -433,13 +1372,19 @@ def _livery_scan_candidates_for_aircraft(addon: Addon, liveries_root: Path) -> l
             'subject_dir': subject_dir,
             'cfg_path': cfg_path,
             'cfg': cfg,
+            'kind': 'generic',
         })
+    # Prefer iniBuilds-specific candidates when present for iniBuilds aircraft, but also include them generally because they represent concrete packages.
+    for item in _scan_inibuilds_livery_candidates_for_aircraft(addon, liveries_root):
+        key = (item['kind'] + '|' + str(item['subject_dir'].resolve())).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(item)
     return results
 
 
 def _scan_liveries_for_aircraft(addon: Addon, liveries_root: Path, community_dir: Optional[Path]) -> list[dict]:
-    if not liveries_root.exists():
-        return []
     existing_map = {}
     try:
         for ex in list(getattr(addon.usr, 'liveries', []) or []):
@@ -450,66 +1395,97 @@ def _scan_liveries_for_aircraft(addon: Addon, liveries_root: Path, community_dir
         existing_map = {}
     results = []
     seen = set()
-    candidates = _livery_scan_candidates_for_aircraft(addon, liveries_root)
-    for cand in candidates:
-        thumb = cand['thumb']
-        package_root = cand['package_root']
-        subject_dir = cand['subject_dir']
-        cfg_path = cand['cfg_path']
-        cfg = cand['cfg']
-        airline = str(cfg.get('atc_airline', '') or '').strip()
-        raw_variant = str(cfg.get('ui_variation', '') or cfg.get('variation', '') or cfg.get('title', '') or '').strip()
-        variant, year = _parse_livery_variant_parts(raw_variant)
-        item_key = (str(package_root.resolve()) + '|' + variant + '|' + airline + '|' + str(thumb.resolve())).lower()
+    for item in _scan_internal_liveries_for_aircraft(addon, community_dir):
+        item_key = (item.get('package_root','') + '|' + item.get('variant','') + '|' + item.get('airline','') + '|' + item.get('thumbnail_path','')).lower()
         if item_key in seen:
             continue
         seen.add(item_key)
-        existing = existing_map.get(item_key, {})
-        item_id = existing.get('id') or hashlib.md5((str(package_root.resolve())+'|'+str(subject_dir.resolve())+'|'+variant+'|'+str(thumb.resolve())).encode('utf-8', 'ignore')).hexdigest()
-        enabled = bool(community_dir and linker.find_link_in_community(community_dir, package_root))
-        lower_subject = str(subject_dir).lower()
-        category = 'Cabin Pack' if ('cabin' in lower_subject or 'preset' in lower_subject) else 'Livery'
-        results.append({
-            'id': item_id,
-            'name': airline or variant or subject_dir.name,
-            'airline': airline or subject_dir.parent.name.replace('_',' ').replace('-',' '),
-            'variant': variant or raw_variant or subject_dir.name,
-            'year': year,
-            'flight_number': cfg.get('atc_flight_number', ''),
-            'model': cfg.get('atc_model', ''),
-            'powerplant': cfg.get('ui_powerplant', ''),
-            'base_container': cfg.get('base_container', ''),
-            'category': category,
-            'thumbnail_path': str(thumb.resolve()),
-            'package_root': str(package_root.resolve()),
-            'subject_dir': str(subject_dir.resolve()),
-            'config_path': str(cfg_path.resolve()) if cfg_path else '',
-            'enabled': enabled,
-            'fav': bool(existing.get('fav', False)),
-            'scanned_at': _current_iso_timestamp(),
-        })
-    results.sort(key=lambda x: ((x.get('airline') or '').lower(), (x.get('variant') or '').lower(), x.get('name') or ''))
+        results.append(item)
+    if not liveries_root.exists() or not _addon_allows_external_liveries(addon):
+        results.sort(key=lambda x: ((x.get('category') or '').lower(), (x.get('package_name') or '').lower(), (x.get('variant') or '').lower(), x.get('name') or ''))
+        return results
+    candidates = _livery_scan_candidates_for_aircraft(addon, liveries_root)
+    for cand in candidates:
+        thumb = cand.get('thumb')
+        package_root = cand['package_root']
+        subject_dir = cand['subject_dir']
+        cfg_path = cand.get('cfg_path')
+        cfg = cand.get('cfg') or {}
+        kind = str(cand.get('kind') or 'generic').lower()
+        if kind == 'cabin':
+            variant = str(cfg.get('ui_variation', '') or cfg.get('variation', '') or subject_dir.name).strip()
+            item = _build_livery_item(existing_map, package_root, subject_dir, thumb, cfg_path, cfg, addon=addon, category='Cabin Pack', name=variant or 'Cabin Pack', airline='', variant=variant, package_name=package_root.name, parser='inibuilds-cabin', extra={'title_override': variant or 'Cabin Pack'}, community_dir=community_dir)
+        elif kind == 'livery':
+            airline = str(cfg.get('name', '') or '').strip()
+            item = _build_livery_item(existing_map, package_root, subject_dir, thumb, cfg_path, cfg, addon=addon, category='Livery', name=airline or subject_dir.name, airline=airline or subject_dir.name, variant='', package_name=package_root.name, parser='inibuilds-livery', extra={'title_override': airline or subject_dir.name}, community_dir=community_dir)
+        else:
+            airline = str(cfg.get('atc_airline', '') or '').strip()
+            raw_variant = str(cfg.get('ui_variation', '') or cfg.get('variation', '') or cfg.get('title', '') or '').strip()
+            variant, year = _parse_livery_variant_parts(raw_variant)
+            lower_subject = str(subject_dir).lower()
+            category = 'Cabin Pack' if ('cabin' in lower_subject or 'preset' in lower_subject) else 'Livery'
+            item = _build_livery_item(existing_map, package_root, subject_dir, thumb, cfg_path, cfg, addon=addon, category=category, name=airline or variant or subject_dir.name, airline=airline or subject_dir.parent.name.replace('_',' ').replace('-',' '), variant=variant or raw_variant or subject_dir.name, year=year, package_name=package_root.name, parser='generic', community_dir=community_dir)
+        item_key = (item['package_root'] + '|' + item.get('variant','') + '|' + item.get('airline','') + '|' + item.get('thumbnail_path','')).lower()
+        if item_key in seen:
+            continue
+        seen.add(item_key)
+        results.append(item)
+    results.sort(key=lambda x: ((x.get('category') or '').lower(), (x.get('airline') or x.get('name') or '').lower(), (x.get('variant') or '').lower(), x.get('package_name') or ''))
     return results
 
 
+class LiveryToggleRequest(BaseModel):
+    package_root: str
+    enabled: bool
+
+
+class LiveryBatchToggleRequest(BaseModel):
+    package_roots: list[str] = []
+    enabled: bool = True
+
+
+
+
+@app.get('/api/airport-overlay/{addon_id}')
+async def airport_overlay(addon_id: str):
+    addon = await storage.get_addon(addon_id)
+    if not addon:
+        raise HTTPException(404, 'Addon not found')
+    code = str(getattr(getattr(addon, 'rw', None), 'icao', '') or getattr(addon, 'icao', '') or '')
+    return overlay_stub_for_airport(addon.id, code)
 @app.get('/api/livery-thumb')
 async def livery_thumb(path: str):
     p = Path(path)
     roots = [USER_DATA_DIR]
     addons_root = await storage.get_setting('addons_root')
     liveries_root = await storage.get_setting('liveries_root')
+    community_dir = await storage.get_setting('community_dir')
     if addons_root:
         roots.append(Path(addons_root))
     if liveries_root:
         roots.append(Path(liveries_root))
-    if not p.exists() or not _path_under_any_root(p, roots):
+    if community_dir:
+        roots.append(Path(community_dir))
+    try:
+        for addon in await storage.get_addons():
+            ap = str(getattr(addon, 'addon_path', '') or '').strip()
+            if ap:
+                roots.append(Path(ap))
+    except Exception:
+        pass
+    dedup=[]; seen=set()
+    for root in roots:
+        try:
+            rr=str(Path(root).resolve()).lower()
+        except Exception:
+            continue
+        if rr in seen:
+            continue
+        seen.add(rr)
+        dedup.append(Path(root))
+    if not p.exists() or not _path_under_any_root(p, dedup):
         raise HTTPException(404, 'No image')
     return FileResponse(str(p))
-
-
-class LiveryToggleRequest(BaseModel):
-    package_root: str
-    enabled: bool
 
 
 @app.post('/api/liveries/toggle')
@@ -524,6 +1500,34 @@ async def toggle_livery(body: LiveryToggleRequest):
     return {'ok': True, 'message': msg, 'enabled': enabled, 'package_root': body.package_root}
 
 
+@app.post('/api/liveries/toggle-batch')
+async def toggle_livery_batch(body: LiveryBatchToggleRequest):
+    community_dir = await storage.get_setting('community_dir')
+    if not community_dir:
+        raise HTTPException(400, 'Community folder not set')
+    roots = []
+    seen = set()
+    for raw in list(body.package_roots or []):
+        raw = str(raw or '').strip()
+        if not raw:
+            continue
+        low = raw.lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        roots.append(raw)
+    if not roots:
+        raise HTTPException(400, 'No livery packages were selected')
+    results = []
+    for root in roots:
+        ok, msg = linker.toggle_addon(root, community_dir, body.enabled)
+        enabled = linker.find_link_in_community(Path(community_dir), Path(root)) if ok else False
+        results.append({'package_root': root, 'ok': bool(ok), 'message': msg, 'enabled': enabled})
+    failed = [r for r in results if not r['ok']]
+    if failed:
+        raise HTTPException(500, '; '.join(r.get('message') or 'Failed' for r in failed[:3]))
+    return {'ok': True, 'count': len(results), 'enabled': bool(body.enabled), 'results': results}
+
 
 class LiveryRemoveRequest(BaseModel):
     ids: list[str] = []
@@ -537,12 +1541,13 @@ async def scan_liveries_preview(addon_id: str):
     if addon.type != 'Aircraft':
         raise HTTPException(400, 'Livery scanning is only available for aircraft add-ons.')
     liveries_root = await storage.get_setting('liveries_root')
-    if not liveries_root:
-        raise HTTPException(400, 'Set the Liveries Folder in Settings first.')
-    root = Path(liveries_root)
-    if not root.exists():
-        raise HTTPException(400, 'Configured Liveries Folder does not exist.')
-    candidates = _livery_scan_candidates_for_aircraft(addon, root)
+    candidates = []
+    if liveries_root:
+        root = Path(liveries_root)
+        if root.exists():
+            candidates.extend(_livery_scan_candidates_for_aircraft(addon, root))
+    community_dir = await storage.get_setting('community_dir')
+    internal_items = _scan_internal_liveries_for_aircraft(addon, Path(community_dir) if community_dir else None)
     package_names = []
     seen = set()
     for cand in candidates:
@@ -550,6 +1555,11 @@ async def scan_liveries_preview(addon_id: str):
         if name not in seen:
             seen.add(name)
             package_names.append(name)
+    if internal_items:
+        label = f"{getattr(getattr(addon, 'pr', None), 'package_name', '') or addon.package_name or Path(addon.addon_path).name} (built-in variants)"
+        if label not in seen:
+            seen.add(label)
+            package_names.append(label)
     return {'ok': True, 'candidate_count': len(package_names), 'candidate_packages': package_names[:200]}
 
 
@@ -576,13 +1586,17 @@ async def scan_liveries(addon_id: str):
     if addon.type != 'Aircraft':
         raise HTTPException(400, 'Livery scanning is only available for aircraft add-ons.')
     liveries_root = await storage.get_setting('liveries_root')
-    if not liveries_root:
-        raise HTTPException(400, 'Set the Liveries Folder in Settings first.')
-    root = Path(liveries_root)
-    if not root.exists():
-        raise HTTPException(400, 'Configured Liveries Folder does not exist.')
     community_dir = await storage.get_setting('community_dir')
-    items = _scan_liveries_for_aircraft(addon, root, Path(community_dir) if community_dir else None)
+    items = []
+    if liveries_root:
+        root = Path(liveries_root)
+        if root.exists():
+            items.extend(_scan_liveries_for_aircraft(addon, root, Path(community_dir) if community_dir else None))
+        else:
+            items.extend(_scan_internal_liveries_for_aircraft(addon, Path(community_dir) if community_dir else None))
+    else:
+        items.extend(_scan_internal_liveries_for_aircraft(addon, Path(community_dir) if community_dir else None))
+    items = _sanitize_inibuilds_liveries(addon, items)
     addon.usr.liveries = items
     await storage.upsert_addon(addon)
     return {'ok': True, 'count': len(items), 'items': items}
@@ -632,6 +1646,14 @@ async def get_addon(addon_id: str):
         raise HTTPException(404)
     synced = await _sync_enabled_state_from_community({addon.id: addon})
     addon = synced.get(addon.id, addon)
+    original_liveries = list(getattr(addon.usr, 'liveries', []) or [])
+    cleaned_liveries = _sanitize_inibuilds_liveries(addon, original_liveries)
+    if cleaned_liveries != original_liveries:
+        addon.usr.liveries = cleaned_liveries
+        try:
+            await storage.update_addon_user_data(addon.id, {'liveries': cleaned_liveries})
+        except Exception:
+            pass
     return addon.to_frontend_dict()
 
 class UserDataUpdate(BaseModel):
@@ -2156,8 +3178,18 @@ async def map_resolve_addons_coords(body: MapResolveBatchRequest):
 
 # --- Research helpers ---
 
+_MODERN_BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+
 def _fetch_url(url: str, timeout: int = 30) -> tuple[str, str]:
-    resp = requests.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0 MSFSHangar/2.0", "Accept-Language": "en-US,en;q=0.9"})
+    resp = requests.get(url, timeout=timeout, headers=_MODERN_BROWSER_HEADERS)
     resp.raise_for_status()
     content_type = resp.headers.get("content-type", "")
     if "text" in content_type or "html" in content_type:
@@ -2431,23 +3463,37 @@ def _rank_results(query: str, results: list[dict], context: str = 'web') -> list
     return ranked
 
 
-def _search_bing(query: str, first: int = 1, count: int = 24, context: str = 'web') -> list[dict]:
-    url = f"https://www.bing.com/search?q={quote(query)}&setlang=en-US&cc=US&mkt=en-US&count={count}&first={first}"
-    html, _ = _fetch_url(url, timeout=4)
+def _search_google(query: str, count: int = 24, context: str = 'web') -> list[dict]:
+    url = f"https://www.google.com/search?hl=en&gl=us&pws=0&num={count}&q={quote(query)}"
+    html, _ = _fetch_url(url, timeout=5)
     soup = BeautifulSoup(html, "html.parser")
     out = []
     seen = set()
-    for node in soup.select("li.b_algo"):
-        a = node.select_one("h2 a")
-        if not a:
+    for a in soup.select('a[href]'):
+        href = a.get('href') or ''
+        if href.startswith('/url?'):
+            qs = parse_qs(urlparse(href).query)
+            href = unquote((qs.get('q') or [''])[0])
+        href = _clean_result_url(href)
+        if not href.startswith('http'):
             continue
-        href = _clean_result_url(a.get("href") or "")
-        title = a.get_text(" ", strip=True)
-        snippet_el = node.select_one(".b_caption p")
-        snippet = snippet_el.get_text(" ", strip=True) if snippet_el else ""
-        if href.startswith("http") and title and href not in seen:
-            seen.add(href)
-            out.append({"title": title, "url": href, "snippet": snippet, "source": "Bing"})
+        host = (urlparse(href).netloc or '').lower()
+        if 'google.' in host:
+            continue
+        title = a.get_text(' ', strip=True)
+        if not title:
+            h3 = a.select_one('h3')
+            title = h3.get_text(' ', strip=True) if h3 else ''
+        if not title or href in seen:
+            continue
+        snippet = ''
+        card = a.find_parent('div')
+        if card:
+            snippet = card.get_text(' ', strip=True)
+            if title and snippet.startswith(title):
+                snippet = snippet[len(title):].strip(' -–—:')
+        seen.add(href)
+        out.append({'title': title, 'url': href, 'snippet': snippet[:300], 'source': 'Google'})
         if len(out) >= count:
             break
     return out
@@ -2666,7 +3712,7 @@ def _lookup_addon_product_meta_sync(publisher: str, title: str) -> dict:
     seen = set()
     bad_hosts = {'youtube.com','www.youtube.com','bing.com','www.bing.com','duckduckgo.com','html.duckduckgo.com','lite.duckduckgo.com','google.com','www.google.com'}
     for variant in variants:
-        for fn in (lambda v=variant: _search_duckduckgo(v, 'research'), lambda v=variant: _search_bing(v, 1, 10, 'research')):
+        for fn in (lambda v=variant: _search_google(v, 10, 'research'), lambda v=variant: _search_duckduckgo(v, 'research')):
             try:
                 for r in fn() or []:
                     url = _clean_result_url(r.get('url') or '')
@@ -3797,7 +4843,7 @@ def _lookup_aircraft_source_sync(manufacturer: str, model: str, fallback_title: 
     seen = set()
     bad_hosts = {'youtube.com','www.youtube.com','bing.com','www.bing.com','duckduckgo.com','html.duckduckgo.com','lite.duckduckgo.com','google.com','www.google.com'}
     for variant in variants:
-        for fn in (lambda v=variant: _search_duckduckgo(v, 'research'), lambda v=variant: _search_bing(v, 1, 10, 'research')):
+        for fn in (lambda v=variant: _search_google(v, 10, 'research'), lambda v=variant: _search_duckduckgo(v, 'research')):
             try:
                 for r in fn() or []:
                     url = _clean_result_url(r.get('url') or '')
@@ -4527,8 +5573,8 @@ async def research_search(
 
         tasks = []
         for variant in variants:
+            tasks.append(run_provider('Google', lambda v=variant: _search_google(v, 24, context)))
             tasks.append(run_provider('DuckDuckGo', lambda v=variant: _search_duckduckgo(v, context)))
-            tasks.append(run_provider('Bing', lambda v=variant: _search_bing(v, 1, 24, context)))
             if context not in {'video'}:
                 tasks.append(run_provider('Wikipedia', lambda v=variant: _search_wikipedia(v, context)))
 
@@ -4540,7 +5586,7 @@ async def research_search(
                 engine_hits.setdefault(label, []).extend(value)
 
         merged = []
-        for label in ['DuckDuckGo', 'Bing', 'Wikipedia']:
+        for label in ['Google', 'DuckDuckGo', 'Wikipedia']:
             merged.extend(engine_hits.get(label, []))
         auto_open_url = _youtube_search_url(query) if _youtube_mode(query, context) else ''
         ranked = _rank_results(query, merged, context)
@@ -4606,9 +5652,6 @@ async def research_open(url: str):
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise HTTPException(400, "Only http/https URLs are allowed")
-    if "google." in parsed.netloc and parsed.path.startswith("/search"):
-        q = parse_qs(parsed.query).get("q", [""])[0]
-        return await research_searchpage(q or url)
     try:
         host = parsed.netloc.lower()
         if any(dom in host for dom in ["skyvector.com", "microsoft.com", "youtube.com", "youtu.be"]):
@@ -5050,6 +6093,11 @@ async def app_info():
         "db_path": str(DB_PATH),
         "frontend_dir": str(FRONTEND_DIR),
         "shell_mode": os.environ.get('HANGAR_SHELL_MODE', 'browser'),
+        "settings_exists": SETTINGS_JSON_PATH.exists(),
+        "db_exists": DB_PATH.exists(),
+        "settings_file_info": _file_info(SETTINGS_JSON_PATH),
+        "db_file_info": _file_info(DB_PATH),
+        "window_state": await storage.get_json_setting('window_state', {}),
     }
 
 @app.get("/")

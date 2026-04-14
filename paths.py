@@ -5,30 +5,65 @@ import os
 import shutil
 from pathlib import Path
 
-APP_NAME = "MSFSHangar"
+import bootstrap_cfg
+
+APP_NAME = bootstrap_cfg.APP_NAME
 BASE_DIR = Path(__file__).parent
 BUNDLED_DATA_DIR = BASE_DIR / "data"
 BUNDLED_DB_PATH = BUNDLED_DATA_DIR / "hangar.db"
 BUNDLED_SETTINGS_PATH = BUNDLED_DATA_DIR / "settings.json"
+BOOTSTRAP_CONFIG_PATH = bootstrap_cfg.resolve_bootstrap_path_for_write(BASE_DIR)
 
 
-def _user_data_root() -> Path:
-    override = os.environ.get("HANGAR_USER_DATA_DIR", "").strip()
+def load_bootstrap_config() -> dict:
+    return bootstrap_cfg.load_bootstrap_config(BASE_DIR)
+
+
+def save_bootstrap_config(config: dict) -> None:
+    bootstrap_cfg.save_bootstrap_config(config, BASE_DIR)
+
+
+def get_forced_storage_root() -> str:
+    return bootstrap_cfg.get_forced_storage_root(base_dir=BASE_DIR)
+
+
+def get_library_profiles() -> list[dict]:
+    return bootstrap_cfg.get_library_profiles(base_dir=BASE_DIR)
+
+
+def get_active_profile() -> dict | None:
+    return bootstrap_cfg.get_active_profile(base_dir=BASE_DIR)
+
+
+def get_active_profile_id() -> str:
+    return bootstrap_cfg.get_active_profile_id(base_dir=BASE_DIR)
+
+
+def storage_mode() -> str:
+    if os.environ.get("HANGAR_USER_DATA_DIR", "").strip():
+        return "env_override"
+    if get_forced_storage_root():
+        return "bootstrap_override"
+    return "default"
+
+
+def _resolve_user_data_dir() -> Path:
+    override = os.environ.get("HANGAR_USER_DATA_DIR", "").strip() or get_forced_storage_root()
     if override:
         return Path(override).expanduser()
     if os.name == "nt":
         root = os.environ.get("LOCALAPPDATA")
         if root:
-            return Path(root)
-        return Path.home() / "AppData" / "Local"
-    xdg = os.environ.get("XDG_DATA_HOME")
-    if xdg:
-        return Path(xdg)
-    return Path.home() / ".local" / "share"
+            base = Path(root)
+        else:
+            base = Path.home() / "AppData" / "Local"
+    else:
+        xdg = os.environ.get("XDG_DATA_HOME")
+        base = Path(xdg) if xdg else (Path.home() / ".local" / "share")
+    return base if base.name == APP_NAME else (base / APP_NAME)
 
 
-_USER_DATA_ROOT = _user_data_root()
-USER_DATA_DIR = _USER_DATA_ROOT if _USER_DATA_ROOT.name == APP_NAME else (_USER_DATA_ROOT / APP_NAME)
+USER_DATA_DIR = _resolve_user_data_dir()
 DB_PATH = USER_DATA_DIR / "hangar.db"
 SETTINGS_JSON_PATH = USER_DATA_DIR / "settings.json"
 LOG_DIR = USER_DATA_DIR / "logs"
@@ -54,8 +89,6 @@ def ensure_user_data_dirs() -> Path:
 
 def initialize_user_data() -> None:
     ensure_user_data_dirs()
-    # One-time migration: if the user previously stored data in the app folder,
-    # move it to LocalAppData so future zip upgrades do not overwrite it.
     if not DB_PATH.exists() and BUNDLED_DB_PATH.exists() and BUNDLED_DB_PATH.stat().st_size > 0:
         try:
             shutil.copy2(BUNDLED_DB_PATH, DB_PATH)

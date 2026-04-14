@@ -1,6 +1,3 @@
 @echo off
 cd /d "%~dp0"
-set HANGAR_DESKTOP=1
-set HANGAR_DESKTOP_MODE=qt
-python main.py
-pause
+call run_hangar_qt_desktop.bat

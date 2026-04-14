@@ -16,7 +16,7 @@ _flags = os.environ.get('QTWEBENGINE_CHROMIUM_FLAGS', '').strip()
 _extra_flags = '--disable-gpu-compositing --disable-features=UseSkiaRenderer,CanvasOopRasterization --disable-http-cache --disable-application-cache --disable-gpu-shader-disk-cache'
 if _extra_flags not in _flags:
     os.environ['QTWEBENGINE_CHROMIUM_FLAGS'] = (_flags + ' ' + _extra_flags).strip()
-from paths import initialize_user_data, PID_FILE, DESKTOP_PID_FILE, CACHE_ROOT, USER_DATA_DIR, SETTINGS_JSON_PATH, DB_PATH
+from paths import initialize_user_data, PID_FILE, DESKTOP_PID_FILE, CACHE_ROOT, USER_DATA_DIR, SETTINGS_JSON_PATH, DB_PATH, LOG_DIR, load_settings_file
 _backend_proc = None
 _shell_proc = None
 
@@ -228,6 +228,19 @@ def _local_browser_url(port: int) -> str:
     return f"http://127.0.0.1:{port}"
 
 
+
+
+def _describe_path(path: Path) -> str:
+    exists = path.exists()
+    if not exists:
+        return f"{path} [missing]"
+    try:
+        stat = path.stat()
+        modified = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime))
+        return f"{path} [exists, {stat.st_size:,} bytes, modified {modified}]"
+    except Exception:
+        return f"{path} [exists]"
+
 def _discover_lan_urls(port: int) -> list[str]:
     urls=[]
     try:
@@ -265,6 +278,29 @@ def open_system_browser(port: int):
     webbrowser.open(url)
 
 
+
+
+def _load_saved_window_state() -> dict:
+    try:
+        settings = load_settings_file() or {}
+        raw = settings.get('window_state', {})
+        if isinstance(raw, str):
+            import json as _json
+            raw = _json.loads(raw) if raw.strip() else {}
+        if not isinstance(raw, dict):
+            return {}
+        state = {}
+        for key in ('x','y','width','height'):
+            try:
+                if raw.get(key) is not None:
+                    state[key] = int(float(raw.get(key)))
+            except Exception:
+                pass
+        state['maximized'] = bool(raw.get('maximized'))
+        return state
+    except Exception:
+        return {}
+
 def _find_app_browser() -> str | None:
     candidates = []
     if os.name == "nt":
@@ -300,6 +336,19 @@ def open_app_shell(port: int):
         return False
     url = _local_browser_url(port)
     cmd = [browser, f"--app={url}", "--new-window"]
+    state = _load_saved_window_state()
+    width = state.get('width')
+    height = state.get('height')
+    x = state.get('x')
+    y = state.get('y')
+    maximized = bool(state.get('maximized'))
+    if maximized:
+        cmd.append('--start-maximized')
+    else:
+        if width and height and width > 200 and height > 200:
+            cmd.append(f"--window-size={int(width)},{int(height)}")
+        if x is not None and y is not None:
+            cmd.append(f"--window-position={int(x)},{int(y)}")
     print("Launching app shell:", " ".join(cmd), flush=True)
     _shell_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return True
@@ -328,9 +377,10 @@ def main():
     register_desktop_instance()
     (BASE_DIR / "frontend").mkdir(exist_ok=True)
     print("MSFS Hangar starting...", flush=True)
-    print(f"User data dir: {USER_DATA_DIR}", flush=True)
-    print(f"Settings file : {SETTINGS_JSON_PATH}", flush=True)
-    print(f"Library DB    : {DB_PATH}", flush=True)
+    print(f"User data dir : {USER_DATA_DIR}", flush=True)
+    print(f"Settings file : {_describe_path(SETTINGS_JSON_PATH)}", flush=True)
+    print(f"Library DB    : {_describe_path(DB_PATH)}", flush=True)
+    print(f"Logs folder   : {LOG_DIR if 'LOG_DIR' in globals() else USER_DATA_DIR / 'logs'}", flush=True)
     install_missing()
     port = int(os.environ.get("HANGAR_PORT", "7891"))
     bind_host = os.environ.get("HANGAR_HOST", os.environ.get("HANGAR_BIND", "127.0.0.1")).strip() or "127.0.0.1"

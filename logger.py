@@ -36,7 +36,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from paths import BASE_DIR, LOG_DIR, initialize_user_data
+from paths import BASE_DIR, LOG_DIR, initialize_user_data, USER_DATA_DIR, SETTINGS_JSON_PATH, DB_PATH
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 initialize_user_data()
@@ -84,9 +84,9 @@ def setup_logging(level: str = "INFO"):
     except Exception as e:
         print(f"[logger] Could not create error log: {e}")
 
-    # 3. Console — WARNING and above (keeps terminal readable during normal use)
+    # 3. Console — INFO and above for release debugging and diagnostics
     ch = logging.StreamHandler(sys.stdout)
-    ch.setLevel(logging.WARNING)
+    ch.setLevel(logging.INFO)
     ch.setFormatter(logging.Formatter("  %(levelname)-8s %(name)s — %(message)s"))
     root.addHandler(ch)
 
@@ -118,6 +118,16 @@ def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
 
 
+def _path_info(path: Path) -> dict:
+    exists = path.exists()
+    return {
+        "path": str(path),
+        "exists": exists,
+        "size": (path.stat().st_size if exists and path.is_file() else 0),
+        "modified": (datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds") if exists else ""),
+    }
+
+
 # ── Startup snapshot ───────────────────────────────────────────────────────
 
 def write_startup_snapshot(settings: dict):
@@ -139,7 +149,10 @@ def write_startup_snapshot(settings: dict):
         "machine":        platform.machine(),
         "cwd":            str(Path.cwd()),
         "base_dir":       str(BASE_DIR),
+        "user_data_dir":  str(USER_DATA_DIR),
         "log_dir":        str(LOG_DIR),
+        "settings_file_info": _path_info(SETTINGS_JSON_PATH),
+        "db_file_info": _path_info(DB_PATH),
         "settings": {
             k: ("***" if "key" in k.lower() else v)   # redact API keys
             for k, v in settings.items()

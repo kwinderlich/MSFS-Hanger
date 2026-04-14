@@ -3,10 +3,12 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover"/>
-<title>MSFS Hangar v9</title>
+<title>MSFS Hangar Release 152</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700;800&family=Orbitron:wght@700;800&display=swap" rel="stylesheet"/>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.23.0/dist/maplibre-gl.css"/>
+<script src="https://unpkg.com/maplibre-gl@5.23.0/dist/maplibre-gl.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -57,6 +59,12 @@ select option{background:var(--bg0);color:var(--t0);}
 .leaflet-popup-tip{background:var(--bg2);}
 .leaflet-control-zoom a{background:var(--bg2)!important;color:var(--t0)!important;border:1px solid var(--bdr)!important;}
 .leaflet-control-attribution{background:rgba(5,12,24,.8)!important;color:var(--t2)!important;font-size:9px!important;}
+.maplibregl-map{background:#050C18!important;}
+.maplibregl-ctrl-group{background:rgba(10,22,40,.92)!important;border:1px solid var(--bdr)!important;box-shadow:none!important;}
+.maplibregl-ctrl-group button{background:transparent!important;color:var(--t0)!important;}
+.maplibregl-popup-content{background:var(--bg2)!important;color:var(--t0)!important;border:1px solid var(--bdr)!important;border-radius:10px!important;box-shadow:0 8px 32px rgba(0,0,0,.5)!important;padding:10px 12px!important;}
+.maplibregl-popup-tip{border-top-color:var(--bg2)!important;border-bottom-color:var(--bg2)!important;}
+.maplibregl-ctrl-attrib{background:rgba(5,12,24,.78)!important;color:var(--t2)!important;font-size:9px!important;}
 .theme-html, .theme-html *{color:var(--t0)!important;}
 .theme-html *{background-image:none!important;box-shadow:none!important;}
 .theme-html [style*='background'], .theme-html [style*='background-color']{background:transparent!important;}
@@ -291,6 +299,13 @@ function formatDistanceFromNm(value, digits=1){
   const converted=info.fromNm(value);
   return `${Number.isFinite(converted)?converted.toFixed(digits):'0.0'} ${info.abbr}`;
 }
+function approxZoomForDistanceNm(distanceNm, lat=20, heightPx=800){
+  const meters=Math.max(1, Number(distanceNm||0)*1852);
+  const h=Math.max(220, Number(heightPx)||800);
+  const numerator=(156543.03392*Math.cos((Number(lat)||0)*Math.PI/180))*(h/2.2);
+  const z=Math.log2(Math.max(1e-6, numerator/meters));
+  return Math.max(0.6, Math.min(19.5, z));
+}
 function readSavedVfrRoutes(){
   try{
     const raw=localStorage.getItem('hangar_vfr_routes_v1');
@@ -306,10 +321,9 @@ function formatRouteNodeLabel(node){
   return String(node.label||node.icao||node.faa_id||node.title||'Waypoint');
 }
 function currentSearchProvider(){
-  const raw=(localStorage.getItem('hangar_search_provider')||'bing').toLowerCase();
-  return raw==='google'?'google':'bing';
+  return 'google';
 }
-function searchProviderLabel(v){ return (String(v||'').toLowerCase()==='google')?'Google':'Bing'; }
+function searchProviderLabel(v){ return 'Google'; }
 function googleLocaleParams(){
   const lang=currentLanguage();
   const table={English:{hl:'en',gl:'us'},Spanish:{hl:'es',gl:'es'},French:{hl:'fr',gl:'fr'},German:{hl:'de',gl:'de'},Italian:{hl:'it',gl:'it'},Portuguese:{hl:'pt',gl:'pt'},Dutch:{hl:'nl',gl:'nl'}};
@@ -320,17 +334,10 @@ function googleSearchUrl(term, opts={}){
   const value=String(term||'').trim();
   const lang=(hl||'en').toLowerCase();
   const cc=(gl||'us').toLowerCase();
-  const provider=currentSearchProvider();
-  if(provider==='google'){
-    if(opts.images){
-      return 'https://www.google.com/search?tbm=isch&hl='+encodeURIComponent(lang)+'&gl='+encodeURIComponent(cc)+'&q='+encodeURIComponent(value);
-    }
-    return 'https://www.google.com/search?hl='+encodeURIComponent(lang)+'&gl='+encodeURIComponent(cc)+'&pws=0&q='+encodeURIComponent(value);
-  }
   if(opts.images){
-    return 'https://www.bing.com/images/search?setlang='+encodeURIComponent(lang)+'&cc='+encodeURIComponent(cc)+'&q='+encodeURIComponent(value);
+    return 'https://www.google.com/search?tbm=isch&hl='+encodeURIComponent(lang)+'&gl='+encodeURIComponent(cc)+'&q='+encodeURIComponent(value);
   }
-  return 'https://www.bing.com/search?setlang='+encodeURIComponent(lang)+'&cc='+encodeURIComponent(cc)+'&q='+encodeURIComponent(value);
+  return 'https://www.google.com/search?hl='+encodeURIComponent(lang)+'&gl='+encodeURIComponent(cc)+'&pws=0&q='+encodeURIComponent(value);
 }
 function withBrowserResetNonce(url){
   return String(url||'').trim();
@@ -445,6 +452,98 @@ async function fetchJsonSafe(url, options){
   try{ data=raw?JSON.parse(raw):{}; }catch(e){ data={detail:raw||res.statusText||'Request failed'}; }
   if(!res.ok){ throw new Error(data.detail||raw||('HTTP '+res.status)); }
   return data;
+}
+
+function recordFrontendBreadcrumb(level, message, context){
+  try{
+    const key='msfshangar_frontend_breadcrumbs';
+    const arr=JSON.parse(localStorage.getItem(key)||'[]');
+    arr.push({ts:new Date().toISOString(),level:level||'info',message:String(message||''),context:context||{}});
+    localStorage.setItem(key, JSON.stringify(arr.slice(-80)));
+  }catch(e){}
+}
+async function flushFrontendBreadcrumbs(reason){
+  try{
+    const key='msfshangar_frontend_breadcrumbs';
+    const arr=JSON.parse(localStorage.getItem(key)||'[]');
+    if(!arr.length) return;
+    await fetch('/api/frontend-log',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({level:'info',message:'frontend-breadcrumb-flush',context:{reason:reason||'startup',breadcrumbs:arr.slice(-20)}})
+    });
+  }catch(e){}
+}
+async function sendFrontendLog(level, message, context){
+  recordFrontendBreadcrumb(level, message, context);
+  try{
+    await fetch('/api/frontend-log',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({level:level||'info',message:String(message||''),context:context||{}})
+    });
+  }catch(e){}
+}
+window.addEventListener('error', evt=>{
+  try{ sendFrontendLog('error','window-error',{message:String(evt&&evt.message||''),filename:String(evt&&evt.filename||''),lineno:evt&&evt.lineno,colno:evt&&evt.colno}); }catch(e){}
+});
+window.addEventListener('unhandledrejection', evt=>{
+  try{
+    const reason=evt&&evt.reason;
+    sendFrontendLog('error','unhandled-rejection',{reason:reason&&reason.message?String(reason.message):String(reason||''),stack:reason&&reason.stack?String(reason.stack):''});
+  }catch(e){}
+});
+window.addEventListener('DOMContentLoaded', ()=>{ try{ flushFrontendBreadcrumbs('dom-content-loaded'); sendFrontendLog('info','frontend-dom-ready',{href:location.href}); }catch(e){} });
+function detectWindowMaximized(){
+  try{
+    const sw=(window.screen&&window.screen.availWidth)||window.outerWidth||0;
+    const sh=(window.screen&&window.screen.availHeight)||window.outerHeight||0;
+    return Math.abs((window.outerWidth||0)-sw)<=12 && Math.abs((window.outerHeight||0)-sh)<=12;
+  }catch(e){ return false; }
+}
+function useWindowStateSync(enabled=true){
+  useEffect(()=>{
+    if(!enabled) return;
+    let disposed=false;
+    let lastSig='';
+    let timer=null;
+    const flush=()=>{
+      if(disposed) return;
+      const payload={
+        x:Number(window.screenX||window.screenLeft||0),
+        y:Number(window.screenY||window.screenTop||0),
+        width:Number(window.outerWidth||window.innerWidth||0),
+        height:Number(window.outerHeight||window.innerHeight||0),
+        maximized:detectWindowMaximized(),
+        saved_at:new Date().toISOString()
+      };
+      const sig=JSON.stringify(payload);
+      if(sig===lastSig) return;
+      lastSig=sig;
+      fetch('/api/application/window-state',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(payload),
+        keepalive:true
+      }).catch(()=>{});
+    };
+    const schedule=()=>{
+      if(timer) clearTimeout(timer);
+      timer=setTimeout(flush,250);
+    };
+    flush();
+    const poll=setInterval(flush,1500);
+    window.addEventListener('resize',schedule);
+    window.addEventListener('beforeunload',flush);
+    document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden') flush(); });
+    return ()=>{
+      disposed=true;
+      if(timer) clearTimeout(timer);
+      clearInterval(poll);
+      window.removeEventListener('resize',schedule);
+      window.removeEventListener('beforeunload',flush);
+    };
+  },[enabled]);
 }
 function NotificationOverlay({notice,onDismiss}){
   if(!notice) return null;
@@ -913,7 +1012,12 @@ function LiveryThumb({item,height=96}){
 }
 
 function LiveryActiveToggle({item,onToggle}){
-  const on=!!item.enabled, busy=!!item._busy;
+  const on=!!item.enabled, busy=!!item._busy, internal=!!item.internal;
+  if(internal){
+    return <div title='This livery is built into the aircraft package.' style={{display:'inline-flex',alignItems:'center',gap:5,userSelect:'none',background:'rgba(0,0,0,.62)',backdropFilter:'blur(8px)',border:'1px solid var(--bdr)',borderRadius:18,padding:'4px 8px'}}>
+      <span style={{fontSize:9,color:'var(--t2)',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.06em',whiteSpace:'nowrap'}}>Built-in</span>
+    </div>;
+  }
   return <div onClick={e=>{e.stopPropagation(); !busy&&onToggle&&onToggle(item);}} title={on?'Activated in Community folder':'Not in Community folder'} style={{display:'inline-flex',alignItems:'center',gap:5,cursor:busy?'wait':'pointer',userSelect:'none',background:'rgba(0,0,0,.62)',backdropFilter:'blur(8px)',border:'1px solid var(--bdr)',borderRadius:18,padding:'4px 8px'}}>
     <div style={{width:34,height:18,borderRadius:9,background:on?'var(--acc)':'var(--t3)',position:'relative',transition:'background 0.2s',flexShrink:0,opacity:busy?0.6:1}}>
       <div style={{position:'absolute',top:2,left:on?16:2,width:14,height:14,borderRadius:'50%',background:'white',transition:'left 0.18s',boxShadow:'0 1px 3px rgba(0,0,0,0.3)'}}/>
@@ -924,8 +1028,18 @@ function LiveryActiveToggle({item,onToggle}){
 
 function LiveryTile({item,picked,onTogglePick,onToggle,onPreview,onFav,packageCount}){
   const accent=item.category==='Cabin Pack'?'var(--vio)':'var(--acc)';
+  const builtIn=!!item.internal;
+  const isAirliner=!!item.is_airliner;
   const sharedPackage=(Number(packageCount)||0)>1;
-  return <div style={{background:'var(--card)',border:'1px solid var(--bdr)',borderRadius:14,cursor:'default',overflow:'hidden',transition:'all 0.18s',display:'flex',flexDirection:'column',height:334,minHeight:334,maxHeight:334}}>
+  const title=builtIn ? (isAirliner ? (item.title_override||item.name||item.airline||'Livery') : (item.model||item.title_override||item.name||item.airline||'Livery')) : (item.title_override||item.name||item.airline||'Livery');
+  const showModel=!!(item.model&&String(item.model).trim()&&String(item.model).trim().toLowerCase()!==String(title||'').trim().toLowerCase());
+  const showAirline=!!(item.airline&&String(item.airline).trim()&&String(item.airline).trim().toLowerCase()!==String(title||'').trim().toLowerCase());
+  const showVariant=!!(item.variant&&String(item.variant).trim());
+  const showCategoryChip=!!(item.category && !(builtIn && item.category==='Livery'));
+  const showActiveChip=!!(!builtIn && item.enabled);
+  const showSharedChip=!!(!builtIn && sharedPackage);
+  const dataRow=(label,value,titleAttr)=>!!value&&<div style={{fontSize:11,color:'var(--t1)',display:'grid',gridTemplateColumns:'108px 1fr',alignItems:'start',columnGap:8}}><span style={{color:'var(--t3)',fontWeight:700}}>{label}</span><span title={titleAttr||value} style={{color:'var(--t0)',fontWeight:600,lineHeight:1.35,whiteSpace:'normal',wordBreak:'break-word',textAlign:'left'}}>{value}</span></div>;
+  return <div style={{background:'var(--card)',border:'1px solid var(--bdr)',borderRadius:14,cursor:'default',overflow:'hidden',transition:'all 0.18s',display:'flex',flexDirection:'column',height:364,minHeight:364,maxHeight:364}}>
     <div style={{position:'relative'}}>
       <button type='button' onClick={()=>onPreview&&onPreview(item)} style={{display:'block',width:'100%',background:'none',border:'none',padding:0,cursor:'zoom-in'}}><LiveryThumb item={item} height={126}/></button>
       <div style={{position:'absolute',top:8,left:9,right:9,display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:8}}>
@@ -940,28 +1054,30 @@ function LiveryTile({item,picked,onTogglePick,onToggle,onPreview,onFav,packageCo
       </div>
     </div>
     <div style={{padding:'10px 12px 12px',display:'flex',flexDirection:'column',gap:8,flex:1,minHeight:0}}>
-      <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>{item.category&&<Chip label={item.category} color={accent} sm/>}{item.enabled&&<Chip label='Active' color='var(--grn)' sm/>}{sharedPackage&&<Chip label={`Shared package (${packageCount})`} color='var(--vio)' sm/>}</div>
-      <div style={{fontSize:12,fontWeight:800,color:'var(--t0)',lineHeight:1.35,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>{item.airline||item.name||'Livery'}</div>
-      <div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:12,padding:'10px 11px',display:'grid',gap:5,minHeight:92,alignContent:'start'}}>
-        {item.variant&&<div style={{fontSize:11,color:'var(--t1)',display:'grid',gridTemplateColumns:'62px 1fr',alignItems:'start',columnGap:8}}><span style={{color:'var(--t3)',fontWeight:700}}>Variant</span><span style={{color:'var(--t0)',fontWeight:600,lineHeight:1.35,whiteSpace:'normal',wordBreak:'break-word',textAlign:'left'}}>{item.variant}</span></div>}
-        {item.year&&<div style={{fontSize:11,color:'var(--t1)',display:'grid',gridTemplateColumns:'62px 1fr',alignItems:'start',columnGap:8}}><span style={{color:'var(--t3)',fontWeight:700}}>Year</span><span style={{color:'var(--t0)',fontWeight:600,lineHeight:1.35,textAlign:'left'}}>{item.year}</span></div>}
-        {item.flight_number&&<div style={{fontSize:11,color:'var(--t1)',display:'grid',gridTemplateColumns:'62px 1fr',alignItems:'start',columnGap:8}}><span style={{color:'var(--t3)',fontWeight:700}}>Flight</span><span style={{color:'var(--t0)',fontWeight:600,lineHeight:1.35,textAlign:'left'}}>{item.flight_number}</span></div>}
-        {item.model&&<div style={{fontSize:11,color:'var(--t1)',display:'grid',gridTemplateColumns:'62px 1fr',alignItems:'start',columnGap:8}}><span style={{color:'var(--t3)',fontWeight:700}}>Model</span><span style={{color:'var(--t0)',fontWeight:600,lineHeight:1.35,whiteSpace:'normal',wordBreak:'break-word',textAlign:'left'}}>{item.model}</span></div>}
-        {item.powerplant&&<div style={{fontSize:11,color:'var(--t1)',display:'grid',gridTemplateColumns:'62px 1fr',alignItems:'start',columnGap:8}}><span style={{color:'var(--t3)',fontWeight:700}}>Power</span><span style={{color:'var(--t0)',fontWeight:600,lineHeight:1.35,whiteSpace:'normal',wordBreak:'break-word',textAlign:'left'}}>{item.powerplant}</span></div>}
+      <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>{showCategoryChip&&<Chip label={item.category} color={accent} sm/>}{showActiveChip&&<Chip label='Active' color='var(--grn)' sm/>}{item.fav&&<Chip label='Favorite' color='var(--ylw)' sm/>}{showSharedChip&&<Chip label={`Shared package (${packageCount})`} color='var(--vio)' sm/>}</div>
+      <div style={{fontSize:12,fontWeight:800,color:'var(--t0)',lineHeight:1.35,display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',overflow:'hidden'}}>{title}</div>
+      <div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:12,padding:'10px 11px',display:'grid',gap:5,minHeight:122,alignContent:'start'}}>
+        {showVariant&&dataRow(item.category==='Cabin Pack'?'Cabin Pack':'Variant', item.variant)}
+        {showModel&&dataRow('Model', item.model)}
+        {showAirline&&dataRow('Airline ATC Code', item.airline)}
+        {!!item.package_name&&dataRow('Package', item.package_name, item.package_name)}
       </div>
     </div>
   </div>;
 }
 
+
 function LiveriesTab({a,onSave,notice}){
   const [items,setItems]=useState((a&&a.usr&&Array.isArray(a.usr.liveries)?a.usr.liveries:[])||[]);
   const [busy,setBusy]=useState(false), [msg,setMsg]=useState(''), [preview,setPreview]=useState(null), [picked,setPicked]=useState(()=>new Set()), [scanPct,setScanPct]=useState(0), [scanLabel,setScanLabel]=useState(''), [scanEstimate,setScanEstimate]=useState(0);
+  const [showActiveOnly,setShowActiveOnly]=useState(false), [showFavOnly,setShowFavOnly]=useState(false);
   const itemsRef=useRef(items);
   useEffect(()=>{ itemsRef.current=items; },[items]);
   useEffect(()=>{ const next=(a&&a.usr&&Array.isArray(a.usr.liveries)?a.usr.liveries:[])||[]; itemsRef.current=next; setItems(next); setMsg(''); setPicked(new Set()); },[a.id,JSON.stringify((a&&a.usr&&a.usr.liveries)||[])]);
   function persist(next){ itemsRef.current=next; onSave&&onSave(a.id,{liveries:next.map(({_busy,...rest})=>rest)}); }
+  const filteredItems=items.filter(item=>(!showActiveOnly||!!item.enabled)&&(!showFavOnly||!!item.fav));
   function togglePick(id){ setPicked(cur=>{ const next=new Set(cur); next.has(id)?next.delete(id):next.add(id); return next; }); }
-  function selectAll(){ setPicked(new Set(items.map(x=>x.id))); }
+  function selectAll(){ setPicked(new Set(filteredItems.map(x=>x.id))); }
   function clearSelection(){ setPicked(new Set()); }
   async function scan(){
     setBusy(true); setMsg('Scanning configured liveries folder for this aircraft. This can take a while depending on how many livery folders match the current aircraft. You can continue using the app while the scan finishes.'); setScanPct(3); setScanLabel('Preparing livery scan...');
@@ -1015,13 +1131,32 @@ function LiveriesTab({a,onSave,notice}){
       notice&&notice({title:'Livery activation failed',message:(e&&e.message)||'Could not update the livery package activation state.',kind:'error'});
     }
   }
+  async function activateSelected(){
+    const selected=(itemsRef.current||[]).filter(x=>picked.has(x.id) && filteredItems.some(y=>y.id===x.id) && !x.internal);
+    if(!selected.length){ setMsg('No external livery packages are selected. Built-in liveries are part of the aircraft package and cannot be toggled separately.'); return; }
+    const packageRoots=[...new Set(selected.map(x=>x.package_root).filter(Boolean))];
+    const busyItems=(itemsRef.current||[]).map(x=>packageRoots.includes(x.package_root)?{...x,_busy:true}:x);
+    setItems(busyItems);
+    try{
+      await fetchJsonSafe('/api/liveries/toggle-batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({package_roots:packageRoots,enabled:true})});
+      const next=(itemsRef.current||busyItems).map(x=>packageRoots.includes(x.package_root)?{...x,enabled:true,_busy:false}:x);
+      setItems(next);
+      persist(next);
+      setMsg(`Activated ${packageRoots.length} selected livery package${packageRoots.length===1?'':'s'}.`);
+    }catch(e){
+      const rolled=(itemsRef.current||busyItems).map(x=>packageRoots.includes(x.package_root)?{...x,_busy:false}:x);
+      setItems(rolled);
+      persist(rolled);
+      notice&&notice({title:'Activate selected failed',message:(e&&e.message)||'Could not activate the selected livery packages.',kind:'error'});
+    }
+  }
   function toggleFav(item,v){
     const next=(itemsRef.current||[]).map(x=>x.id===item.id?{...x,fav:!!v}:x);
     setItems(next);
     persist(next);
   }
   async function removeSelected(){
-    const ids=[...picked];
+    const ids=[...picked].filter(id=>filteredItems.some(x=>x.id===id));
     if(!ids.length) return;
     try{
       const data=await fetchJsonSafe('/api/addons/'+a.id+'/remove-liveries',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})});
@@ -1030,19 +1165,26 @@ function LiveriesTab({a,onSave,notice}){
       setMsg(`Removed ${data.removed||ids.length} selected liver${(data.removed||ids.length)===1?'y':'ies'} from this aircraft.`);
     }catch(e){ notice&&notice({title:'Remove liveries failed',message:(e&&e.message)||'Could not remove the selected liveries from this aircraft.',kind:'error'}); }
   }
+  const selectedCount=[...picked].filter(id=>filteredItems.some(x=>x.id===id)).length;
   return <div style={{display:'grid',gap:12}}>
     <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}><DL label='Liveries' color='var(--vio)'/><div style={{display:'flex',gap:8,flexWrap:'wrap'}}><Btn label={busy?'Scanning...':'Scan for Liveries'} color='var(--vio)' sm onClick={scan} disabled={busy}/></div></div>
-    <div style={{fontSize:11,color:'var(--t2)',lineHeight:1.65}}>MSFS Hanger scans the configured Liveries Folder for thumbnail files and variation/config data that match this aircraft package. Separate airline liveries and cabin/interior packs are shown here when they can be matched back to this aircraft. Scanning can take a while on large livery libraries. When multiple livery cards come from the same parent package folder, the Activate toggle is package-level and will affect every livery card that shares that package root.</div>
+    <div style={{fontSize:11,color:'var(--t2)',lineHeight:1.65}}>MSFS Hanger scans the configured Liveries Folder plus built-in aircraft variant folders for thumbnail files and variation/config data that match the current aircraft. Separate airline liveries and cabin/interior packs are shown here when they can be matched back to this aircraft. Scanning can take a while on large livery libraries. When multiple livery cards come from the same parent package folder, the Activate toggle is package-level and will affect every livery card that shares that package root.</div>
     <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
-      <Btn label='Select All' color='var(--t2)' sm onClick={selectAll} disabled={!items.length}/>
-      <Btn label='Deselect All' color='var(--t2)' sm onClick={clearSelection} disabled={!picked.size}/>
-      <Btn label={picked.size?`Remove from Library (${picked.size})`:'Remove from Library'} color='var(--red)' sm onClick={removeSelected} disabled={!picked.size}/>
+      <Btn label='Select All Visible' color='var(--t2)' sm onClick={selectAll} disabled={!filteredItems.length}/>
+      <Btn label='Deselect All' color='var(--t2)' sm onClick={clearSelection} disabled={!selectedCount}/>
+      <Btn label={selectedCount?`Activate Selected (${selectedCount})`:'Activate Selected'} color='var(--acc)' sm onClick={activateSelected} disabled={!selectedCount}/>
+      <Btn label={selectedCount?`Remove from Library (${selectedCount})`:'Remove from Library'} color='var(--red)' sm onClick={removeSelected} disabled={!selectedCount}/>
       {!!scanEstimate&&<span style={{fontSize:11,color:'var(--t2)'}}>Matching folders: <strong style={{color:'var(--t0)'}}>{scanEstimate}</strong></span>}
+    </div>
+    <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+      <label style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:11,color:'var(--t1)',cursor:'pointer'}}><input type='checkbox' checked={showActiveOnly} onChange={e=>setShowActiveOnly(!!e.target.checked)} style={{accentColor:'var(--acc)'}}/>Active only</label>
+      <label style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:11,color:'var(--t1)',cursor:'pointer'}}><input type='checkbox' checked={showFavOnly} onChange={e=>setShowFavOnly(!!e.target.checked)} style={{accentColor:'var(--ylw)'}}/>Favorites only</label>
+      <span style={{fontSize:11,color:'var(--t2)'}}>Showing <strong style={{color:'var(--t0)'}}>{filteredItems.length}</strong> of <strong style={{color:'var(--t0)'}}>{items.length}</strong></span>
     </div>
     {scanPct>0&&<div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:12,padding:'10px 11px'}}><div style={{display:'flex',justifyContent:'space-between',gap:8,marginBottom:6}}><span style={{fontSize:11,color:'var(--t1)',fontWeight:700}}>{scanLabel||'Scanning liveries...'}</span><span style={{fontSize:11,color:scanPct===100?'var(--grn)':'var(--vio)',fontWeight:800}}>{scanPct}%</span></div><div style={{height:7,background:'var(--bg3)',borderRadius:999,overflow:'hidden'}}><div style={{height:'100%',width:(scanPct||0)+'%',background:scanPct===100?'var(--grn)':'var(--vio)',borderRadius:999,transition:'width .25s'}}/></div></div>}
     {msg&&<div style={{fontSize:11,color:msg.toLowerCase().includes('failed')?'var(--red)':'var(--t2)'}}>{msg}</div>}
-    {items.length===0?<div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:12,padding:18,fontSize:12,color:'var(--t2)'}}>No scanned liveries for this aircraft yet. Save the Liveries Folder in Settings, then click <strong style={{color:'var(--t0)'}}>Scan for Liveries</strong>.</div>:<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(210px,1fr))',gap:12,alignItems:'start'}}>{(()=>{ const pkgCounts={}; items.forEach(x=>{ const k=x.package_root||''; pkgCounts[k]=(pkgCounts[k]||0)+1; }); return items.map(item=><LiveryTile key={item.id} item={item} picked={picked.has(item.id)} onTogglePick={togglePick} onToggle={toggleItem} onPreview={setPreview} onFav={toggleFav} packageCount={pkgCounts[item.package_root||'']||1}/>); })()}</div>}
-    {preview&&<div onClick={()=>setPreview(null)} style={{position:'fixed',inset:0,zIndex:1200,background:'rgba(5,12,24,.82)',display:'flex',alignItems:'center',justifyContent:'center',padding:24}}><div onClick={e=>e.stopPropagation()} style={{maxWidth:'min(1100px, 92vw)',maxHeight:'92vh',background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:16,padding:14,display:'grid',gap:10}}><div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12}}><div><div style={{fontSize:16,fontWeight:800,color:'var(--t0)'}}>{preview.airline||preview.variant||preview.name||'Livery'}</div><div style={{fontSize:11,color:'var(--t2)'}}>{preview.variant||''}{preview.year?` • ${preview.year}`:''}</div></div><Btn label='Close' color='var(--t2)' sm onClick={()=>setPreview(null)}/></div><img src={'/api/livery-thumb?path='+encodeURIComponent(preview.thumbnail_path||'')} alt='' style={{maxWidth:'86vw',maxHeight:'80vh',objectFit:'contain',display:'block',borderRadius:12,background:'var(--bg2)',border:'1px solid var(--bdr)'}}/></div></div>}
+    {filteredItems.length===0?<div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:12,padding:18,fontSize:12,color:'var(--t2)'}}>{items.length? 'No liveries match the current filters.' : <>No scanned liveries for this aircraft yet. Save the Liveries Folder in Settings, then click <strong style={{color:'var(--t0)'}}>Scan for Liveries</strong>.</>}</div>:<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(210px,1fr))',gap:12,alignItems:'start'}}>{(()=>{ const pkgCounts={}; items.forEach(x=>{ const k=x.package_root||''; pkgCounts[k]=(pkgCounts[k]||0)+1; }); return filteredItems.map(item=><LiveryTile key={item.id} item={item} picked={picked.has(item.id)} onTogglePick={togglePick} onToggle={toggleItem} onPreview={setPreview} onFav={toggleFav} packageCount={pkgCounts[item.package_root||'']||1}/>); })()}</div>}
+    {preview&&<div onClick={()=>setPreview(null)} style={{position:'fixed',inset:0,zIndex:1200,background:'rgba(5,12,24,.82)',display:'flex',alignItems:'center',justifyContent:'center',padding:24}}><div onClick={e=>e.stopPropagation()} style={{maxWidth:'min(1100px, 92vw)',maxHeight:'92vh',background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:16,padding:14,display:'grid',gap:10}}><div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12}}><div><div style={{fontSize:16,fontWeight:800,color:'var(--t0)'}}>{preview.title_override||preview.airline||preview.variant||preview.name||'Livery'}</div><div style={{fontSize:11,color:'var(--t2)'}}>{preview.package_name||''}{preview.variant?` • ${preview.variant}`:''}{preview.year?` • ${preview.year}`:''}</div></div><Btn label='Close' color='var(--t2)' sm onClick={()=>setPreview(null)}/></div><img src={'/api/livery-thumb?path='+encodeURIComponent(preview.thumbnail_path||'')} alt='' style={{maxWidth:'86vw',maxHeight:'80vh',objectFit:'contain',display:'block',borderRadius:12,background:'var(--bg2)',border:'1px solid var(--bdr)'}}/></div></div>}
   </div>;
 }
 
@@ -1545,7 +1687,7 @@ function RealWorldTab({a,onSave,selectedAIProvider}){
                   onClick={() => {
                     setMode(id);
                     if(id==='saved' && (!nativeState.current_url || nativeState.current_url==='about:blank')){
-                      openBrowserUrl('https://www.bing.com','Web Search');
+                      openBrowserUrl('https://www.google.com','Web Search');
                     }
                     if(id==='web') runOriginalSearch();
                   }}
@@ -1586,7 +1728,7 @@ function RealWorldTab({a,onSave,selectedAIProvider}){
       </div>
     );
   }
-  return <div style={{display:'flex',flexDirection:'column',gap:16}}>{left}<EmbeddedBrowserPane key={a.id+'|'+defaultQ+'|'+browserSeed} initialQuery={defaultQ} searchContext='specs' height='calc(100vh - 420px)'/></div>;
+  return <div style={{display:'grid',gridTemplateColumns:'minmax(360px,0.9fr) minmax(620px,1.1fr)',gap:14,alignItems:'start'}}><div style={{minWidth:0}}>{left}</div><div style={{minWidth:0}}><EmbeddedBrowserPane key={a.id+'|'+defaultQ+'|'+browserSeed} initialQuery={defaultQ} searchContext='specs' height='calc(100vh - 260px)' layout='stack' browserMin='620px'/></div></div>;
 }
 
 function FeaturesTab({a,injected,onInjected,onSave}){
@@ -1629,6 +1771,7 @@ function GalleryTab({a,onSaveMeta}){
   const apiImgs=(a.gallery_paths||[]).map((_,i)=>"/gallery/"+a.id+"/"+i);
   const imgs=apiImgs;
   const defaultImageSearch=((a.publisher?a.publisher+' ':'')+a.title+' msfs').trim();
+  const defaultQ=defaultImageSearch;
   const defaultImageUrl=googleSearchUrl(defaultImageSearch,{images:true});
   const [sel,setSel]=useState(0),[loaded,setLoaded]=useState({}),[failed,setFailed]=useState({}),[busy,setBusy]=useState(false),[msg,setMsg]=useState("");
   const [browserSeed,setBrowserSeed]=useState(0);
@@ -1729,7 +1872,7 @@ function GalleryTab({a,onSaveMeta}){
   if(desktopNative){
     return <div style={{display:'grid',gridTemplateColumns:'1fr',gap:12,minHeight:520}}>{leftPane}<div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:12,padding:12,fontSize:12,color:'var(--t2)',lineHeight:1.7}}>The native browser on the right is set to image search for this add-on. Use <strong style={{color:'var(--t0)'}}>Reset Image Search</strong> to jump back to the default image search at any time.</div></div>;
   }
-  return <div style={{display:'grid',gridTemplateColumns:'minmax(0,1fr) minmax(620px,0.95fr)',gap:12,minHeight:520}}>{leftPane}<div style={{display:'flex',flexDirection:'column',gap:10}}><div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:12,padding:12,fontSize:12,color:'var(--t2)',lineHeight:1.7}}>Image search results are shown on the right for quick image hunting. Use <strong style={{color:'var(--t0)'}}>Reset Image Search</strong> to jump back to the default search for this add-on.</div><EmbeddedBrowserPane key={a.id+'|images|'+browserSeed} initialUrl={defaultImageUrl} titleHint='Image Search' searchContext='images' height='calc(100vh - 280px)' layout='stack' browserMin='620px'/></div></div>;
+  return <div style={{display:'grid',gridTemplateColumns:'minmax(0,1fr) minmax(620px,0.95fr)',gap:12,minHeight:520}}>{leftPane}<div style={{display:'flex',flexDirection:'column',gap:10}}><div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:12,padding:12,fontSize:12,color:'var(--t2)',lineHeight:1.7}}>Image search results are shown on the right for quick image hunting. Use <strong style={{color:'var(--t0)'}}>Reset Image Search</strong> to jump back to the default search for this add-on.</div><EmbeddedBrowserPane key={a.id+'|images|'+browserSeed} initialQuery={defaultQ} titleHint='Image Search' searchContext='images' height='calc(100vh - 280px)' layout='stack' browserMin='620px'/></div></div>;
 }
 
 function EmbeddedBrowserPane({initialQuery,initialUrl,titleHint,onSavePage,saveEnabled,shortcuts=[],height="520px",layout="split",browserMin="760px",searchContext='web'}){
@@ -1824,7 +1967,7 @@ function EmbeddedBrowserPane({initialQuery,initialUrl,titleHint,onSavePage,saveE
   function prettyUrl(u){ try{ const x=new URL(u); const path=(x.pathname||'/').replace(/\/$/,'')||'/'; const s=x.hostname+path; return s.length>90?s.slice(0,90)+'…':s; }catch(e){ return u; } }
   function isYoutubeQuery(v){ const q=String(v||'').toLowerCase(); return q.includes('site:youtube.com') || q.includes('site:youtu.be') || q.startsWith('youtube '); }
   function youtubeSearchUrl(v){ const cleaned=String(v||'').replace(/site:youtube\.com/ig,'').replace(/site:youtu\.be/ig,'').replace(/\byoutube\b/ig,'').trim(); return 'https://www.youtube.com/results?search_query='+encodeURIComponent(cleaned); }
-  function googleSearchUrl(v){ return window.googleSearchUrl?window.googleSearchUrl(v):('https://www.bing.com/search?q='+encodeURIComponent(String(v||'').trim())); }
+  function googleSearchUrl(v,ctx){ if(window.googleSearchUrl) return window.googleSearchUrl(v,ctx); const q=encodeURIComponent(String(v||'').trim()); return ctx==='images' ? ('https://www.google.com/search?tbm=isch&hl=en&gl=us&q='+q) : ('https://www.google.com/search?hl=en&gl=us&q='+q); }
 
   async function openNative(url,title){
     const clean=normalizeUrl(url)||url.trim();
@@ -1869,7 +2012,7 @@ function EmbeddedBrowserPane({initialQuery,initialUrl,titleHint,onSavePage,saveE
       setResults([]); setTotalPages(1); setTotalResults(0); setLoading(false); return;
     }
     if(desktopNative){
-      const g=googleSearchUrl(term);
+      const g=googleSearchUrl(term, searchContext);
       await openNative(g,'Web Search');
       setResults([]); setTotalPages(1); setTotalResults(0); setMsg('Opened search results in the browser panel.');
       setLoading(false); return;
@@ -1886,9 +2029,22 @@ function EmbeddedBrowserPane({initialQuery,initialUrl,titleHint,onSavePage,saveE
         setResults(hits);
         setTotalPages(data.total_pages||1);
         setTotalResults(data.total_results||hits.length||0);
-        if(!hits.length) setMsg('No results found.');
+        if(!hits.length){
+          const fallbackUrl=googleSearchUrl(term, searchContext);
+          setIframeUrl('/api/research/open?url='+encodeURIComponent(fallbackUrl));
+          setPageUrl(fallbackUrl);
+          setPageTitle(searchContext==='images'?'Google Image Search':'Google Search');
+          setMsg('Opened Google results in the browser pane.');
+        }
       }
-    }catch(e){ setResults([]); setTotalPages(1); setTotalResults(0); setMsg('Search failed.'); }
+    }catch(e){
+      const fallbackUrl=googleSearchUrl(term, searchContext);
+      setResults([]); setTotalPages(1); setTotalResults(0);
+      setIframeUrl('/api/research/open?url='+encodeURIComponent(fallbackUrl));
+      setPageUrl(fallbackUrl);
+      setPageTitle(searchContext==='images'?'Google Image Search':'Google Search');
+      setMsg('Opened Google results in the browser pane.');
+    }
     finally{ setLoading(false); }
   }
 
@@ -2828,9 +2984,372 @@ function TagsEditor(){
 
 
 
-function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent='var(--acc)'}){
+
+
+
+
+
+
+function sharedAirportMarkerStyle(addon, selected=false){
+  const sub=String(addon&&addon.sub||'').toLowerCase();
+  const isAirport=addonTypeFor(addon)==='Airport';
+  const style={ color:'#F97316', radius:selected?9.5:7.5, weight:selected?4.5:3.5 };
+  if(!isAirport) return style;
+  if(sub.includes('large commercial') || sub.includes('large airport') || sub.includes('international') || (sub.includes('large') && sub.includes('commercial'))) return {color:'#1D4ED8', radius:selected?13:11, weight:selected?5.25:4.5};
+  if(sub.includes('medium commercial') || sub.includes('regional') || (sub.includes('medium') && sub.includes('commercial')) || sub.includes('medium airport')) return {color:'#16A34A', radius:selected?11.5:9.5, weight:selected?4.75:4};
+  if(sub.includes('general aviation')) return {color:'#D946EF', radius:selected?9.75:7.75, weight:selected?4.25:3.5};
+  if(sub.includes('municipal')) return {color:'#F59E0B', radius:selected?10.25:8.25, weight:selected?4.5:3.75};
+  if(sub.includes('military')) return {color:'#DC2626', radius:selected?11.75:9.75, weight:selected?4.75:4};
+  if(sub.includes('heli')) return {color:'#7C3AED', radius:selected?8.5:6.5, weight:selected?4:3.25};
+  if(sub.includes('sea') || sub.includes('water')) return {color:'#0F766E', radius:selected?9.25:7.25, weight:selected?4.25:3.5};
+  if(sub.includes('bush') || sub.includes('strip') || sub.includes('small')) return {color:'#EC4899', radius:selected?8.75:6.75, weight:selected?4:3.25};
+  if(sub.includes('commercial')) return {color:'#2563EB', radius:selected?10.75:8.75, weight:selected?4.5:3.75};
+  return {color:'#F97316', radius:selected?10.25:8.25, weight:selected?4.25:3.5};
+}
+function safeSubtypeColor(addon){ try{return sharedAirportMarkerStyle(addon,false).color;}catch(e){return '#F97316';} }
+function markerRadius(addon, selected=false){ try{return sharedAirportMarkerStyle(addon, selected).radius;}catch(e){return selected?10:8;} }
+function markerRingWeight(addon, selected=false){ try{return sharedAirportMarkerStyle(addon, selected).weight;}catch(e){return selected?4.5:3.5;} }
+
+function GlobeExplorerPreview({items,selectedItem,onSelectItem,accent='var(--acc)',labelForItem,savedView,onViewChange,showCodeLabels=false,layer='bright',rangeAircraft=null}){
+  const wrapRef=useRef(null), mapObjRef=useRef(null), popupRef=useRef(null);
+  const [camera,setCamera]=useState({bearing:0,zoom:3.3,distanceText:'—'});
+  const [terrainOn,setTerrainOn]=useState(layer==='terrain');
+  const [measureOn,setMeasureOn]=useState(false);
+  const [measurePoints,setMeasurePoints]=useState([]);
+  const [buildingsOn,setBuildingsOn]=useState(false);
+  const [rangeRingsOn,setRangeRingsOn]=useState(true);
+  const RESET_ALT_NM=2959.78;
+  const LOCAL_DETAIL_NM=1.75;
+  const MAX_DETAIL_METERS=170;
+  const GLOBE_CENTER=[0,18];
+
+  const itemMap=useMemo(()=>{ const m=new Map(); (Array.isArray(items)?items:[]).forEach(item=>{ const id=String(item&&item.addon&&item.addon.id||''); if(id) m.set(id,item); }); return m; },[items]);
+  const itemMapRef=useRef(itemMap);
+  useEffect(()=>{ itemMapRef.current=itemMap; },[itemMap]);
+  const measureOnRef=useRef(false);
+  useEffect(()=>{ measureOnRef.current=measureOn; },[measureOn]);
+  const latestEnsureMapLayersRef=useRef(()=>{});
+  const latestSyncCameraRef=useRef(()=>{});
+  const selectedId=String(selectedItem&&selectedItem.addon&&selectedItem.addon.id||'');
+  const lastAppliedViewRef=useRef('');
+
+  function globeSubtypeColor(item){
+    const sub=String(item&&item.addon&&item.addon.sub||'').toLowerCase();
+    if(sub.includes('large commercial') || sub.includes('large airport') || sub.includes('international') || (sub.includes('large') && sub.includes('commercial'))) return '#1D4ED8';
+    if(sub.includes('medium commercial') || sub.includes('regional') || (sub.includes('medium') && sub.includes('commercial')) || sub.includes('medium airport')) return '#16A34A';
+    if(sub.includes('general aviation')) return '#D946EF';
+    if(sub.includes('municipal')) return '#F59E0B';
+    if(sub.includes('military')) return '#DC2626';
+    if(sub.includes('heli')) return '#7C3AED';
+    if(sub.includes('sea') || sub.includes('water')) return '#0F766E';
+    if(sub.includes('bush') || sub.includes('strip') || sub.includes('small')) return '#EC4899';
+    if(sub.includes('commercial')) return '#2563EB';
+    return '#F97316';
+  }
+
+
+  const airportMarkerStyle=(addon, selected=false)=>sharedAirportMarkerStyle(addon, selected);
+  const subtypeColor=(addon)=>safeSubtypeColor(addon);
+
+
+  const featureCollection=useMemo(()=>({
+    type:'FeatureCollection',
+    features:(Array.isArray(items)?items:[]).filter(item=>item&&item.point&&Number.isFinite(Number(item.point.lat))&&Number.isFinite(Number(item.point.lon))).map(item=>{
+      const st=airportMarkerStyle(item&&item.addon,false);
+      return {
+        type:'Feature',
+        geometry:{type:'Point',coordinates:[Number(item.point.lon),Number(item.point.lat)]},
+        properties:{
+          id:String(item&&item.addon&&item.addon.id||''),
+          title:String(item&&item.addon&&item.addon.title||'Airport'),
+          code:String(item&&((item.icao||item.faa_id)||'')||'').toUpperCase(),
+          color:String(item.dotColor||globeSubtypeColor(item)),
+          markerRadius:Number(st.radius||8),
+          markerWeight:Number(st.weight||3.5),
+          subtype:String(item&&item.addon&&item.addon.sub||'')
+        }
+      };
+    })
+  }),[items]);
+
+  function buildGlobeStyle(which){
+    const defKey=String(which||'bright').toLowerCase();
+    const styleUrls={
+      liberty:'https://tiles.openfreemap.org/styles/liberty',
+      bright:'https://tiles.openfreemap.org/styles/bright',
+      positron:'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
+      voyager:'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json',
+      dark:'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
+    };
+    if(styleUrls[defKey]) return {style:styleUrls[defKey], background:defKey==='dark'?'#020617':'#0b1220'};
+    if(defKey==='satellite'){
+      return {background:'#020617', style:{
+        version:8,
+        glyphs:'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+        projection:{type:'globe'},
+        sources:{sat:{type:'raster',tiles:['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],tileSize:256,attribution:'Esri World Imagery'}},
+        layers:[{id:'sat',type:'raster',source:'sat'}],
+        sky:{'atmosphere-blend':['interpolate',['linear'],['zoom'],0,1,5,1,7,0.2]},
+        light:{anchor:'map',position:[1.5,90,80]}
+      }};
+    }
+    return {background:'#04111f', style:{
+      version:8,
+      glyphs:'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
+      projection:{type:'globe'},
+      sources:{topo:{type:'raster',tiles:['https://a.tile.opentopomap.org/{z}/{x}/{y}.png','https://b.tile.opentopomap.org/{z}/{x}/{y}.png','https://c.tile.opentopomap.org/{z}/{x}/{y}.png'],tileSize:256,attribution:'© OpenTopoMap © OpenStreetMap'}},
+      layers:[{id:'topo',type:'raster',source:'topo'}],
+      sky:{'atmosphere-blend':['interpolate',['linear'],['zoom'],0,1,5,1,7,0.2]},
+      light:{anchor:'map',position:[1.5,90,80]}
+    }};
+  }
+  const styleDef=buildGlobeStyle(layer);
+
+  const formatDistance=useCallback((meters)=>{
+    const unit=currentDistanceUnit();
+    if(unit==='kilometers') return meters<1000?`${Math.round(meters)} m`:`${(meters/1000).toFixed(2)} km`;
+    if(unit==='miles') return meters<1609.34?`${Math.round(meters*3.28084)} ft`:`${(meters/1609.34).toFixed(2)} mi`;
+    if(unit==='nautical_miles') return meters<1609.34?`${Math.round(meters*3.28084)} ft`:`${(meters/1852).toFixed(2)} NM`;
+    return meters<1000?`${Math.round(meters)} m`:`${(meters/1000).toFixed(2)} km`;
+  },[]);
+  const haversineMeters=(a,b)=>{ const toRad=v=>v*Math.PI/180; const R=6371008.8; const dLat=toRad(b[1]-a[1]); const dLon=toRad(b[0]-a[0]); const lat1=toRad(a[1]); const lat2=toRad(b[1]); const s=Math.sin(dLat/2)**2+Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2; return 2*R*Math.asin(Math.min(1,Math.sqrt(s))); };
+  const estimateGroundDistance=(map)=>{ try{ const lat=Number(map.getCenter().lat)||0; const zoom=Number(map.getZoom())||0; const metersPerPixel=(156543.03392*Math.cos(lat*Math.PI/180))/Math.pow(2, zoom); return Math.max(25, metersPerPixel*Math.max(220, map.getContainer().clientHeight||800)/2.2); }catch(e){ return 0; } };
+  const zoomForGroundDistance=(map, distanceMeters, latOverride)=>{
+    try{
+      const lat=Number.isFinite(Number(latOverride))?Number(latOverride):Number(map.getCenter().lat)||0;
+      const h=Math.max(220, map.getContainer().clientHeight||800);
+      const numerator=(156543.03392*Math.cos(lat*Math.PI/180))*(h/2.2);
+      const z=Math.log2(Math.max(1e-6, numerator/Math.max(1,distanceMeters)));
+      return Math.max(0.6, Math.min(19.5, z));
+    }catch(e){ return 3.304; }
+  };
+  const syncCamera=useCallback((map)=>{ if(!map) return; try{ const c=map.getCenter(); const z=Number(map.getZoom())||0; const next={lat:Number(c.lat),lng:Number(c.lng),zoom:z,bearing:Number(map.getBearing())||0,pitch:Number(map.getPitch())||0}; setCamera({bearing:next.bearing,zoom:z,distanceText:formatDistance(estimateGroundDistance(map))}); onViewChange&&onViewChange(next); }catch(e){} },[formatDistance,onViewChange]);
+  const buildCircle=(center,radiusNm,steps=128)=>{ const [lng,lat]=center; const R=6371e3; const d=(radiusNm*1852)/R; const lat1=lat*Math.PI/180; const lon1=lng*Math.PI/180; const coords=[]; for(let i=0;i<=steps;i++){ const br=(i/steps)*Math.PI*2; const lat2=Math.asin(Math.sin(lat1)*Math.cos(d)+Math.cos(lat1)*Math.sin(d)*Math.cos(br)); const lon2=lon1+Math.atan2(Math.sin(br)*Math.sin(d)*Math.cos(lat1),Math.cos(d)-Math.sin(lat1)*Math.sin(lat2)); coords.push([((lon2*180/Math.PI)+540)%360-180, lat2*180/Math.PI]); } return coords; };
+
+  const ensureMapLayers=useCallback((map)=>{
+    if(!map||!map.isStyleLoaded()) return;
+    const sourceId='airports';
+    const measureId='measure';
+    const ringId='range-rings';
+    const ringLabelId='range-ring-labels';
+
+    const measureFeatures=[];
+    (measurePoints||[]).forEach((pt,idx)=>measureFeatures.push({type:'Feature',geometry:{type:'Point',coordinates:pt},properties:{id:String(idx),role:'vertex'}}));
+    if(measurePoints.length>1){
+      for(let i=1;i<measurePoints.length;i++){
+        const a=measurePoints[i-1], b=measurePoints[i];
+        measureFeatures.push({type:'Feature',geometry:{type:'LineString',coordinates:[a,b]},properties:{id:`line_${i}`,role:'segment'}});
+        const distLabel=formatDistance(haversineMeters(a,b));
+        const mid=[(a[0]+b[0])/2,(a[1]+b[1])/2];
+        measureFeatures.push({type:'Feature',geometry:{type:'Point',coordinates:mid},properties:{id:`label_${i}`,role:'label',label:distLabel}});
+      }
+    }
+    const measureGeo={type:'FeatureCollection',features:measureFeatures};
+
+    const ringFeatures=[];
+    if(rangeRingsOn && selectedItem && selectedItem.point){
+      const center=[Number(selectedItem.point.lon), Number(selectedItem.point.lat)];
+      if(rangeAircraft && rangeAircraft.rw && Number(rangeAircraft.rw.range_nm)>0){
+        const nm=Number(rangeAircraft.rw.range_nm);
+        const label=((rangeAircraft.title||'Aircraft') + ' · ' + nm + 'nm');
+        ringFeatures.push({type:'Feature',geometry:{type:'LineString',coordinates:buildCircle(center,nm)},properties:{color:'#38BDF8',label}});
+        ringFeatures.push({type:'Feature',geometry:{type:'Point',coordinates:[center[0]+(nm/60), center[1]]},properties:{label,color:'#38BDF8'}});
+      }else{
+        [{nm:270,color:'#34D399',label:'GA · 270nm'},{nm:560,color:'#FBBF24',label:'TP · 560nm'},{nm:900,color:'#38BDF8',label:'JET · 900nm'}].forEach(d=>{
+          ringFeatures.push({type:'Feature',geometry:{type:'LineString',coordinates:buildCircle(center,d.nm)},properties:{color:d.color,label:d.label}});
+          ringFeatures.push({type:'Feature',geometry:{type:'Point',coordinates:[center[0]+(d.nm/60), center[1]]},properties:{label:d.label,color:d.color}});
+        });
+      }
+    }
+    const ringSource={type:'FeatureCollection',features:ringFeatures};
+
+    if(map.getSource(sourceId)){ try{ map.getSource(sourceId).setData(featureCollection); }catch(e){} }
+    else {
+      map.addSource(sourceId,{type:'geojson',data:featureCollection,cluster:false});
+      map.addLayer({id:'airport-points-hit',type:'circle',source:sourceId,paint:{'circle-radius':['+', ['coalesce',['get','markerRadius'],8], 10],'circle-color':'rgba(255,255,255,0.01)'}});
+      map.addLayer({id:'airport-points',type:'circle',source:sourceId,paint:{
+        'circle-color':['coalesce',['get','color'],'#E0A11D'],
+        'circle-radius':['case',['==',['get','id'],selectedId],['+', ['coalesce',['get','markerRadius'],8], 2],['coalesce',['get','markerRadius'],8]],
+        'circle-stroke-width':['case',['==',['get','id'],selectedId],['+', ['coalesce',['get','markerWeight'],3], 1],['coalesce',['get','markerWeight'],3]],
+        'circle-stroke-color':'#ffffff'
+      }});
+      map.addLayer({id:'airport-labels',type:'symbol',source:sourceId,layout:{
+        'text-field':['coalesce',['get','code'],['get','title']],
+        'text-size':14,
+        'text-font':['Noto Sans Regular'],
+        'text-variable-anchor':['top','bottom','left','right'],
+        'text-radial-offset':0.8,
+        'text-allow-overlap':true,
+        'text-ignore-placement':true,
+        'visibility':showCodeLabels?'visible':'none'
+      },paint:{'text-color':'#F8FAFC','text-halo-color':'rgba(15,23,42,0.98)','text-halo-width':2.8}});
+    }
+    try{ map.setPaintProperty('airport-points','circle-radius',['case',['==',['get','id'],selectedId],['+', ['coalesce',['get','markerRadius'],8], 2],['coalesce',['get','markerRadius'],8]]); }catch(e){}
+    try{ map.setPaintProperty('airport-points','circle-stroke-width',['case',['==',['get','id'],selectedId],['+', ['coalesce',['get','markerWeight'],3], 1],['coalesce',['get','markerWeight'],3]]); }catch(e){}
+    if(map.getLayer('airport-labels')){ try{ map.setLayoutProperty('airport-labels','visibility', showCodeLabels ? 'visible' : 'none'); }catch(e){} }
+
+    if(map.getSource(measureId)){ try{ map.getSource(measureId).setData(measureGeo); }catch(e){} }
+    else {
+      map.addSource(measureId,{type:'geojson',data:measureGeo});
+      map.addLayer({id:'measure-lines',type:'line',source:measureId,filter:['==','$type','LineString'],layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':'#111827','line-width':2.5,'line-dasharray':[2,1.2]}});
+      map.addLayer({id:'measure-points',type:'circle',source:measureId,filter:['all',['==','$type','Point'],['==','role','vertex']],paint:{'circle-radius':5.5,'circle-color':'#111827','circle-stroke-color':'#ffffff','circle-stroke-width':1.5}});
+      map.addLayer({id:'measure-labels',type:'symbol',source:measureId,filter:['all',['==','$type','Point'],['==','role','label']],layout:{'text-field':['get','label'],'text-size':12,'text-font':['Noto Sans Regular'],'text-anchor':'top','text-offset':[0,-0.9],'text-allow-overlap':true},paint:{'text-color':'#F8FAFC','text-halo-color':'rgba(15,23,42,0.98)','text-halo-width':2.2}});
+    }
+
+    if(map.getSource(ringId)){ try{ map.getSource(ringId).setData(ringSource); }catch(e){} }
+    else {
+      map.addSource(ringId,{type:'geojson',data:ringSource});
+      map.addLayer({id:'range-rings-lines',type:'line',source:ringId,filter:['==','$type','LineString'],layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':['coalesce',['get','color'],'#38BDF8'],'line-width':2,'line-dasharray':[3,3],'line-opacity':0.7}});
+      map.addLayer({id:ringLabelId,type:'symbol',source:ringId,filter:['==','$type','Point'],layout:{'text-field':['get','label'],'text-size':12,'text-font':['Noto Sans Regular'],'text-anchor':'center','text-allow-overlap':true,'text-ignore-placement':true},paint:{'text-color':['coalesce',['get','color'],'#38BDF8'],'text-halo-color':'rgba(15,23,42,0.95)','text-halo-width':1.7}});
+    }
+
+    try{
+      if(!map.getSource('terrainSource')) map.addSource('terrainSource',{type:'raster-dem',url:'https://tiles.mapterhorn.com/tilejson.json',tileSize:256});
+      if(terrainOn){ map.setTerrain({source:'terrainSource',exaggeration:1}); }
+      else { map.setTerrain(null); }
+    }catch(e){}
+
+    if(buildingsOn){
+      try{
+        if(!map.getSource('openfreemap')) map.addSource('openfreemap',{url:'https://tiles.openfreemap.org/planet',type:'vector'});
+        if(!map.getLayer('3d-buildings')){
+          const layers=(map.getStyle().layers||[]);
+          let labelLayerId;
+          for(let i=0;i<layers.length;i++){ if(layers[i].type==='symbol' && layers[i].layout && layers[i].layout['text-field']){ labelLayerId=layers[i].id; break; } }
+          map.addLayer({id:'3d-buildings',source:'openfreemap','source-layer':'building',type:'fill-extrusion',minzoom:15,filter:['!=',['get','hide_3d'],true],paint:{
+            'fill-extrusion-color':['interpolate',['linear'],['get','render_height'],0,'lightgray',200,'royalblue',400,'lightblue'],
+            'fill-extrusion-height':['interpolate',['linear'],['zoom'],15,0,16,['get','render_height']],
+            'fill-extrusion-base':['interpolate',['linear'],['zoom'],15,0,16,['get','render_min_height']],
+            'fill-extrusion-opacity':0.74
+          }},labelLayerId);
+        }
+      }catch(e){}
+    } else { try{ if(map.getLayer('3d-buildings')) map.removeLayer('3d-buildings'); }catch(e){} }
+  },[featureCollection,selectedId,showCodeLabels,measurePoints,rangeRingsOn,selectedItem,buildingsOn,terrainOn,rangeAircraft,formatDistance]);
+  useEffect(()=>{ latestEnsureMapLayersRef.current=ensureMapLayers; },[ensureMapLayers]);
+  useEffect(()=>{ latestSyncCameraRef.current=syncCamera; },[syncCamera]);
+
+  useEffect(()=>{ if(!wrapRef.current || typeof maplibregl==='undefined') return; let destroyed=false; try{ if(mapObjRef.current){ mapObjRef.current.remove(); mapObjRef.current=null; } }catch(e){}
+    const refCenter=((savedView && Number.isFinite(Number(savedView.lng)) && Number.isFinite(Number(savedView.lat))) ? [Number(savedView.lng), Number(savedView.lat)] : GLOBE_CENTER);
+    const hav=(a,b)=>{ const toRad=v=>v*Math.PI/180; const R=6371008.8; const dLat=toRad(b[1]-a[1]); const dLon=toRad(b[0]-a[0]); const lat1=toRad(a[1]); const lat2=toRad(b[1]); const s=Math.sin(dLat/2)**2+Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2; return 2*R*Math.asin(Math.min(1,Math.sqrt(s))); };
+    const nearestItem=((items||[]).filter(it=>it&&it.point&&Number.isFinite(Number(it.point.lon))&&Number.isFinite(Number(it.point.lat))).sort((a,b)=>hav(refCenter,[Number(a.point.lon),Number(a.point.lat)])-hav(refCenter,[Number(b.point.lon),Number(b.point.lat)]))[0]||null);
+    const initialCenter = (selectedItem&&selectedItem.point&&Number.isFinite(Number(selectedItem.point.lon))&&Number.isFinite(Number(selectedItem.point.lat)))
+      ? [Number(selectedItem.point.lon), Number(selectedItem.point.lat)]
+      : (nearestItem ? [Number(nearestItem.point.lon), Number(nearestItem.point.lat)] : refCenter);
+    const initialZoom = (selectedItem&&selectedItem.point)
+      ? (Number(savedView&&savedView.zoom) || approxZoomForDistanceNm(2959.78, Number(selectedItem.point.lat), 900))
+      : (nearestItem ? approxZoomForDistanceNm(2959.78, Number(nearestItem.point.lat), 900) : (Number(savedView&&savedView.zoom) || 3.304));
+    const map=new maplibregl.Map({
+      container:wrapRef.current,
+      style:styleDef.style,
+      center:initialCenter,
+      zoom:initialZoom,
+      bearing:Number(savedView&&savedView.bearing)||0,
+      pitch:Number(savedView&&savedView.pitch)||0,
+      attributionControl:true,
+      antialias:true,
+      maxZoom:19.5,
+      minZoom:0.6,
+      maxPitch:85
+    });
+    mapObjRef.current=map;
+    try{ map.dragRotate.enable(); map.touchZoomRotate.enableRotation(); }catch(e){}
+    try{ map.addControl(new maplibregl.NavigationControl({visualizePitch:true, showZoom:true, showCompass:true}), 'top-left'); }catch(e){}
+    const showHoverPopup=(feature)=>{ if(!feature||!popupRef.current) return; const code=String(feature.properties&&feature.properties.code||'').trim()||'Airport'; const title=String(feature.properties&&feature.properties.title||''); popupRef.current.setLngLat(feature.geometry.coordinates).setHTML(`<div style="font-size:11px;font-weight:800;color:#38BDF8;margin-bottom:2px">${code}</div><div style="font-size:12px;color:#E2E8F0;max-width:240px">${title}</div>`).addTo(map); };
+    const clearHoverPopup=()=>{ try{ popupRef.current&&popupRef.current.remove(); }catch(e){} };
+    try{ popupRef.current=new maplibregl.Popup({offset:12,closeButton:false,closeOnClick:false,anchor:'bottom'}); }catch(e){}
+    const clickAirportFeature=(feature)=>{
+      if(!feature) return;
+      const id=String(feature.properties&&feature.properties.id||'');
+      const item=itemMapRef.current.get(id);
+      if(!item || !item.point) return;
+      const targetZoom=zoomForGroundDistance(map, LOCAL_DETAIL_NM*1852, Number(item.point.lat));
+      onSelectItem&&onSelectItem(item,{selectOnly:true});
+      map.flyTo({center:[Number(item.point.lon),Number(item.point.lat)], zoom:targetZoom, pitch:28, speed:0.65, curve:1.18, essential:true});
+      latestSyncCameraRef.current&&latestSyncCameraRef.current(map);
+    };
+    const syncCursor=()=>{ try{ map.getCanvas().style.cursor=measureOnRef.current?'crosshair':''; }catch(e){} };
+    const activeQueryLayers=()=>['airport-points-hit','airport-points'].filter(id=>{ try{return !!map.getLayer(id);}catch(err){return false;} });
+    const handleMapClick=(e)=>{
+      if(measureOnRef.current){
+        const coords=[Number(e.lngLat.lng), Number(e.lngLat.lat)];
+        setMeasurePoints(prev=>[...prev,coords]);
+        return;
+      }
+      const qLayers=activeQueryLayers();
+      let features=[];
+      try{ features=qLayers.length? (map.queryRenderedFeatures(e.point,{layers:qLayers})||[]) : []; }catch(err){ features=[]; }
+      const feature=features.find(f=>f&&f.properties&&f.properties.id);
+      if(feature) clickAirportFeature(feature);
+    };
+    const handlePointerMove=(e)=>{
+      try{
+        const qLayers=activeQueryLayers();
+        const features=measureOnRef.current?[]:(qLayers.length? (map.queryRenderedFeatures(e.point,{layers:qLayers})||[]) : []);
+        const feature=features.find(f=>f&&f.properties&&f.properties.id);
+        map.getCanvas().style.cursor=measureOnRef.current?'crosshair':(feature?'pointer':'');
+        if(feature) showHoverPopup(feature); else clearHoverPopup();
+      }catch(err){}
+    };
+    const scheduleEnsure=()=>{ [0,120,320,700,1200].forEach(ms=>setTimeout(()=>{ try{ if(!destroyed){ latestEnsureMapLayersRef.current&&latestEnsureMapLayersRef.current(map); latestSyncCameraRef.current&&latestSyncCameraRef.current(map); } }catch(e){} }, ms)); };
+    map.on('load',()=>{ if(destroyed) return; try{ map.setProjection({type:'globe'}); }catch(e){} latestEnsureMapLayersRef.current&&latestEnsureMapLayersRef.current(map); latestSyncCameraRef.current&&latestSyncCameraRef.current(map); syncCursor(); try{ map.resize(); }catch(e){} scheduleEnsure(); });
+    map.on('style.load',()=>{ if(destroyed) return; try{ map.setProjection({type:'globe'}); }catch(e){} latestEnsureMapLayersRef.current&&latestEnsureMapLayersRef.current(map); latestSyncCameraRef.current&&latestSyncCameraRef.current(map); syncCursor(); scheduleEnsure(); });
+    map.on('styledata',()=>{ if(destroyed) return; try{ latestEnsureMapLayersRef.current&&latestEnsureMapLayersRef.current(map); }catch(e){} });
+    map.on('idle',()=>{ if(destroyed) return; try{ latestEnsureMapLayersRef.current&&latestEnsureMapLayersRef.current(map); }catch(e){} });
+    map.on('click',handleMapClick);
+    map.on('mousemove',handlePointerMove);
+    map.on('mouseleave',()=>{ try{ map.getCanvas().style.cursor=measureOnRef.current?'crosshair':''; }catch(err){} clearHoverPopup(); });
+    map.on('moveend',()=>latestSyncCameraRef.current&&latestSyncCameraRef.current(map));
+    map.on('zoomend',()=>latestSyncCameraRef.current&&latestSyncCameraRef.current(map));
+    map.on('pitchend',()=>latestSyncCameraRef.current&&latestSyncCameraRef.current(map));
+    map.on('rotateend',()=>latestSyncCameraRef.current&&latestSyncCameraRef.current(map));
+    return ()=>{ destroyed=true; clearHoverPopup(); try{ map.remove(); }catch(e){} if(mapObjRef.current===map) mapObjRef.current=null; };
+  },[layer]);
+
+  useEffect(()=>{ const map=mapObjRef.current; if(!map) return; try{ latestEnsureMapLayersRef.current&&latestEnsureMapLayersRef.current(map); latestSyncCameraRef.current&&latestSyncCameraRef.current(map); }catch(e){} [0,100,300].forEach(ms=>setTimeout(()=>{ try{ if(mapObjRef.current===map){ latestEnsureMapLayersRef.current&&latestEnsureMapLayersRef.current(map); } }catch(err){} },ms)); },[featureCollection,selectedId,showCodeLabels,measurePoints,rangeRingsOn,buildingsOn,terrainOn,rangeAircraft]);
+  useEffect(()=>{ const map=mapObjRef.current; if(!map||!savedView) return; const targetLat=Number(savedView.lat), targetLng=Number(savedView.lng), targetZoom=Number(savedView.zoom), targetBearing=Number(savedView.bearing)||0, targetPitch=Number(savedView.pitch)||0; if(!Number.isFinite(targetLat)||!Number.isFinite(targetLng)||!Number.isFinite(targetZoom)) return; try{ const c=map.getCenter(); const z=Number(map.getZoom())||0; const b=Number(map.getBearing())||0; const p=Number(map.getPitch())||0; const differs=Math.abs(Number(c.lat)-targetLat)>0.0001||Math.abs(Number(c.lng)-targetLng)>0.0001||Math.abs(z-targetZoom)>0.015||Math.abs(b-targetBearing)>0.05||Math.abs(p-targetPitch)>0.05; const key=`${targetLat.toFixed(5)}|${targetLng.toFixed(5)}|${targetZoom.toFixed(3)}|${targetBearing.toFixed(2)}|${targetPitch.toFixed(2)}`; if(differs && lastAppliedViewRef.current!==key){ lastAppliedViewRef.current=key; map.easeTo({center:[targetLng,targetLat],zoom:targetZoom,bearing:targetBearing,pitch:targetPitch,duration:700}); } }catch(e){} },[savedView&&savedView.lat, savedView&&savedView.lng, savedView&&savedView.zoom, savedView&&savedView.bearing, savedView&&savedView.pitch]);
+
+  const resetWorld=()=>{ const map=mapObjRef.current; if(!map) return; const c=map.getCenter&&map.getCenter(); const center=(c&&Number.isFinite(Number(c.lng))&&Number.isFinite(Number(c.lat)))?[Number(c.lng),Number(c.lat)]:GLOBE_CENTER; const zoom=zoomForGroundDistance(map, RESET_ALT_NM*1852, center[1]); map.flyTo({center, zoom, bearing:0, pitch:0, duration:900, essential:true}); };
+  const centerCurrent=()=>{ const map=mapObjRef.current; if(!map||!selectedItem||!selectedItem.point) return; map.flyTo({center:[Number(selectedItem.point.lon), Number(selectedItem.point.lat)], zoom:Number(map.getZoom())||3.304, pitch:Number(map.getPitch())||0, bearing:Number(map.getBearing())||0, duration:650, essential:true}); };
+  const clearMeasure=()=>setMeasurePoints([]);
+  const measureText=measurePoints.length===0?'Click point A':(measurePoints.length===1?'Click point B':formatDistance(haversineMeters(measurePoints[0],measurePoints[1])));
+  const compassRotate=`rotate(${(-camera.bearing||0)}deg)`;
+  const compassDegrees=((camera.bearing%360)+360)%360;
+
+  return <div style={{position:'relative',flex:1,minHeight:420,borderRadius:10,overflow:'hidden',background:styleDef.background}}>
+    <div ref={wrapRef} style={{position:'absolute',inset:0}}/>
+    <div style={{position:'absolute',left:'50%',top:12,transform:'translateX(-50%)',display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',zIndex:6,pointerEvents:'auto'}}>
+      <button onClick={resetWorld} title='Return to the full world globe view' style={{background:'rgba(5,12,24,.9)',border:'1px solid var(--bdr)',color:'var(--t0)',borderRadius:10,padding:'8px 10px',fontSize:11,fontWeight:700,cursor:'pointer'}}>Reset Globe</button>      <button title={terrainOn?'Disable Terrain':'Enable Terrain'} onClick={()=>setTerrainOn(v=>!v)} style={{background:terrainOn?'#0B3B7A':'rgba(5,12,24,.9)',border:'1px solid '+(terrainOn?'#FACC15':'var(--bdr)'),color:terrainOn?'#FACC15':'var(--t0)',borderRadius:10,padding:'8px 10px',fontSize:15,fontWeight:800,cursor:'pointer'}}>⛰</button>
+      <button title={buildingsOn?'Hide Buildings':'Display Buildings'} onClick={()=>setBuildingsOn(v=>!v)} style={{background:buildingsOn?'#0B3B7A':'rgba(5,12,24,.9)',border:'1px solid '+(buildingsOn?'#FACC15':'var(--bdr)'),color:buildingsOn?'#FACC15':'var(--t0)',borderRadius:10,padding:'8px 10px',fontSize:15,fontWeight:800,cursor:'pointer'}}>🏙</button>
+      <button title='Measure distance between two clicked points' onClick={()=>{ setMeasureOn(v=>!v); setMeasurePoints([]); }} style={{background:measureOn?'#0B3B7A':'rgba(5,12,24,.9)',border:'1px solid '+(measureOn?'#FACC15':'var(--bdr)'),color:measureOn?'#FACC15':'var(--t0)',borderRadius:10,padding:'8px 10px',fontSize:15,fontWeight:800,cursor:'pointer'}}>📏</button>
+      {measureOn && <button onClick={clearMeasure} title='Clear current measured points' style={{background:'rgba(5,12,24,.9)',border:'1px solid var(--bdr)',color:'var(--t0)',borderRadius:10,padding:'8px 10px',fontSize:11,fontWeight:700,cursor:'pointer'}}>Clear</button>}
+      <button title={rangeRingsOn?'Hide Range Rings':'Show Range Rings'} onClick={()=>setRangeRingsOn(v=>!v)} style={{background:rangeRingsOn?'#0B3B7A':'rgba(5,12,24,.9)',border:'1px solid '+(rangeRingsOn?'#FACC15':'var(--bdr)'),color:rangeRingsOn?'#FACC15':'var(--t0)',borderRadius:10,padding:'8px 10px',fontSize:15,fontWeight:800,cursor:'pointer'}}>◎</button>
+    </div>
+    {measureOn && <div style={{position:'absolute',left:'50%',top:58,transform:'translateX(-50%)',zIndex:6,background:'rgba(5,12,24,.92)',border:'1px solid var(--bdr)',color:'var(--t0)',borderRadius:10,padding:'6px 10px',fontSize:11,fontWeight:700,pointerEvents:'none'}}>{measurePoints.length===0?'Click for Point A':`Click for Point ${String.fromCharCode(65+measurePoints.length)}`}</div>}
+    <div style={{position:'absolute',left:12,bottom:86,display:'grid',gap:8,zIndex:8,pointerEvents:'none'}}>
+      <div style={{background:'rgba(5,12,24,.92)',border:'1px solid var(--bdr)',color:'var(--t0)',borderRadius:10,padding:'6px 10px',fontSize:11,fontWeight:800,minWidth:108,textAlign:'center',boxShadow:'0 6px 24px rgba(0,0,0,.28)'}}>{camera.distanceText}</div>
+    </div>
+    <div style={{position:'absolute',right:12,bottom:96,display:'grid',gap:8,justifyItems:'end',zIndex:8}}>
+      <div style={{width:96,height:116,borderRadius:18,background:'rgba(5,12,24,.88)',border:'1px solid var(--bdr)',display:'grid',justifyItems:'center',alignContent:'center',gap:6,padding:'10px 8px'}}>
+        <div style={{position:'relative',width:60,height:60,borderRadius:'50%',border:'1px solid rgba(148,163,184,.28)',background:'radial-gradient(circle at 50% 35%, rgba(255,255,255,.08), rgba(5,12,24,.25))'}}>
+          <div style={{position:'absolute',top:4,left:'50%',transform:'translateX(-50%)',fontSize:10,color:'var(--acc)',fontWeight:800}}>N</div>
+          <div style={{position:'absolute',right:4,top:'50%',transform:'translateY(-50%)',fontSize:10,color:'var(--t2)',fontWeight:700}}>E</div>
+          <div style={{position:'absolute',bottom:4,left:'50%',transform:'translateX(-50%)',fontSize:10,color:'var(--t2)',fontWeight:700}}>S</div>
+          <div style={{position:'absolute',left:4,top:'50%',transform:'translateY(-50%)',fontSize:10,color:'var(--t2)',fontWeight:700}}>W</div>
+          <div style={{position:'absolute',inset:'50% auto auto 50%',width:2,height:22,background:'linear-gradient(180deg,var(--acc),rgba(56,189,248,.05))',transform:`translate(-50%,-100%) ${compassRotate}`,transformOrigin:'50% 100%',borderRadius:999}}/>
+          <div style={{position:'absolute',inset:'50% auto auto 50%',width:8,height:8,borderRadius:'50%',background:'var(--acc)',transform:'translate(-50%,-50%)',boxShadow:'0 0 0 2px rgba(8,15,28,.9)'}}/>
+        </div>
+        <div style={{minWidth:66,textAlign:'center',padding:'7px 8px',borderRadius:8,background:'rgba(3,16,28,.85)',color:'var(--acc)',fontSize:12,fontWeight:800,letterSpacing:'0.05em'}}>{Math.round(compassDegrees)}°</div>
+      </div>
+    </div>
+  </div>;
+}
+
+
+
+function GlobalLibraryMap({items,allItems,selectedItems,onOpenAddon,onClose,onHelp,accent='var(--acc)',openVersion=0}){
   const mapRef=useRef(null), leafRef=useRef(null), tileRef=useRef(null), polygonsRef=useRef(null), markersRef=useRef(null), measureRef=useRef(null), autoFitRef=useRef(false), restoringRef=useRef(false);
-  const STORAGE_KEY='hangar_global_map_state_v99';
+  const STORAGE_KEY='hangar_global_map_state_v103';
   function readSavedState(){
     try{
       const raw=localStorage.getItem(STORAGE_KEY);
@@ -2839,12 +3358,15 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
   }
   const savedStateRef=useRef(readSavedState());
   const initialState=savedStateRef.current||{};
-  const [layer,setLayer]=useState(initialState.layer||'satellite');
+  const [viewMode,setViewMode]=useState('globe');
+  const [layer,setLayer]=useState(initialState.layer||'bright');
   const [scope,setScope]=useState(initialState.scope||'filtered');
   const [regionKey,setRegionKey]=useState(initialState.regionKey||'world');
   const [resolvedItems,setResolvedItems]=useState([]);
   const [selectedAddonId,setSelectedAddonId]=useState(initialState.selectedAddonId||'');
   const [showList,setShowList]=useState(initialState.showList!==false);
+  const DEFAULT_NA_GLOBE_VIEW={lat:39,lng:-98,zoom:3.9,bearing:0,pitch:0};
+  const [globeView,setGlobeView]=useState(initialState.globeView||DEFAULT_NA_GLOBE_VIEW);
   const [listSearch,setListSearch]=useState(initialState.listSearch||'');
   const [mapReady,setMapReady]=useState(false);
   const [progress,setProgress]=useState({phase:'idle',done:0,total:0,message:''});
@@ -2861,7 +3383,12 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
   const [savedRoutes,setSavedRoutes]=useState(()=>readSavedVfrRoutes());
   const [savedRouteId,setSavedRouteId]=useState('');
   const [distanceUnit,setDistanceUnit]=useState(()=>currentDistanceUnit());
+  const [rangeAircraftId,setRangeAircraftId]=useState(initialState.rangeAircraftId||'');
+  const [showAircraftSuggest,setShowAircraftSuggest]=useState(false);
+  const [rangeAircraftSelectedId,setRangeAircraftSelectedId]=useState(initialState.rangeAircraftSelectedId||'');
   const preservedSelectionViewRef=useRef(null);
+  useEffect(()=>{ if(!openVersion) return; setListSearch(''); setRegionKey('world'); setScope('filtered'); setViewMode('globe'); setGlobeView(DEFAULT_NA_GLOBE_VIEW); try{ preservedSelectionViewRef.current=null; }catch(e){} },[openVersion]);
+  useEffect(()=>{ if(viewMode==='map'){ const kick=()=>{ try{ if(leafRef.current){ leafRef.current.invalidateSize(true); refreshMarkerLayers(); refreshPolygonLayers(); refreshMeasurementLayers(); leafRef.current.eachLayer&&leafRef.current.eachLayer(()=>{}); } }catch(e){} }; [40,140,320,620,980].forEach(ms=>setTimeout(kick,ms)); requestAnimationFrame(kick); } },[viewMode]);
 
   const selectedGeoCount=useMemo(()=>((selectedItems||[]).filter(a=>['Airport','Scenery'].includes(addonTypeFor(a)))).length,[selectedItems]);
   const sourceItems=useMemo(()=>{
@@ -2869,9 +3396,34 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
     return src.filter(a=>['Airport','Scenery'].includes(addonTypeFor(a)));
   },[scope,selectedGeoCount,selectedItems,items]);
 
+  const aircraftOptions=useMemo(()=>((allItems||items||[]).filter(a=>addonTypeFor(a)==='Aircraft').sort((a,b)=>String(a.title||'').localeCompare(String(b.title||'')))),[allItems,items]);
+  const selectedRangeAircraft=useMemo(()=>{
+    const byId=aircraftOptions.find(a=>String(a.id||'')===String(rangeAircraftSelectedId||''));
+    if(byId) return byId;
+    const q=String(rangeAircraftId||'').trim().toLowerCase();
+    if(!q) return null;
+    return aircraftOptions.find(a=>String(a.title||'').trim().toLowerCase()===q) || null;
+  },[aircraftOptions,rangeAircraftId,rangeAircraftSelectedId]);
+  const rangeAircraftSuggestions=useMemo(()=>{
+    const q=String(rangeAircraftId||'').trim().toLowerCase();
+    const src=!q ? aircraftOptions : aircraftOptions.filter(a=>String(a.title||'').toLowerCase().includes(q));
+    return src.slice(0,12);
+  },[aircraftOptions,rangeAircraftId]);
+  const applyRangeAircraft=(aircraft)=>{
+    if(!aircraft){ setRangeAircraftId(''); setRangeAircraftSelectedId(''); setShowAircraftSuggest(false); return; }
+    setRangeAircraftId(String(aircraft.title||''));
+    setRangeAircraftSelectedId(String(aircraft.id||''));
+    setShowAircraftSuggest(false);
+  };
+
   const LAYERS={
-    satellite:{l:'Satellite',tile:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',attr:'Esri'},
-    road:{l:'Road',tile:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',attr:'OSM'}
+    liberty:{l:'Liberty',tile:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',attr:'OpenStreetMap'},
+    bright:{l:'Bright',tile:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',attr:'OpenStreetMap'},
+    positron:{l:'Positron',tile:'https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',attr:'CARTO Positron'},
+    voyager:{l:'Voyager',tile:'https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',attr:'CARTO Voyager'},
+    dark:{l:'Dark Matter',tile:'https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',attr:'CARTO Dark Matter'},
+    satellite:{l:'Satellite',tile:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',attr:'Esri World Imagery'},
+    terrain:{l:'Topography',tile:'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',attr:'OpenTopoMap',subdomains:['a','b','c']}
   };
   const REGIONS={
     world:{label:'World', bounds:[[-58,-180],[84,180]]},
@@ -2883,7 +3435,7 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
     oceania:{label:'Oceania', bounds:[[-50,110],[10,180]]},
     caribbean:{label:'Caribbean', bounds:[[8,-90],[30,-58]]}
   };
-  const WORLD_BOUNDS=[[-85,-180],[85,180]];
+  const WORLD_BOUNDS=[[-85,-179.999],[85,179.999]];
 
   function valid(lat,lon){
     const la=Number(lat), lo=Number(lon);
@@ -2892,7 +3444,7 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
     return la>=-90 && la<=90 && lo>=-180 && lo<=180;
   }
   function airportSubtypeKey(addon){ return String(addon&&addon.sub||'Other').trim() || 'Other'; }
-  function airportMarkerStyle(addon, selected=false){
+  function airportMarkerStyle_legacy(addon, selected=false){
     const sub=String(addon&&addon.sub||'').toLowerCase();
     const isAirport=addonTypeFor(addon)==='Airport';
     const style={ color:'#F59E0B', radius:selected?9.5:7.5, weight:selected?4.5:3.5 };
@@ -2906,25 +3458,25 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
     if(sub.includes('sea') || sub.includes('water')) return {color:'#0F766E', radius:selected?9.25:7.25, weight:selected?4.25:3.5};
     if(sub.includes('bush') || sub.includes('strip') || sub.includes('small')) return {color:'#EC4899', radius:selected?8.75:6.75, weight:selected?4:3.25};
     if(sub.includes('commercial')) return {color:'#2563EB', radius:selected?10.75:8.75, weight:selected?4.5:3.75};
-    return {color:'#2563EB', radius:selected?10.25:8.25, weight:selected?4.25:3.5};
+    return {color:'#F97316', radius:selected?10.25:8.25, weight:selected?4.25:3.5};
   }
-  function subtypeColor(addon){ return airportMarkerStyle(addon,false).color; }
-  function markerRadius(addon, selected=false){ return airportMarkerStyle(addon, selected).radius; }
-  function markerRingWeight(addon, selected=false){ return airportMarkerStyle(addon, selected).weight; }
+  function subtypeColor_legacy(addon){ return safeSubtypeColor(addon); }
+  function markerRadius_legacy(addon, selected=false){ return markerRadius(addon, selected); }
+  function markerRingWeight_legacy(addon, selected=false){ return markerRingWeight(addon, selected); }
   const airportLegend=useMemo(()=>{
     const map=new Map();
     (resolvedItems||[]).forEach(item=>{
       if(addonTypeFor(item&&item.addon)!=='Airport' || !item.point) return;
       const key=airportSubtypeKey(item.addon);
       if(!map.has(key)){
-        const style=airportMarkerStyle(item.addon,false);
+        const style=sharedAirportMarkerStyle(item.addon,false);
         map.set(key, {color:style.color,size:style.radius,weight:style.weight});
       }
     });
     return Array.from(map.entries()).map(([label,style])=>({label,color:style.color,size:style.size,weight:style.weight}));
   },[resolvedItems]);
   function markerColor(addon){
-    return subtypeColor(addon);
+    return safeSubtypeColor(addon);
   }
   function inBounds(item,bounds){
     if(!bounds) return true;
@@ -2947,6 +3499,17 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
   const displayItems=useMemo(()=>{
     return (scope==='view' && mapBounds)?(resolvedItems||[]).filter(item=>inBounds(item,mapBounds)):(resolvedItems||[]);
   },[resolvedItems,scope,mapBounds]);
+  useEffect(()=>{
+    const pool=(displayItems&&displayItems.length?displayItems:resolvedItems)||[];
+    if(!pool.length) return;
+    if(selectedAddonId && pool.some(it=>String(it&&it.addon&&it.addon.id||'')===String(selectedAddonId))) return;
+    const ref=(globeView && Number.isFinite(Number(globeView.lat)) && Number.isFinite(Number(globeView.lng))) ? [Number(globeView.lng), Number(globeView.lat)] : [0,18];
+    const hav=(a,b)=>{ const toRad=v=>v*Math.PI/180; const R=6371008.8; const dLat=toRad(b[1]-a[1]); const dLon=toRad(b[0]-a[0]); const lat1=toRad(a[1]); const lat2=toRad(b[1]); const s=Math.sin(dLat/2)**2+Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2; return 2*R*Math.asin(Math.min(1,Math.sqrt(s))); };
+    let best=pool[0], bestD=Infinity;
+    pool.forEach(it=>{ if(!(it&&it.point)) return; const d=hav(ref,[Number(it.point.lon),Number(it.point.lat)]); if(d<bestD){ best=it; bestD=d; } });
+    if(best && best.addon && best.addon.id) setSelectedAddonId(String(best.addon.id));
+  },[resolvedItems,displayItems,selectedAddonId,globeView&&globeView.lat,globeView&&globeView.lng]);
+
   const filteredListItems=useMemo(()=>{
     const q=String(listSearch||'').trim().toLowerCase();
     const src=displayItems.filter(item=>item && (item.point || (Array.isArray(item.polygon)&&item.polygon.length>2)));
@@ -2959,14 +3522,43 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
   },[displayItems,listSearch]);
   const selectedItem=useMemo(()=>displayItems.find(item=>String(item.addon&&item.addon.id)===String(selectedAddonId))||null,[displayItems,selectedAddonId]);
 
+  useEffect(()=>{
+    if(!Array.isArray(displayItems) || !displayItems.length) return;
+    const stillExists=selectedAddonId && displayItems.some(item=>String(item.addon&&item.addon.id)===String(selectedAddonId));
+    if(stillExists) return;
+    let next=null;
+    const savedId=String(savedStateRef.current&&savedStateRef.current.selectedAddonId||'');
+    if(savedId) next=displayItems.find(item=>String(item.addon&&item.addon.id)===savedId) || null;
+    const targetView=(savedStateRef.current&&savedStateRef.current.globeView)||globeView||{};
+    const targetLat=Number(targetView.lat), targetLng=Number(targetView.lng);
+    if(!next && valid(targetLat,targetLng)){
+      const candidates=displayItems.filter(item=>item&&item.point&&valid(item.point.lat,item.point.lon));
+      if(candidates.length){
+        candidates.sort((a,b)=>{
+          const da=Math.hypot(Number(a.point.lat)-targetLat, Number(a.point.lon)-targetLng);
+          const db=Math.hypot(Number(b.point.lat)-targetLat, Number(b.point.lon)-targetLng);
+          return da-db;
+        });
+        next=candidates[0]||null;
+      }
+    }
+    if(!next) next=displayItems.find(item=>item&&item.point&&valid(item.point.lat,item.point.lon)) || displayItems[0] || null;
+    if(next){
+      setSelectedAddonId(String(next.addon&&next.addon.id||''));
+      if(next.point && valid(next.point.lat,next.point.lon)){
+        setGlobeView(prev=>({...(prev||{}), lat:Number(next.point.lat), lng:Number(next.point.lon)}));
+      }
+    }
+  },[displayItems,selectedAddonId]);
+
   function saveMapState(overrides={}){
     try{
-      const map=leafRef.current;
-      const center=map?map.getCenter():null;
+      const activeMap=viewMode==='globe' ? mapObjRef.current : leafRef.current;
+      const center=activeMap&&activeMap.getCenter?activeMap.getCenter():null;
       const payload={
-        layer, scope, regionKey, selectedAddonId, showList, listSearch, showCodeLabels, routePlannerEnabled, routeMode,
+        viewMode, layer, scope, regionKey, selectedAddonId, showList, listSearch, showCodeLabels, routePlannerEnabled, routeMode, globeView, rangeAircraftId,
         center:center?{lat:Number(center.lat),lon:Number(center.lng)}:null,
-        zoom:map?Number(map.getZoom()):zoomLevel,
+        zoom:activeMap&&activeMap.getZoom?Number(activeMap.getZoom()):zoomLevel,
         ...overrides,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
@@ -2983,7 +3575,7 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
       const latlngs=item.polygon.map(p=>[Number(p.lat),Number(p.lon)]).filter(([la,lo])=>valid(la,lo));
       if(latlngs.length<3) return;
       const poly=L.polygon(latlngs,{color:markerColor(item.addon),fillColor:markerColor(item.addon),fillOpacity:0.16,weight:2,pane:'globalPolygons'});
-      poly.on('click',()=>handleItemClick(item,{selectOnly:true}));
+      poly.on('click',()=>handleItemClick(item, viewMode==='globe' ? {targetZoom:11.5} : {selectOnly:true}));
       layerGroup.addLayer(poly);
     });
   }
@@ -3068,7 +3660,7 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
       }else{
         marker.bindTooltip(hoverLabel,{direction:'top',offset:[0,-8],sticky:false,opacity:1});
       }
-      marker.on('click',()=>handleItemClick(item,{selectOnly:true}));
+      marker.on('click',()=>handleItemClick(item, viewMode==='globe' ? {targetZoom:12.5} : {selectOnly:true}));
       marker.addTo(layerGroup);
       if(selected && typeof marker.bringToFront==='function') marker.bringToFront();
     });
@@ -3165,22 +3757,15 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
   }
 
   function applyRegion(key){
-    const map=leafRef.current;
     setRegionKey(key);
     setScope('view');
-    if(!map) return;
-    if(key==='world'){
-      try{ map.fitBounds(REGIONS.world.bounds,{padding:[26,26],maxZoom:2.75}); }catch(e){ map.setView([20,0],2); }
-      return;
-    }
-    const bounds=regionBounds(key);
-    const regionItems=(resolvedItems||[]).filter(item=>valid(item&&item.point&&item.point.lat,item&&item.point&&item.point.lon) && bounds.contains(L.latLng(item.point.lat,item.point.lon)));
-    if(regionItems.length){
-      fitItemsToMap(regionItems,{maxZoom:9});
-      return;
-    }
     const preset=REGIONS[key]||REGIONS.world;
-    try{ map.fitBounds(preset.bounds,{padding:[24,24],maxZoom:6.75}); }catch(e){}
+    const bounds=Array.isArray(preset.bounds)?preset.bounds:REGIONS.world.bounds;
+    const sw=bounds[0], ne=bounds[1];
+    const centerLat=(Number(sw[0])+Number(ne[0]))/2;
+    const centerLng=(Number(sw[1])+Number(ne[1]))/2;
+    const targetZoom=(key==='world') ? approxZoomForDistanceNm(2959.78, centerLat, 900) : approxZoomForDistanceNm(648, centerLat, 900);
+    setGlobeView(prev=>({...(prev||{}),lat:centerLat,lng:centerLng,zoom:targetZoom,pitch:key==='world'?0:18,bearing:0}));
   }
 
   function addMeasurePoint(item){
@@ -3207,6 +3792,13 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
     if(!item) return;
     const nextId=String(item.addon&&item.addon.id||'');
     const map=leafRef.current;
+    if(viewMode==='globe' && item.point && valid(item.point.lat,item.point.lon)){
+      setGlobeView(prev=>{
+        const prevZoom=Number(prev&&prev.zoom);
+        const nextZoom=Number.isFinite(Number(targetZoom)) ? Number(targetZoom) : (centerOnly ? (Number.isFinite(prevZoom)?prevZoom:GLOBE_RESET.zoom) : (Number.isFinite(prevZoom)?prevZoom:GLOBE_MARKER_FOCUS_ZOOM));
+        return {...(prev||{}), lat:Number(item.point.lat), lng:Number(item.point.lon), zoom:nextZoom, pitch:centerOnly?Number((prev&&prev.pitch)||0):Number((prev&&prev.pitch)||34), bearing:Number((prev&&prev.bearing)||0)};
+      });
+    }
     const preservedView = (selectOnly && map) ? (()=>{ try{ const c=map.getCenter(); return (c && Number.isFinite(Number(map.getZoom()))) ? {center:{lat:Number(c.lat),lon:Number(c.lng)},zoom:Number(map.getZoom()),selectedAddonId:nextId} : null; }catch(e){ return null; } })() : null;
     if(preservedView) preservedSelectionViewRef.current = preservedView;
     setSelectedAddonId(nextId);
@@ -3232,7 +3824,7 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
   }
 
   function handleItemClick(item,{zoomSteps=0,centerOnly=false,targetZoom=null,selectOnly=false}={}){
-    if(routePlannerEnabled){
+    if(viewMode==='map' && routePlannerEnabled){
       addMeasurePoint(item);
       return;
     }
@@ -3240,6 +3832,22 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
   }
 
   useEffect(()=>{ if(scope==='selected' && selectedGeoCount===0) setScope('filtered'); },[scope,selectedGeoCount]);
+  useEffect(()=>{ if(viewMode!=='map' && routePlannerEnabled){ setRoutePlannerEnabled(false); setAwaitingCustomPoint(false); } },[viewMode]);
+  useEffect(()=>{
+    const kick=()=>{
+      try{
+        if(leafRef.current){
+          leafRef.current.invalidateSize(true);
+          setMapReady(true);
+          const c=leafRef.current.getCenter&&leafRef.current.getCenter();
+          if(c) setMapBounds(leafRef.current.getBounds());
+        }
+      }catch(e){}
+    };
+    const t1=setTimeout(kick, 80);
+    const t2=setTimeout(kick, 260);
+    return ()=>{ clearTimeout(t1); clearTimeout(t2); };
+  },[viewMode]);
   useEffect(()=>{
     const syncDistance=()=>setDistanceUnit(currentDistanceUnit());
     window.addEventListener('storage', syncDistance);
@@ -3249,45 +3857,80 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
   useEffect(()=>{
     let alive=true;
     async function resolveCoords(){
-      setMapReady(false); setRenderError('');
-      if(!sourceItems.length){ if(alive){ setResolvedItems([]); setProgress({phase:'done',done:0,total:0,message:'No airport or scenery add-ons are available for the current map scope.'}); } return; }
+      setMapReady(false);
+      setRenderError('');
+      if(!sourceItems.length){
+        if(alive){
+          setResolvedItems([]);
+          setProgress({phase:'done',done:0,total:0,message:'No airport or scenery add-ons are available for the current map scope.'});
+        }
+        return;
+      }
       setProgress({phase:'loading',done:0,total:sourceItems.length,message:`Resolving ${sourceItems.length} airport/scenery location${sourceItems.length===1?'':'s'}...`});
-      try{
-        const direct=sourceItems.map(addon=>{
+      const direct=(sourceItems||[]).map(addon=>{
+        try{
           const coords=addonCoordinates(addon);
           const point=coords&&valid(coords.lat,coords.lon)?{lat:Number(coords.lat),lon:Number(coords.lon)}:null;
           const polygon=Array.isArray(addon&&addon.usr&&addon.usr.map_polygon)?(addon.usr.map_polygon||[]).filter(p=>valid(p&&p.lat,p&&p.lon)).map(p=>({lat:Number(p.lat),lon:Number(p.lon)})):[];
           const icao=String((addon&&addon.rw&&addon.rw.icao)||'').trim().toUpperCase();
           const faa_id=String((addon&&addon.rw&&addon.rw.faa_id)||'').trim().toUpperCase();
-          return {addon, point, polygon, source:point?'stored':(polygon.length?'polygon':''), icao, faa_id};
-        });
-        let resolved=direct.filter(x=>x.point || x.polygon.length>2);
-        const unresolved=direct.filter(x=>!x.point && x.polygon.length<=2).map(x=>x.addon);
-        if(unresolved.length){
-          const data=await fetchJsonSafe('/api/map/resolve-addons-coords',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({addon_ids:unresolved.map(a=>a.id)})});
+          return {addon, point, polygon, source:point?'stored':(polygon.length?'polygon':''), icao, faa_id, dotColor:safeSubtypeColor(addon)};
+        }catch(e){
+          return {addon, point:null, polygon:[], source:'', icao:String((addon&&addon.rw&&addon.rw.icao)||'').trim().toUpperCase(), faa_id:String((addon&&addon.rw&&addon.rw.faa_id)||'').trim().toUpperCase(), dotColor:safeSubtypeColor(addon)};
+        }
+      });
+      let resolved=direct.filter(x=>x&&(x.point || (Array.isArray(x.polygon)&&x.polygon.length>2)));
+      const unresolved=direct.filter(x=>x && !x.point && (!Array.isArray(x.polygon) || x.polygon.length<=2)).map(x=>x.addon).filter(Boolean);
+      if(unresolved.length){
+        try{
+          const payload={items:unresolved.map(addon=>({
+            addon_id:String(addon&&addon.id||''),
+            title:String(addon&&addon.title||''),
+            addon_type:String(addonTypeFor(addon)||''),
+            subtype:String(addon&&addon.sub||''),
+            icao:String((addon&&addon.rw&&addon.rw.icao)||'').trim().toUpperCase(),
+            faa_id:String((addon&&addon.rw&&addon.rw.faa_id)||'').trim().toUpperCase(),
+            point:null,
+            polygon:Array.isArray(addon&&addon.usr&&addon.usr.map_polygon)?(addon.usr.map_polygon||[]):[]
+          }))};
+          const data=await fetchJsonSafe('/api/map/global-markers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
           const byId=new Map((unresolved||[]).map(a=>[String(a.id),a]));
           ((data&&data.items)||[]).forEach(it=>{
             const addon=byId.get(String(it.addon_id));
             if(!addon) return;
             const point=it&&it.point&&valid(it.point.lat,it.point.lon)?{lat:Number(it.point.lat),lon:Number(it.point.lon)}:null;
             const polygon=Array.isArray(it&&it.polygon)?it.polygon.filter(p=>valid(p&&p.lat,p&&p.lon)).map(p=>({lat:Number(p.lat),lon:Number(p.lon)})):[];
-            if(point || polygon.length>2) resolved.push({addon, point, polygon, source:it.source||'backend', icao:String(it.icao||((addon&&addon.rw&&addon.rw.icao)||'')).trim().toUpperCase(), faa_id:String(it.faa_id||((addon&&addon.rw&&addon.rw.faa_id)||'')).trim().toUpperCase()});
+            if(point || polygon.length>2){
+              resolved.push({
+                addon, point, polygon, source:it.source||'backend',
+                icao:String(it.icao||((addon&&addon.rw&&addon.rw.icao)||'')).trim().toUpperCase(),
+                faa_id:String(it.faa_id||((addon&&addon.rw&&addon.rw.faa_id)||'')).trim().toUpperCase(),
+                dotColor:safeSubtypeColor(addon)
+              });
+            }
           });
+        }catch(err){
+          console.warn('Global map resolution warning',err);
+          sendFrontendLog('warning','global-map-resolution-warning',{message:String(err&&err.message||err||'')});
         }
-        if(alive){
-          setResolvedItems(resolved);
-          const markerCt=resolved.filter(x=>x&&x.point).length;
-          const polyCt=resolved.filter(x=>x&&Array.isArray(x.polygon)&&x.polygon.length>2).length;
-          if(markerCt===0 && polyCt===0){
-            setRenderError('No airport or scenery markers could be plotted for the current scope.');
-            setProgress({phase:'done',done:resolved.length,total:sourceItems.length,message:'No airport or scenery markers could be plotted for the current scope.'});
-          }else{
-            setProgress({phase:'done',done:resolved.length,total:sourceItems.length,message:`${markerCt} marker${markerCt===1?'':'s'} ready${polyCt?` • ${polyCt} coverage area${polyCt===1?'':'s'}`:''}.`});
-          }
-        }
-      }catch(err){
-        console.warn('Global map resolution error',err);
-        if(alive){ setResolvedItems([]); setRenderError('Global map failed to resolve airport or scenery locations.'); setProgress({phase:'error',done:0,total:sourceItems.length,message:'Global map failed to resolve airport or scenery locations.'}); }
+      }
+      if(!alive) return;
+      const unique=new Map();
+      resolved.forEach(item=>{
+        const id=String(item&&item.addon&&item.addon.id||'');
+        if(id && !unique.has(id)) unique.set(id,item);
+      });
+      const finalResolved=Array.from(unique.values());
+      setResolvedItems(finalResolved);
+      const markerCt=finalResolved.filter(x=>x&&x.point).length;
+      const polyCt=finalResolved.filter(x=>x&&Array.isArray(x.polygon)&&x.polygon.length>2).length;
+      if(markerCt===0 && polyCt===0){
+        const fallback=(sourceItems||[]).map(addon=>{ const rw=(addon&&addon.rw)||{}; const lat=Number(rw.lat); const lon=Number(rw.lon); if(Number.isFinite(lat)&&Number.isFinite(lon)&&!(lat===0&&lon===0)){ return {addon, point:{lat,lon}, polygon:[], source:'rw', icao:String((rw.icao)||'').trim().toUpperCase(), faa_id:String((rw.faa_id)||'').trim().toUpperCase(), dotColor:safeSubtypeColor(addon)}; } return null; }).filter(Boolean);
+        if(fallback.length){ setResolvedItems(fallback); setRenderError(''); setProgress({phase:'done',done:fallback.length,total:sourceItems.length,message:`${fallback.length} marker${fallback.length===1?'':'s'} ready.`}); return; }
+        setRenderError('Global map failed to resolve airport or scenery locations.');
+        setProgress({phase:'error',done:0,total:sourceItems.length,message:'Global map failed to resolve airport or scenery locations.'});
+      }else{
+        setProgress({phase:'done',done:finalResolved.length,total:sourceItems.length,message:`${markerCt} marker${markerCt===1?'':'s'} ready${polyCt?` • ${polyCt} coverage area${polyCt===1?'':'s'}`:''}.`});
       }
     }
     resolveCoords();
@@ -3295,9 +3938,9 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
   },[sourceItems]);
 
   useEffect(()=>{
-    if(!mapRef.current || typeof L==='undefined' || leafRef.current) return;
+    if(viewMode!=='map' || !mapRef.current || typeof L==='undefined' || leafRef.current) return;
     try{
-      const map=L.map(mapRef.current,{zoomControl:true,scrollWheelZoom:true,worldCopyJump:false,maxBounds:WORLD_BOUNDS,maxBoundsViscosity:0.65,zoomSnap:0.25,zoomDelta:0.5,minZoom:2});
+      const map=L.map(mapRef.current,{zoomControl:true,scrollWheelZoom:true,zoomSnap:0.25,zoomDelta:0.5,minZoom:2,maxZoom:18,preferCanvas:false});
       leafRef.current=map;
       const polyPane=map.createPane('globalPolygons');
       if(polyPane) polyPane.style.zIndex='430';
@@ -3305,44 +3948,46 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
       if(measurePane) measurePane.style.zIndex='620';
       const markerPane=map.createPane('globalMarkers');
       if(markerPane) markerPane.style.zIndex='650';
-      polygonsRef.current=L.featureGroup([], {pane:'globalPolygons'}).addTo(map);
+      polygonsRef.current=L.featureGroup().addTo(map);
       measureRef.current=L.layerGroup().addTo(map);
       markersRef.current=L.layerGroup().addTo(map);
       const saved=savedStateRef.current||{};
+      map.setView([20,0],2);
       if(saved.center && valid(saved.center.lat,saved.center.lon) && Number.isFinite(Number(saved.zoom))){
         restoringRef.current=true;
         autoFitRef.current=true;
-        map.setView([Number(saved.center.lat), Number(saved.center.lon)], Number(saved.zoom));
-      }else{
-        try{ map.fitBounds(REGIONS.world.bounds,{padding:[26,26],maxZoom:2.75}); }catch(e){ map.setView([20,0],2); }
+        try{ map.setView([Number(saved.center.lat), Number(saved.center.lon)], Number(saved.zoom)); }catch(e){}
       }
       const sync=()=>{
         try{
-          setMapBounds(map.getBounds());
-          setZoomLevel(Number(map.getZoom()));
+          setMapBounds(map.getBounds ? map.getBounds() : null);
+          setZoomLevel(Number(map.getZoom ? map.getZoom() : 2));
           saveMapState();
         }catch(e){}
       };
       map.on('moveend zoomend resize viewreset', sync);
       map.whenReady(()=>{ try{ map.invalidateSize(true); }catch(e){} setMapReady(true); sync(); });
       setTimeout(()=>{ try{ map.invalidateSize(true); sync(); }catch(e){} },250);
-    }catch(e){ console.warn('Global map init error',e); setRenderError('Global map failed to render.'); }
+    }catch(e){ console.warn('Global map init error',e); sendFrontendLog('error','global-map-init-error',{message:String(e&&e.message||e||'')}); setRenderError('Global map failed to render.'); }
     return ()=>{ saveMapState(); if(leafRef.current){ try{ leafRef.current.off(); leafRef.current.remove(); }catch(e){} leafRef.current=null; } tileRef.current=null; polygonsRef.current=null; markersRef.current=null; measureRef.current=null; };
   },[]);
 
   useEffect(()=>{
+    if(viewMode!=='map') return;
     const map=leafRef.current;
     if(!map || typeof L==='undefined') return;
     try{
       if(tileRef.current){ try{ map.removeLayer(tileRef.current); }catch(e){} }
-      const cur=LAYERS[layer];
-      const tile=L.tileLayer(cur.tile,{attribution:cur.attr,maxZoom:19,noWrap:true,bounds:WORLD_BOUNDS});
+      const cur=LAYERS[layer] || LAYERS.road;
+      const tileOptions={attribution:cur.attr,maxZoom:19,noWrap:true};
+      if(Array.isArray(cur.subdomains) && cur.subdomains.length) tileOptions.subdomains=cur.subdomains;
+      const tile=L.tileLayer(cur.tile,tileOptions);
       tile.on('load',()=>setMapReady(true));
       tile.on('tileerror',()=>setRenderError('Base map tiles could not be loaded.'));
       tile.addTo(map);
       tileRef.current=tile;
       setTimeout(()=>{ try{ map.invalidateSize(true); }catch(e){} },150);
-    }catch(e){ console.warn('Global map layer error',e); }
+    }catch(e){ console.warn('Global map layer error',e); sendFrontendLog('warning','global-map-layer-error',{message:String(e&&e.message||e||'')}); }
   },[layer]);
 
   useEffect(()=>{
@@ -3364,7 +4009,16 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
     }
   },[displayItems,selectedAddonId]);
 
-  useEffect(()=>{ saveMapState(); },[layer,scope,regionKey,selectedAddonId,showList,listSearch,showCodeLabels,routePlannerEnabled,routeMode]);
+  useEffect(()=>{ saveMapState(); },[viewMode,layer,scope,regionKey,selectedAddonId,showList,listSearch,showCodeLabels,routePlannerEnabled,routeMode,globeView]);
+  useEffect(()=>{ try{ sendFrontendLog('info','global-map-view-mode',{view_mode:viewMode, item_count:(displayItems||[]).length, selected_addon_id:selectedAddonId||null}); }catch(e){} },[viewMode]);
+
+  useEffect(()=>{
+    if(viewMode!=='map' || !leafRef.current) return;
+    const map=leafRef.current;
+    const kick=()=>{ try{ map.invalidateSize(true); }catch(e){} try{ refreshMarkerLayers(); refreshPolygonLayers(); refreshMeasurementLayers(); }catch(e){} };
+    const t1=setTimeout(kick,40), t2=setTimeout(kick,220);
+    return ()=>{ clearTimeout(t1); clearTimeout(t2); };
+  },[viewMode]);
 
   useEffect(()=>{
     const preserve=preservedSelectionViewRef.current;
@@ -3415,8 +4069,7 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
       <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
         <div style={{fontSize:13,fontWeight:800,color:'var(--t0)'}}>Global Map</div>
         {onHelp && <HelpIcon onClick={onHelp} title='Global Map help'/>}
-        <div style={{fontSize:11,color:'var(--t2)',padding:'4px 8px',border:'1px solid var(--bdr)',borderRadius:999,background:'var(--bg0)'}}>Zoom {fmtZoom}</div>
-        {measurementEnabled && <div style={{fontSize:11,color:'var(--acc)',padding:'4px 8px',border:'1px solid var(--accB)',borderRadius:999,background:'var(--accD)'}}>VFR Route Planner on</div>}
+        {viewMode==='map' && measurementEnabled && <div style={{fontSize:11,color:'var(--acc)',padding:'4px 8px',border:'1px solid var(--accB)',borderRadius:999,background:'var(--accD)'}}>VFR Route Planner on</div>}
       </div>
       <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
         <button onClick={onClose} style={{background:'transparent',border:'1px solid var(--bdr)',color:'var(--t2)',borderRadius:8,padding:'6px 10px',fontSize:11,fontWeight:700,fontFamily:'inherit',cursor:'pointer'}}>Close Map</button>
@@ -3442,10 +4095,10 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
             {Object.entries(REGIONS).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
           </select>
         </div>
+        <div style={{position:'relative',display:'flex',gap:8,alignItems:'center',padding:'6px 8px',border:'1px solid var(--bdr)',borderRadius:10,background:'var(--bg0)',flexWrap:'wrap'}}><span style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.08em'}}>Range Aircraft</span><div style={{position:'relative',minWidth:220,flex:'1 1 220px'}}><input value={rangeAircraftId} onFocus={()=>setShowAircraftSuggest(true)} onBlur={()=>setTimeout(()=>setShowAircraftSuggest(false),160)} onChange={e=>{ setRangeAircraftId(e.target.value); setRangeAircraftSelectedId(''); setShowAircraftSuggest(true); }} placeholder='Search aircraft…' style={{width:'100%',minWidth:220,background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:8,padding:'6px 10px',color:'var(--t1)',fontSize:11,fontFamily:'inherit'}}/>{showAircraftSuggest && rangeAircraftSuggestions.length>0 && <div style={{position:'absolute',left:0,right:0,top:'calc(100% + 4px)',zIndex:30,maxHeight:220,overflowY:'auto',background:'rgba(5,12,24,.98)',border:'1px solid var(--bdr)',borderRadius:10,boxShadow:'0 10px 28px rgba(0,0,0,.35)'}}>{rangeAircraftSuggestions.map(a=><button key={a.id} type='button' onMouseDown={e=>e.preventDefault()} onClick={()=>applyRangeAircraft(a)} style={{display:'block',width:'100%',textAlign:'left',padding:'8px 10px',background:'transparent',border:'none',borderBottom:'1px solid rgba(148,163,184,.12)',color:'var(--t1)',fontSize:11,fontFamily:'inherit',cursor:'pointer'}}>{String(a.title||'')}{a&&a.rw&&Number(a.rw.range_nm)>0?` • ${Number(a.rw.range_nm)} nm`:''}</button>)}</div>}</div><button onClick={()=>{setRangeAircraftId(''); setRangeAircraftSelectedId(''); setShowAircraftSuggest(false);}} style={{background:'transparent',border:'1px solid var(--bdr)',color:'var(--t2)',borderRadius:7,padding:'4px 8px',fontSize:10,fontWeight:700,fontFamily:'inherit',cursor:'pointer'}}>Clear</button>{selectedRangeAircraft&&selectedRangeAircraft.rw&&Number(selectedRangeAircraft.rw.range_nm)>0?<span style={{fontSize:11,color:'var(--t2)'}}>Using {selectedRangeAircraft.title} • {Number(selectedRangeAircraft.rw.range_nm)} nm</span>:rangeAircraftId?<span style={{fontSize:11,color:'var(--t2)'}}>Choose an aircraft from the dropdown to apply its saved range.</span>:null}</div>
         <div style={{display:'flex',gap:10,alignItems:'center',padding:'6px 8px',border:'1px solid var(--bdr)',borderRadius:10,background:'var(--bg0)',flexWrap:'wrap'}}>
           <label style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:11,color:'var(--t1)',cursor:'pointer'}}><input type='checkbox' checked={showCodeLabels} onChange={e=>setShowCodeLabels(e.target.checked)}/> Show ICAO / FAA ID</label>
-          <label style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:11,color:'var(--t1)',cursor:'pointer'}}><input type='checkbox' checked={routePlannerEnabled} onChange={e=>{ const checked=e.target.checked; setRoutePlannerEnabled(checked); if(!checked){ setMeasurePath([]); setAwaitingCustomPoint(false); } }}/> VFR Route Planner</label>
-          {measurementEnabled && <button onClick={()=>{ setMeasurePath([]); setAwaitingCustomPoint(false); }} style={{background:'transparent',border:'1px solid var(--bdr)',color:'var(--t2)',borderRadius:7,padding:'4px 9px',fontSize:10,fontWeight:700,fontFamily:'inherit',cursor:'pointer'}}>Clear Route</button>}
+          <span style={{fontSize:11,color:'var(--t2)'}}>Use Show ICAO / FAA ID for labels, hover a marker to preview an airport, and click a marker to select it and fly toward local detail.</span>
         </div>
         {airportLegendVisible && <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',padding:'6px 8px',border:'1px solid var(--bdr)',borderRadius:10,background:'var(--bg0)'}}>
           <span style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.08em'}}>Legend</span>
@@ -3455,7 +4108,7 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
       <div style={{fontSize:11,color:statusTone,fontWeight:700,maxWidth:320,textAlign:'right'}}>{progress.phase==='loading'?(progress.message||'Resolving locations…'):(renderError||progress.message||`${markerCount} marker${markerCount===1?'':'s'} ready`)}</div>
     </div>
 
-    {measurementEnabled && <div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:10,padding:'10px 12px',display:'flex',flexDirection:'column',gap:10}}>
+    {false && measurementEnabled && <div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:10,padding:'10px 12px',display:'flex',flexDirection:'column',gap:10}}>
       <div style={{display:'flex',justifyContent:'space-between',gap:12,flexWrap:'wrap',alignItems:'center'}}>
         <div style={{fontSize:12,color:'var(--t1)',fontWeight:700}}>Use the VFR Route Planner to click airport markers in sequence, add custom landmarks from the map, and review each leg plus the total in {distInfo.label.toLowerCase()}.</div>
         <div style={{display:'flex',gap:10,flexWrap:'wrap',fontSize:11,color:'var(--t2)'}}>
@@ -3489,12 +4142,11 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
     </div>}
 
     <div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:12,padding:10,display:'flex',flexDirection:'column',gap:8,flex:1,minHeight:440,overflow:'hidden'}}>
-      <div style={{fontSize:11,color:'var(--t2)',display:'flex',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}>
-        <span>Mapped items: {markerCount} • Unique marker positions: {visibleMarkerPositions}{overlapCount>0?` • Overlaps: ${overlapCount}`:''} • Coverage areas: {polygonCount}</span>
+      <div style={{fontSize:11,color:'var(--t2)',display:'flex',justifyContent:'flex-end',gap:10,flexWrap:'wrap'}}>
         <span>{scope==='view'?'Airport list is following only what is visible on the map.':(scope==='selected'?'Airport list is following your selected Library items.':'Airport list is following the current Library results.')}</span>
       </div>
       <div style={{position:'relative',flex:1,minHeight:380,borderRadius:10,overflow:'hidden',background:'#0b1220'}}>
-        <div ref={mapRef} style={{position:'absolute',inset:0,borderRadius:10,overflow:'hidden',background:'#0b1220'}}/>
+        <div style={{position:'absolute',inset:0}}><GlobeExplorerPreview items={displayItems} selectedItem={selectedItem} onSelectItem={(item,opts)=>selectItem(item,{...(opts||{})})} accent={accent} labelForItem={labelForItem} savedView={globeView} onViewChange={setGlobeView} showCodeLabels={showCodeLabels} layer={layer} rangeAircraft={selectedRangeAircraft}/></div>
       </div>
       {renderError&&<div style={{background:'rgba(127,29,29,.16)',border:'1px solid rgba(239,68,68,.28)',color:'var(--red)',borderRadius:10,padding:'10px 12px',fontSize:12,lineHeight:1.6}}>{renderError}</div>}
       {!renderError&&progress.phase==='loading'&&<div style={{fontSize:11,color:'var(--t2)',lineHeight:1.6}}>Please wait while the app resolves airport and scenery coordinates for the current map scope.</div>}
@@ -3506,8 +4158,10 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
           <div style={{fontSize:11,color:'var(--t2)',marginTop:2}}>{labelForItem(selectedItem)||'No airport code stored'}{selectedItem.faa_id && selectedItem.faa_id!==selectedItem.icao ? ` • FAA ID ${selectedItem.faa_id}`:''}</div>
         </div>
         <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-          <button onClick={()=>selectItem(selectedItem,{centerOnly:true})} title='Center the existing map view on this airport without changing the zoom level.' style={{background:'transparent',border:'1px solid var(--bdr)',color:'var(--t2)',borderRadius:7,padding:'6px 10px',fontSize:11,fontWeight:700,fontFamily:'inherit',cursor:'pointer'}}>Center</button>
-          <button onClick={()=>selectItem(selectedItem,{targetZoom:12.5})} title='Center the map and jump directly to zoom level 12.50.' style={{background:'transparent',border:'1px solid var(--bdr)',color:'var(--t2)',borderRadius:7,padding:'6px 10px',fontSize:11,fontWeight:700,fontFamily:'inherit',cursor:'pointer'}}>Zoom In</button><button onClick={()=>selectItem(selectedItem,{targetZoom:15.5})} title='Center the map and jump to an even closer airport view at zoom level 15.50.' style={{background:'transparent',border:'1px solid var(--bdr)',color:'var(--t2)',borderRadius:7,padding:'6px 10px',fontSize:11,fontWeight:700,fontFamily:'inherit',cursor:'pointer'}}>Max Zoom</button>
+          <>
+            <button onClick={()=>{ if(viewMode==='globe' && selectedItem && selectedItem.point){ setGlobeView(prev=>({...(prev||{}),lat:Number(selectedItem.point.lat),lng:Number(selectedItem.point.lon),zoom:Number((prev&&prev.zoom)||3.304),pitch:Number((prev&&prev.pitch)||0),bearing:Number((prev&&prev.bearing)||0)})); } else { selectItem(selectedItem,{centerOnly:true}); } }} title='Center the current world map view on this airport without changing the zoom level.' style={{background:'transparent',border:'1px solid var(--bdr)',color:'var(--t2)',borderRadius:7,padding:'6px 10px',fontSize:11,fontWeight:700,fontFamily:'inherit',cursor:'pointer'}}>Center</button>
+            <button onClick={()=>selectItem(selectedItem,{targetZoom:13.7})} title='Refocus the globe on this airport and zoom to about 1.75 nautical miles / local detail.' style={{background:'transparent',border:'1px solid var(--bdr)',color:'var(--t2)',borderRadius:7,padding:'6px 10px',fontSize:11,fontWeight:700,fontFamily:'inherit',cursor:'pointer'}}>Zoom In</button><button onClick={()=>selectItem(selectedItem,{targetZoom:17.95})} title='Refocus the globe on this airport and jump to a near-ground airport view around 170 meters.' style={{background:'transparent',border:'1px solid var(--bdr)',color:'var(--t2)',borderRadius:7,padding:'6px 10px',fontSize:11,fontWeight:700,fontFamily:'inherit',cursor:'pointer'}}>Max Zoom</button>
+          </>
           <button onClick={()=>onOpenAddon&&onOpenAddon(selectedItem.addon)} style={{background:accent+'22',border:'1px solid '+accent+'55',color:accent,borderRadius:7,padding:'6px 10px',fontSize:11,fontWeight:700,fontFamily:'inherit',cursor:'pointer'}}>Open Airport Detail</button>
         </div>
       </div>}
@@ -3529,8 +4183,10 @@ function GlobalLibraryMap({items,selectedItems,onOpenAddon,onClose,onHelp,accent
               <div style={{color:'var(--t2)',fontSize:11}}>{item.addon.sub||'—'}</div>
               <div style={{color:'var(--t2)',fontSize:11}}>{code}</div>
               <div style={{display:'flex',gap:6,justifyContent:'flex-end',flexWrap:'wrap'}}>
-                <button onClick={()=>selectItem(item,{centerOnly:true})} title='Center the map on this airport and keep the current zoom.' style={{background:'transparent',border:'1px solid var(--bdr)',color:'var(--t2)',borderRadius:7,padding:'4px 8px',fontSize:10,fontWeight:700,fontFamily:'inherit',cursor:'pointer'}}>Center</button>
-                <button onClick={()=>selectItem(item,{targetZoom:12.5})} title='Center the map and jump directly to zoom level 12.50.' style={{background:'transparent',border:'1px solid var(--bdr)',color:'var(--t2)',borderRadius:7,padding:'4px 8px',fontSize:10,fontWeight:700,fontFamily:'inherit',cursor:'pointer'}}>Zoom In</button><button onClick={()=>selectItem(item,{targetZoom:15.5})} title='Center the map and jump to an even closer airport view at zoom level 15.50.' style={{background:'transparent',border:'1px solid var(--bdr)',color:'var(--t2)',borderRadius:7,padding:'4px 8px',fontSize:10,fontWeight:700,fontFamily:'inherit',cursor:'pointer'}}>Max Zoom</button>
+                <>
+                  <button onClick={()=>{ if(viewMode==='globe' && item && item.point){ setSelectedAddonId(String(item.addon&&item.addon.id||'')); setGlobeView(prev=>({...(prev||{}),lat:Number(item.point.lat),lng:Number(item.point.lon)})); } else { selectItem(item,{centerOnly:true}); } }} title='Center the current world map on this airport and keep the current zoom.' style={{background:'transparent',border:'1px solid var(--bdr)',color:'var(--t2)',borderRadius:7,padding:'4px 8px',fontSize:10,fontWeight:700,fontFamily:'inherit',cursor:'pointer'}}>Center</button>
+                  <button onClick={()=>selectItem(item,{targetZoom:13.7})} title='Refocus the globe on this airport and zoom to about 1.75 nautical miles / local detail.' style={{background:'transparent',border:'1px solid var(--bdr)',color:'var(--t2)',borderRadius:7,padding:'4px 8px',fontSize:10,fontWeight:700,fontFamily:'inherit',cursor:'pointer'}}>Zoom In</button><button onClick={()=>selectItem(item,{targetZoom:17.95})} title='Refocus the globe on this airport and jump to a near-ground airport view around 170 meters.' style={{background:'transparent',border:'1px solid var(--bdr)',color:'var(--t2)',borderRadius:7,padding:'4px 8px',fontSize:10,fontWeight:700,fontFamily:'inherit',cursor:'pointer'}}>Max Zoom</button>
+                </>
                 <button onClick={()=>onOpenAddon&&onOpenAddon(item.addon)} style={{background:accent+'22',border:'1px solid '+accent+'55',color:accent,borderRadius:7,padding:'4px 8px',fontSize:10,fontWeight:700,fontFamily:'inherit',cursor:'pointer'}}>Detail</button>
               </div>
             </div>;
@@ -3704,8 +4360,9 @@ function App(){
   const [localeCurrency,setLocaleCurrency]=useState(()=>localStorage.getItem('hangar_currency')||'$');
   const [localeCalendar,setLocaleCalendar]=useState(()=>localStorage.getItem('hangar_calendar_format')||localStorage.getItem('hangar_calendar')||'MM/DD/YYYY');
   const [localeDistanceUnit,setLocaleDistanceUnit]=useState(()=>localStorage.getItem('hangar_distance_unit')||'nautical_miles');
-  const [searchProvider,setSearchProvider]=useState(()=>localStorage.getItem('hangar_search_provider')||'bing');
+  const [searchProvider,setSearchProvider]=useState('google');
   const [gridScale,setGridScale]=useState(()=>localStorage.getItem('hangar_grid_scale')||'medium');
+  useWindowStateSync(true);
   const [noteModal,setNoteModal]=useState(null);
   const [search,setSearch]=useState(""),[filterType,setFilterType]=useState("All");
   const [filterSub,setFilterSub]=useState("All");
@@ -3718,6 +4375,7 @@ function App(){
   const [obtainedFromFilter,setObtainedFromFilter]=useState('All');
   const [obtainedFromChoices,setObtainedFromChoices]=useState(()=>storedObtainedFromOptions());
   const [showGlobalMap,setShowGlobalMap]=useState(false);
+  const [globalMapOpenVersion,setGlobalMapOpenVersion]=useState(0);
   const [aiPopulateStatus,setAiPopulateStatus]=useState(null);
   useEffect(()=>{
     if(!aiPopulateStatus) return;
@@ -3754,6 +4412,16 @@ function App(){
   const [appInfo,setAppInfo]=useState(null);
   const [appActionBusy,setAppActionBusy]=useState('');
   const [appActionResult,setAppActionResult]=useState(null);
+  const [appFolderDraft,setAppFolderDraft]=useState('');
+  const [appFolderCopyData,setAppFolderCopyData]=useState(true);
+  const [appFolderVerifyCopy,setAppFolderVerifyCopy]=useState(true);
+  const [appFolderRemoveOld,setAppFolderRemoveOld]=useState(false);
+  const [libraryProfiles,setLibraryProfiles]=useState([]);
+  const [activeLibraryProfileId,setActiveLibraryProfileId]=useState('');
+  const [newLibraryProfileName,setNewLibraryProfileName]=useState('');
+  const [newLibraryProfilePlatform,setNewLibraryProfilePlatform]=useState('msfs2024');
+  const [newLibraryProfileFolder,setNewLibraryProfileFolder]=useState('');
+  const [newLibraryProfileCopyData,setNewLibraryProfileCopyData]=useState(false);
   const [toolName,setToolName]=useState('');
   const [toolPublisher,setToolPublisher]=useState('');
   const [toolPath,setToolPath]=useState('');
@@ -3791,9 +4459,9 @@ function App(){
     liveries:{title:'Liveries',purpose:'Liveries shows scanned paint packages, airline liveries, and related cabin/interior packs that match the current aircraft.',when:'Use it when you want to inspect available liveries for an aircraft, preview their thumbnails, or activate and deactivate the related package root in the Community workflow.',actions:['Save the Liveries Folder in Settings first, then click Scan for Liveries on the aircraft detail tab.','Click a thumbnail to open a larger preview. Use Activate / Deactivate to toggle the livery package root the same way other managed add-ons are toggled.']},
     docs:{title:'Docs',purpose:'Docs keeps manuals, checklists, and PDF references attached to the add-on.',when:'Use it when you want operational documentation available directly from the library entry.',actions:['Open documents inline when possible.','Use Docs instead of stuffing long manual information into Overview or Notes.']},
     ai:{title:'AI Workspace',purpose:'AI Workspace is the flexible prompt area for one-off questions.',when:'Use it when the structured Populate buttons are not enough and you want a custom answer or analysis.',actions:['Enter a custom prompt and execute it when you want something more targeted than the standard populate flows.','Use the structured Populate buttons on Overview or Data screens for normal library population work.']},
-    application:{title:'Application',purpose:'Application shows the active folders and files this release is using.',when:'Use it when you need to confirm the current user-data directory, settings file, database, logs folder, browser profile, or whether a data-directory override is active.',actions:['Use this screen whenever you are not sure which MSFS Hanger data folder is live.','The legacy .msfs_hangar_hybrid folder is not the normal active path unless you explicitly override the user-data directory.']},
+    application:{title:'Application',purpose:'Application manages the active base app folder, library profiles, and backup workflow.',when:'Use it when you need to confirm where MSFS Hangar is storing data, switch to another library profile, or create a portable backup zip.',actions:['Use Library Profiles to keep separate storage for MSFS 2024, MSFS 2020, X-Plane 12, or test libraries.','Use Current base app folder when you want to move the active profile to a different folder for the next launch.']},
     map:{title:'Map',purpose:'Map helps you visualize airports and compare aircraft within range.',when:'Use it when you want a geographic view, range-based comparison, or to drill into a candidate without losing the current airport context.',actions:['Click a candidate aircraft to open its overview or full detail.','When you back out of detail, the app returns you to the map context so you can continue the workflow.']},
-    global_library_map:{title:'Global Map',purpose:'Global Map is the airport and scenery plotting workspace for geographic browsing, regional filtering, and early route planning.',when:'Use it when you want to see airport locations on a world map, restrict the list to the current visible region, compare nearby fields, or start measuring distances between airports.',actions:['Use Library Results to show all airports and scenery currently visible on the Library screen after filters are applied.','Use Selected to limit the map to the airport or scenery items you checked on the Library grid.','Use Visible on Map when you want the airport list to follow exactly what is currently visible inside the map frame.','Use Center when you want to move the map to an airport without changing zoom. Use Zoom In to jump straight to zoom 12.50, or Max Zoom for a much closer airport view at zoom 15.50.','Use the Region selector to immediately jump to that saved region and fit the current results. Reset World returns to the global view.','Turn on Show ICAO / FAA ID when nearby markers are difficult to identify.','Turn on VFR Route Planner to click markers in order, build a route, or switch to Measure Only when you simply want distance checks. Add custom points for landmarks or checkpoints, save named routes, and review each leg label plus the total using your selected route / distance unit. While the planner is on, marker clicks are dedicated to route building instead of changing the focused airport.','The Region selector uses fixed latitude and longitude bounds for each world region, then immediately fits the current results inside that region. Clicking a marker now only selects that airport; it does not reset or recenter the map view.'],tips:['If the airport count is larger than the visible marker positions, some airports are sharing the same plotted coordinates and are stacked together. The map now shows both values so that overlap is obvious.']},
+    global_library_map:{title:'Global Map',purpose:'Global Map is the airport and scenery plotting workspace for geographic browsing, regional filtering, and early route planning.',when:'Use it when you want to see airport locations on a world map, restrict the list to the current visible region, compare nearby fields, or start measuring distances between airports.',actions:['Use Library Results to show all airports and scenery currently visible on the Library screen after filters are applied.','Use Selected to limit the map to the airport or scenery items you checked on the Library grid.','Use Visible on Map when you want the airport list to follow exactly what is currently visible inside the map frame.','Use Center when you want to move the map to an airport without changing zoom. Use Zoom In to jump straight to zoom 12.50, or Max Zoom for a much closer airport view at zoom 15.50. Use the globe map to spin around the earth, hover markers for airport names, and click markers to fly toward local detail.','Use the Region selector to immediately jump to that saved region and fit the current results. Reset World returns to the global view.','Turn on Show ICAO / FAA ID when nearby markers are difficult to identify.','Turn on VFR Route Planner to click markers in order, build a route, or switch to Measure Only when you simply want distance checks. Add custom points for landmarks or checkpoints, save named routes, and review each leg label plus the total using your selected route / distance unit. While the planner is on, marker clicks are dedicated to route building instead of changing the focused airport.','The Region selector uses fixed latitude and longitude bounds for each world region, then immediately fits the current results inside that region. Clicking a marker now only selects that airport; it does not reset or recenter the map view.'],tips:['If the airport count is larger than the visible marker positions, some airports are sharing the same plotted coordinates and are stacked together. The map now shows both values so that overlap is obvious.']},
   };
   const openGuide=(key)=>{ const g=GUIDE_TEXT[key]; if(g) setHelpPanel(g); };
   function openConfirmDialog(dialog, onConfirm){
@@ -3813,9 +4481,9 @@ function App(){
     if(fn) await fn();
   }
 
-  const refreshAppInfo=()=>fetch('/api/application/info').then(r=>r.ok?r.json():null).then(data=>{ if(data) setAppInfo(data); return data; }).catch(()=>null);
+  const refreshAppInfo=()=>fetch('/api/application/info').then(r=>r.ok?r.json():null).then(data=>{ if(data){ setAppInfo(data); setAppFolderDraft(data.base_app_folder||''); setLibraryProfiles(Array.isArray(data.library_profiles)?data.library_profiles:[]); setActiveLibraryProfileId(data.active_profile_id||''); } return data; }).catch(()=>null);
   const runApplicationAction=async(kind)=>{
-    const map={test:'/api/application/test-storage',backup:'/api/application/backup',migrate:'/api/application/migrate-legacy'};
+    const map={test:'/api/application/test-storage',backup:'/api/application/backup-choose',migrate:'/api/application/migrate-legacy'};
     if(!map[kind]) return;
     setAppActionBusy(kind);
     setAppActionResult({kind, message: kind==='migrate'?'Running legacy migration…':kind==='backup'?'Creating backup…':'Running storage test…'});
@@ -3828,6 +4496,131 @@ function App(){
       setAppActionResult({kind, error:e.message||String(e)});
     }finally{ setAppActionBusy(''); }
   };
+
+  async function pickAppFolder(target='app'){
+    setAppActionBusy('pick-folder');
+    try{
+      const data=await fetch('/api/application/pick-app-folder',{method:'POST'}).then(r=>r.ok?r.json():r.json().catch(()=>({})).then(err=>{throw new Error(err.detail||err.error||('HTTP '+r.status));}));
+      if(data&&data.path){
+        if(target==='profile') setNewLibraryProfileFolder(data.path);
+        else setAppFolderDraft(data.path);
+      }
+    }catch(e){
+      setNotice({title:'Folder selection cancelled',message:e.message||'No app folder was selected.',kind:'error'});
+    }finally{
+      setAppActionBusy('');
+    }
+  }
+
+  async function saveAppFolder(){
+    if(!appFolderDraft) return;
+    setAppActionBusy('set-app-folder');
+    try{
+      const response=await fetch('/api/application/set-app-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:appFolderDraft,copy_current_data:appFolderCopyData,verify_copy:appFolderVerifyCopy,remove_old_after_copy:appFolderRemoveOld})});
+      const payload=await response.json().catch(()=>({}));
+      if(!response.ok){
+        const detail=payload&&payload.detail;
+        const message=(detail&&detail.message) || (typeof detail==='string'?detail:'') || payload.error || ('HTTP '+response.status);
+        const extra=detail&&typeof detail==='object'?`
+
+${JSON.stringify(detail,null,2)}`:'';
+        throw new Error(message+extra);
+      }
+      const message=(payload&&payload.old_folder_removed)?'App folder saved, verified, and the old folder was removed.':((payload&&payload.old_folder_removal_deferred)?'App folder saved and the old folder is queued for cleanup on the next launch after verification.':'App folder saved for the next launch.');
+      setAppActionResult({kind:'set-app-folder',data:payload,message});
+      setNotice({title:'App folder saved',message:(payload&&payload.old_folder_removed)?'The new base app folder was verified and the old folder was removed. Restart MSFS Hangar to use the new location.':((payload&&payload.old_folder_removal_deferred)?'The new base app folder was verified. Restart MSFS Hangar to switch to it and let the launcher remove the previous folder.':'The new base app folder will be used the next time MSFS Hangar starts.')});
+      await refreshAppInfo();
+    }catch(e){
+      setAppActionResult({kind:'set-app-folder',error:e.message||String(e)});
+    }finally{
+      setAppActionBusy('');
+    }
+  }
+
+  async function createLibraryProfile(){
+    if(!newLibraryProfileName || !newLibraryProfileFolder) return;
+    setAppActionBusy('create-profile');
+    try{
+      const data=await fetch('/api/library-profiles',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:newLibraryProfileName,platform:newLibraryProfilePlatform,storage_root:newLibraryProfileFolder,copy_current_data:newLibraryProfileCopyData,switch_to:false})}).then(r=>r.ok?r.json():r.json().catch(()=>({})).then(err=>{throw new Error(err.detail||err.error||('HTTP '+r.status));}));
+      setNotice({title:'Library profile created',message:`Created library profile “${data.profile&&data.profile.name?data.profile.name:newLibraryProfileName}”.`});
+      setNewLibraryProfileName('');
+      setNewLibraryProfileFolder('');
+      setNewLibraryProfileCopyData(false);
+      await refreshAppInfo();
+    }catch(e){
+      setNotice({title:'Could not create profile',message:e.message||'The library profile could not be created.',kind:'error'});
+    }finally{
+      setAppActionBusy('');
+    }
+  }
+
+  async function switchLibraryProfile(){
+    if(!activeLibraryProfileId) return;
+    setAppActionBusy('switch-profile');
+    try{
+      const data=await fetch('/api/library-profiles/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile_id:activeLibraryProfileId})}).then(r=>r.ok?r.json():r.json().catch(()=>({})).then(err=>{throw new Error(err.detail||err.error||('HTTP '+r.status));}));
+      const name=(data&&data.profile&&data.profile.name)||'selected profile';
+      setNotice({title:'Profile switched for next launch',message:`The next time MSFS Hangar starts it will use “${name}”.`});
+      await refreshAppInfo();
+    }catch(e){
+      setNotice({title:'Could not switch profile',message:e.message||'The library profile could not be switched.',kind:'error'});
+    }finally{
+      setAppActionBusy('');
+    }
+  }
+
+  async function revealActiveAppFolder(){
+    try{
+      await fetch('/api/application/reveal-active-folder',{method:'POST'}).then(r=>r.ok?r.json():r.json().catch(()=>({})).then(err=>{throw new Error(err.detail||err.error||('HTTP '+r.status));}));
+    }catch(e){
+      setNotice({title:'Could not open folder',message:e.message||'The active app folder could not be opened.',kind:'error'});
+    }
+  }
+
+  const savedWindowStateRef=useRef('');
+  useEffect(()=>{
+    const shellMode=String(appInfo&&appInfo.shell_mode||'');
+    if(shellMode!=='app') return;
+    let disposed=false;
+    function captureWindowState(){
+      const width=Math.max(0, Math.round(Number(window.outerWidth||window.innerWidth||0)));
+      const height=Math.max(0, Math.round(Number(window.outerHeight||window.innerHeight||0)));
+      const x=Math.round(Number(window.screenX!=null?window.screenX:(window.screenLeft||0)));
+      const y=Math.round(Number(window.screenY!=null?window.screenY:(window.screenTop||0)));
+      const screenW=Math.max(0, Math.round(Number(window.screen&&window.screen.availWidth||0)));
+      const screenH=Math.max(0, Math.round(Number(window.screen&&window.screen.availHeight||0)));
+      const maximized=!!(screenW&&screenH&&width>=screenW-12&&height>=screenH-12);
+      return {x,y,width,height,maximized,shell_mode:shellMode,saved_at:new Date().toISOString()};
+    }
+    function persistWindowState(forceBeacon=false){
+      if(disposed) return;
+      const payload=captureWindowState();
+      const serialized=JSON.stringify(payload);
+      if(!forceBeacon && savedWindowStateRef.current===serialized) return;
+      savedWindowStateRef.current=serialized;
+      try{
+        if(forceBeacon && navigator.sendBeacon){
+          navigator.sendBeacon('/api/application/window-state', new Blob([serialized], {type:'application/json'}));
+          return;
+        }
+      }catch(e){}
+      fetch('/api/application/window-state',{method:'POST',headers:{'Content-Type':'application/json'},body:serialized,keepalive:!!forceBeacon}).catch(()=>{});
+    }
+    const handleResize=()=>persistWindowState(false);
+    const handleHide=()=>persistWindowState(true);
+    window.addEventListener('resize', handleResize);
+    window.addEventListener('beforeunload', handleHide);
+    window.addEventListener('pagehide', handleHide);
+    const interval=setInterval(()=>persistWindowState(false), 1500);
+    setTimeout(()=>persistWindowState(false), 600);
+    return ()=>{
+      disposed=true;
+      clearInterval(interval);
+      window.removeEventListener('resize', handleResize);
+      window.removeEventListener('beforeunload', handleHide);
+      window.removeEventListener('pagehide', handleHide);
+    };
+  },[appInfo&&appInfo.shell_mode]);
 
   // Load backend settings + addons on startup
   useEffect(()=>{
@@ -3855,7 +4648,7 @@ function App(){
       if(s.currency_symbol){ setLocaleCurrency(s.currency_symbol); localStorage.setItem('hangar_currency', s.currency_symbol); }
       if(s.calendar_format){ setLocaleCalendar(s.calendar_format); localStorage.setItem('hangar_calendar_format', s.calendar_format); localStorage.setItem('hangar_calendar', s.calendar_format); }
       if(s.distance_unit){ setLocaleDistanceUnit(s.distance_unit); localStorage.setItem('hangar_distance_unit', s.distance_unit); }
-      if(s.search_provider){ setSearchProvider(String(s.search_provider).toLowerCase()==='google'?'google':'bing'); localStorage.setItem('hangar_search_provider', String(s.search_provider).toLowerCase()==='google'?'google':'bing'); }
+      setSearchProvider('google'); localStorage.setItem('hangar_search_provider','google');
       if(s.gemini_detail_mode){ setGeminiDetailMode(String(s.gemini_detail_mode).toLowerCase()==='fast'?'fast':'detailed'); localStorage.setItem('hangar_gemini_detail_mode', String(s.gemini_detail_mode).toLowerCase()==='fast'?'fast':'detailed'); }
     }).catch(()=>{});
     fetch("/api/data-options").then(r=>r.ok?r.json():null).then(opts=>{
@@ -3952,7 +4745,7 @@ function App(){
     localStorage.setItem('hangar_currency', localeCurrency || '$');
     localStorage.setItem('hangar_calendar_format', localeCalendar || 'MM/DD/YYYY');
     localStorage.setItem('hangar_calendar', localeCalendar || 'MM/DD/YYYY');
-    localStorage.setItem('hangar_search_provider', searchProvider || 'bing');
+    localStorage.setItem('hangar_search_provider', 'google');
   },[localeLanguage,localeCurrency,localeCalendar,localeDistanceUnit,searchProvider]);
 
   useEffect(()=>{
@@ -4264,11 +5057,11 @@ Failures: ${result.failures.length}`:''}`});
   }
 
   async function saveSearchProvider(){
-    const value=(searchProvider||'bing').toLowerCase()==='google'?'google':'bing';
+    const value='google';
     try{
       localStorage.setItem('hangar_search_provider', value);
       await fetch('/api/settings/search_provider',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value})});
-      setNotice({title:'Browser search provider saved',message:`The built-in browser will now use ${searchProviderLabel(value)} for web and image searches.`});
+      setNotice({title:'Browser search saved',message:'The built-in browser now uses Google for research, specs, and image searches.'});
     }catch(e){ alert('Failed to save search provider'); }
   }
 
@@ -5004,8 +5797,8 @@ async function removeSingleAddon(addon){
             <button title="Filter the grid to favorites only" onClick={()=>setFavOnly(!favOnly)} style={{background:favOnly?"var(--ambD)":"transparent",border:"1px solid "+(favOnly?"rgba(251,191,36,.3)":"var(--bdr)"),color:favOnly?"var(--amb)":"var(--t2)",borderRadius:7,padding:"6px 10px",fontSize:11,fontWeight:600,fontFamily:"inherit",flexShrink:0,cursor:"pointer"}}>{favOnly?"Favs On":"Favs"}</button>
             <button title="Filter the grid to currently activated add-ons only" onClick={()=>{setActiveOnly(!activeOnly); if(!activeOnly) setInactiveOnly(false);}} style={{background:activeOnly?"var(--vioD)":"transparent",border:"1px solid "+(activeOnly?"rgba(167,139,250,.3)":"var(--bdr)"),color:activeOnly?"var(--vio)":"var(--t2)",borderRadius:7,padding:"6px 10px",fontSize:11,fontWeight:600,fontFamily:"inherit",flexShrink:0,cursor:"pointer"}}>{activeOnly?"Active On":"Active"}</button>
             <button title="Filter the grid to inactive add-ons only" onClick={()=>{setInactiveOnly(!inactiveOnly); if(!inactiveOnly) setActiveOnly(false);}} style={{background:inactiveOnly?"rgba(248,113,113,0.12)":"transparent",border:"1px solid "+(inactiveOnly?"rgba(248,113,113,.28)":"var(--bdr)"),color:inactiveOnly?"var(--red)":"var(--t2)",borderRadius:7,padding:"6px 10px",fontSize:11,fontWeight:600,fontFamily:"inherit",flexShrink:0,cursor:"pointer"}}>{inactiveOnly?"Inactive On":"Inactive"}</button>
-            {isGeoFilter&&<button title="Open a map for the current filtered airport or scenery results" onClick={()=>setShowGlobalMap(true)} style={{background:"transparent",border:"1px solid var(--bdr)",color:"var(--t2)",borderRadius:7,padding:"6px 10px",fontSize:11,fontWeight:600,fontFamily:"inherit",flexShrink:0,cursor:"pointer"}}>Open Global Map</button>}
           </div>
+          {isGeoFilter&&<div style={{display:'inline-flex',alignItems:'center',marginLeft:18,paddingLeft:10,borderLeft:'1px solid var(--bdr)',flexShrink:0}}><button title="Open a map for the current filtered airport or scenery results" onClick={()=>{ setGlobalMapOpenVersion(v=>v+1); setShowGlobalMap(true); }} style={{background:"linear-gradient(180deg,var(--bg2),var(--bg1))",border:"1px solid var(--bdr)",color:"var(--t1)",borderRadius:12,padding:"10px 14px",fontSize:13,fontWeight:700,fontFamily:"inherit",flexShrink:0,cursor:"pointer",minHeight:48}}>Open Global Map</button></div>}
           <select value={sort} onChange={e=>setSort(e.target.value)}
             style={{marginLeft:"auto",background:"linear-gradient(180deg,var(--bg2),var(--bg1))",border:"1px solid var(--bdr)",color:"var(--t1)",borderRadius:12,padding:"10px 14px",fontSize:13,cursor:"pointer",flexShrink:0,fontWeight:700,minHeight:48}}>
             <option value="title">Name</option><option value="type">Type</option><option value="date_added">Date Added</option>{filterType==="Airport"&&<option value="icao">ICAO</option>}<option value="fav">Favorites</option><option value="price">Price</option>
@@ -5027,7 +5820,7 @@ async function removeSingleAddon(addon){
             </div>
             {showGlobalMap&&isGeoFilter&&<div style={{position:'fixed',inset:0,zIndex:100002,background:'rgba(2,6,23,.72)',display:'flex',alignItems:'center',justifyContent:'center',padding:18}}>
               <div style={{width:'min(1540px, 98vw)',height:'min(92vh, 1040px)',minWidth:920,minHeight:540,display:'flex',flexDirection:'column',minHeight:0,resize:'both',overflow:'hidden',maxWidth:'98vw',maxHeight:'94vh'}}>
-                <GlobalLibraryMap items={filtered} selectedItems={selectedItems} onClose={()=>setShowGlobalMap(false)} onHelp={()=>openGuide('global_library_map')} onOpenAddon={(addon)=>{ setSelected(addon); setDetailContext({type:'global-map'}); setDetailInitialTab('overview'); setDetail(addon); }} accent='var(--acc)'/>
+                <GlobalLibraryMap items={filtered} allItems={addons} selectedItems={selectedItems} openVersion={globalMapOpenVersion} onClose={()=>setShowGlobalMap(false)} onHelp={()=>openGuide('global_library_map')} onOpenAddon={(addon)=>{ setSelected(addon); setDetailContext({type:'global-map'}); setDetailInitialTab('overview'); setDetail(addon); }} accent='var(--acc)'/>
               </div>
             </div>}
             <div ref={gridRef} style={{maxHeight:'calc(100vh - 252px)',overflowY:'auto',paddingRight:6,scrollbarGutter:'stable',borderRadius:12}}>
@@ -5278,25 +6071,63 @@ async function removeSingleAddon(addon){
 
 
             <div style={{display:settingsTab==='application'?'block':'none',background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:12,padding:18,marginBottom:14}}>
-              <div style={{fontSize:12,fontWeight:700,color:"var(--t0)",marginBottom:4}}>Application Paths & Mode</div>
-              <div style={{fontSize:11,color:"var(--t2)",marginBottom:12,lineHeight:1.65}}>This screen shows the verified storage paths for the current release, lets you test read/write persistence, migrate legacy data into the current AppData location, and create a portable backup zip for moving to another computer.</div>
-              <div style={{display:'grid',gridTemplateColumns:'1fr',gap:10,marginBottom:12}}>
-                {[['Base app folder',appInfo&&appInfo.base_dir,true],['Active user data folder',appInfo&&appInfo.user_data_dir,appInfo&&appInfo.user_data_exists],['Active settings file',appInfo&&appInfo.settings_file,appInfo&&appInfo.settings_exists],['Active database',appInfo&&appInfo.db_path,appInfo&&appInfo.db_exists],['Logs folder',appInfo&&appInfo.log_dir,appInfo&&appInfo.log_dir_exists],['Browser profile',appInfo&&appInfo.browser_profile_dir,appInfo&&appInfo.browser_profile_exists],['Backup folder',appInfo&&appInfo.backup_dir,appInfo&&appInfo.backup_dir_exists],['Test folder',appInfo&&appInfo.test_dir,appInfo&&appInfo.test_dir_exists],['Data directory override',appInfo&&appInfo.data_dir_override,null],['Host mode',appInfo&&appInfo.host_mode,null]].map(([label,value,exists])=><div key={label} style={{background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:10,padding:'10px 12px'}}><div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,marginBottom:5}}><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700}}>{label}</div>{exists===null?null:<div style={{fontSize:10,fontWeight:800,color:exists?'var(--grn)':'var(--amb)',textTransform:'uppercase',letterSpacing:'0.08em'}}>{exists?'Exists':'Missing'}</div>}</div><div style={{fontSize:12,color:'var(--t1)',fontFamily:'monospace',wordBreak:'break-all'}}>{value||'—'}</div>{label==='Active database'&&appInfo&&appInfo.db_file_info&&<div style={{fontSize:10,color:'var(--t3)',marginTop:6}}>Verified file check: {appInfo.db_file_info.exists?'Exists':'Missing'}{appInfo.db_file_info.exists?` • ${(appInfo.db_file_info.size||0).toLocaleString()} bytes • ${appInfo.db_file_info.modified||'—'}`:''}</div>}{label==='Active settings file'&&appInfo&&appInfo.settings_file_info&&<div style={{fontSize:10,color:'var(--t3)',marginTop:6}}>Verified file check: {appInfo.settings_file_info.exists?'Exists':'Missing'}{appInfo.settings_file_info.exists?` • ${(appInfo.settings_file_info.size||0).toLocaleString()} bytes • ${appInfo.settings_file_info.modified||'—'}`:''}</div>}</div>)}
-              </div>
+              <div style={{fontSize:12,fontWeight:700,color:"var(--t0)",marginBottom:4}}>Application Folder, Profiles & Backup</div>
+              <div style={{fontSize:11,color:"var(--t2)",marginBottom:12,lineHeight:1.65}}>Use Library Profiles when you want separate user-file stores for MSFS 2024, MSFS 2020, X-Plane 12, or test libraries. The active profile decides which base app folder MSFS Hangar uses on the next launch.</div>
               <div style={{background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:12,padding:12,marginBottom:12}}>
-                <div style={{fontSize:11,fontWeight:800,color:'var(--t1)',marginBottom:6}}>Legacy storage discovery</div>
-                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:8}}>
-                  {[['Legacy Hybrid JSON',appInfo&&appInfo.storage_sources&&appInfo.storage_sources.legacy_hybrid],['Legacy HQ SQLite',appInfo&&appInfo.storage_sources&&appInfo.storage_sources.legacy_hq],['Legacy Qt Settings',appInfo&&appInfo.storage_sources&&appInfo.storage_sources.legacy_qt]].map(([label,src])=><div key={label} style={{border:'1px solid var(--bdr)',borderRadius:10,padding:'10px 12px',background:'var(--bg1)'}}><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700,marginBottom:5}}>{label}</div><div style={{fontSize:12,color:'var(--t1)',fontFamily:'monospace',wordBreak:'break-all'}}>{src&&src.dir ? src.dir : '—'}</div><div style={{fontSize:10,color:(src&&src.exists)?'var(--grn)':'var(--t3)',marginTop:6,fontWeight:700}}>{src&&src.exists?'Found':'Not found'}</div></div>)}
+                <div style={{fontSize:11,fontWeight:800,color:'var(--t1)',marginBottom:8}}>Library Profiles</div>
+                <div style={{display:'grid',gridTemplateColumns:'1.2fr auto',gap:8,alignItems:'end',marginBottom:10}}>
+                  <div>
+                    <div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:5}}>Current profile</div>
+                    <select value={activeLibraryProfileId} onChange={e=>setActiveLibraryProfileId(e.target.value)} style={{width:'100%',background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:8,padding:'8px 10px',color:'var(--t0)',fontSize:12}}>
+                      {(libraryProfiles||[]).map(p=><option key={p.id} value={p.id}>{p.name} {p.platform?`(${p.platform})`:''}</option>)}
+                    </select>
+                  </div>
+                  <Btn label={appActionBusy==='switch-profile'?'Saving…':'Use Selected Profile Next Launch'} color='var(--acc)' sm onClick={switchLibraryProfile} disabled={!!appActionBusy || !activeLibraryProfileId}/>
+                </div>
+                <div style={{fontSize:11,color:'var(--t2)',lineHeight:1.6,marginBottom:10}}>Default profile <strong style={{color:'var(--t0)'}}>MSFS 2024</strong> is created during first-time setup. Switching profiles does not affect the current running session; it changes the next launch.</div>
+                <div style={{borderTop:'1px solid var(--bdr)',paddingTop:12}}>
+                  <div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:6}}>Create new library profile</div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 180px',gap:8,marginBottom:8}}>
+                    <input value={newLibraryProfileName} onChange={e=>setNewLibraryProfileName(e.target.value)} placeholder='Profile name (example: X-Plane 12)' style={{width:'100%',background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:8,padding:'8px 10px',color:'var(--t0)',fontSize:12}}/>
+                    <select value={newLibraryProfilePlatform} onChange={e=>setNewLibraryProfilePlatform(e.target.value)} style={{width:'100%',background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:8,padding:'8px 10px',color:'var(--t0)',fontSize:12}}>
+                      {[['msfs2024','MSFS 2024'],['msfs2020','MSFS 2020'],['xplane12','X-Plane 12'],['test','Test / Sandbox']].map(([id,label])=><option key={id} value={id}>{label}</option>)}
+                    </select>
+                  </div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:8,marginBottom:8}}>
+                    <input value={newLibraryProfileFolder} onChange={e=>setNewLibraryProfileFolder(e.target.value)} placeholder='Choose a storage folder for this profile' style={{width:'100%',background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:8,padding:'8px 10px',color:'var(--t0)',fontSize:12,fontFamily:'monospace'}}/>
+                    <Btn label='Browse Folder…' color='var(--t2)' sm onClick={()=>pickAppFolder('profile')} disabled={!!appActionBusy}/>
+                  </div>
+                  <label style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:11,color:'var(--t1)',marginBottom:10}}><input type='checkbox' checked={newLibraryProfileCopyData} onChange={e=>setNewLibraryProfileCopyData(e.target.checked)}/> Copy the current active profile data into this new profile folder</label>
+                  <div><Btn label={appActionBusy==='create-profile'?'Creating…':'Create Library Profile'} color='var(--grn)' sm onClick={createLibraryProfile} disabled={!!appActionBusy || !newLibraryProfileName || !newLibraryProfileFolder}/></div>
                 </div>
               </div>
               <div style={{background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:12,padding:12,marginBottom:12}}>
-                <div style={{fontSize:11,fontWeight:800,color:'var(--t1)',marginBottom:6}}>Migration, backup, and storage tests</div>
-                <div style={{fontSize:11,color:'var(--t2)',marginBottom:10,lineHeight:1.6}}>Use <strong style={{color:'var(--t0)'}}>Run Storage Test</strong> to verify the app can write and read back test data. Use <strong style={{color:'var(--t0)'}}>Migrate Legacy Data</strong> to import legacy Hybrid JSON collections/settings/add-ons into the current AppData store. Use <strong style={{color:'var(--t0)'}}>Create Backup Zip</strong> to store a portable backup in the Backup folder shown above.</div>
+                <div style={{fontSize:11,fontWeight:800,color:'var(--t1)',marginBottom:8}}>Current base app folder</div>
+                <div style={{fontSize:12,color:'var(--t1)',fontFamily:'monospace',wordBreak:'break-all',marginBottom:8}}>{(appInfo&&appInfo.base_app_folder)||'—'}</div>
+                {appInfo&&appInfo.active_profile&&<div style={{fontSize:10,color:'var(--t3)',marginBottom:4}}>Active profile: {(appInfo.active_profile.name||'MSFS 2024')} {(appInfo.active_profile.platform?`• ${appInfo.active_profile.platform}`:'')}</div>}
+                {appInfo&&appInfo.db_file_info&&<div style={{fontSize:10,color:'var(--t3)',marginBottom:4}}>Database: {appInfo.db_file_info.exists?'Exists':'Missing'}{appInfo.db_file_info.exists?` • ${(appInfo.db_file_info.size||0).toLocaleString()} bytes • ${appInfo.db_file_info.modified||'—'}`:''}</div>}
+                {appInfo&&appInfo.settings_file_info&&<div style={{fontSize:10,color:'var(--t3)',marginBottom:4}}>Settings: {appInfo.settings_file_info.exists?'Exists':'Missing'}{appInfo.settings_file_info.exists?` • ${(appInfo.settings_file_info.size||0).toLocaleString()} bytes • ${appInfo.settings_file_info.modified||'—'}`:''}</div>}
+                {appInfo&&appInfo.pending_delete_root&&<div style={{fontSize:10,color:'var(--amb)',marginBottom:10}}>Pending old-folder cleanup on next launch: {appInfo.pending_delete_root}</div>}
+                <div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:8,marginBottom:8}}>
+                  <input value={appFolderDraft} onChange={e=>setAppFolderDraft(e.target.value)} placeholder='Choose a base app folder' style={{width:'100%',background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:8,padding:'8px 10px',color:'var(--t0)',fontSize:12,fontFamily:'monospace'}}/>
+                  <Btn label='Browse Folder…' color='var(--t2)' sm onClick={()=>pickAppFolder('app')} disabled={!!appActionBusy}/>
+                </div>
+                <label style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:11,color:'var(--t1)',marginBottom:8}}><input type='checkbox' checked={appFolderCopyData} onChange={e=>setAppFolderCopyData(e.target.checked)}/> Copy current app data into the new folder</label>
+                <label style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:11,color:'var(--t1)',marginBottom:8,marginLeft:12}}><input type='checkbox' checked={appFolderVerifyCopy} onChange={e=>setAppFolderVerifyCopy(e.target.checked)}/> Verify copied files before accepting the move</label>
+                <label style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:11,color:'var(--amb)',marginBottom:10,marginLeft:12}}><input type='checkbox' checked={appFolderRemoveOld} onChange={e=>setAppFolderRemoveOld(e.target.checked)} disabled={!appFolderCopyData}/> Remove the old folder after a verified copy</label>
+                <div style={{fontSize:10,color:'var(--t3)',marginBottom:10}}>When Remove the old folder is enabled, MSFS Hangar only removes the current active folder after the copy and verification checks succeed. If verification fails, the old folder is kept.</div>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                  <Btn label={appActionBusy==='set-app-folder'?'Saving…':'Copy, Verify & Save App Folder'} color='var(--acc)' sm onClick={saveAppFolder} disabled={!!appActionBusy || !appFolderDraft}/>
+                  <Btn label='Reveal Active Folder' color='var(--vio)' sm onClick={revealActiveAppFolder} disabled={!!appActionBusy}/>
+                  <Btn label='Refresh' color='var(--t2)' sm onClick={refreshAppInfo} disabled={!!appActionBusy}/>
+                </div>
+                <div style={{fontSize:10,color:'var(--t3)',marginTop:10}}>Changing the base app folder updates the currently active library profile for the next launch. The current session keeps using the folder shown above. Copy verification checks the copied folder before the move is accepted.</div>
+              </div>
+              <div style={{background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:12,padding:12,marginBottom:12}}>
+                <div style={{fontSize:11,fontWeight:800,color:'var(--t1)',marginBottom:6}}>Backup</div>
+                <div style={{fontSize:11,color:'var(--t2)',marginBottom:10,lineHeight:1.6}}>Create a portable backup zip using the default name pattern <strong style={{color:'var(--t0)'}}>MSFSHangar Backup YYYYMMDD_HHMMSS.zip</strong> and choose exactly where to save it.</div>
                 <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
-                  <Btn label={appActionBusy==='test'?'Running test…':'Run Storage Test'} color='var(--accD)' sm onClick={()=>runApplicationAction('test')} disabled={!!appActionBusy}/>
-                  <Btn label={appActionBusy==='migrate'?'Migrating…':'Migrate Legacy Data'} color='var(--vio)' sm onClick={()=>runApplicationAction('migrate')} disabled={!!appActionBusy}/>
-                  <Btn label={appActionBusy==='backup'?'Creating backup…':'Create Backup Zip'} color='var(--grn)' sm onClick={()=>runApplicationAction('backup')} disabled={!!appActionBusy}/>
-                  <Btn label='Refresh Paths' color='var(--t2)' sm onClick={refreshAppInfo} disabled={!!appActionBusy}/>
+                  <Btn label={appActionBusy==='backup'?'Creating backup…':'Create Backup Zip…'} color='var(--grn)' sm onClick={()=>runApplicationAction('backup')} disabled={!!appActionBusy}/>
                 </div>
                 {appActionResult&&<div style={{border:'1px solid '+(appActionResult.error?'var(--red)':'var(--bdr)'),background:'var(--bg1)',borderRadius:10,padding:'10px 12px'}}>
                   <div style={{fontSize:11,fontWeight:800,color:appActionResult.error?'var(--red)':'var(--t1)',marginBottom:6}}>{appActionResult.error?'Application action failed':(appActionResult.message||'Application action result')}</div>
@@ -5375,15 +6206,14 @@ async function removeSingleAddon(addon){
 
             <div style={{display:settingsTab==='ui'?'block':'none',background:"var(--bg2)",border:"1px solid var(--bdr)",borderRadius:12,padding:18,marginBottom:14}}>
               <div style={{fontSize:12,fontWeight:700,color:"var(--t0)",marginBottom:4}}>Browser Search Provider</div>
-              <div style={{fontSize:11,color:"var(--t2)",marginBottom:10}}>Choose which search engine the built-in browser uses for research, specs, and image searches. Bing remains the default because it is less likely to interrupt with validation.</div>
+              <div style={{fontSize:11,color:"var(--t2)",marginBottom:10}}>The built-in browser uses Google for research, specs, and image searches in this build.</div>
               <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:10}}>
                 <select value={searchProvider} onChange={e=>setSearchProvider(e.target.value)} style={{minWidth:180,background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:8,padding:'8px 11px',color:'var(--t0)',fontSize:12}}>
-                  <option value='bing'>Bing (default)</option>
                   <option value='google'>Google</option>
                 </select>
                 <Btn label='Save Search Provider' color='var(--acc)' sm onClick={saveSearchProvider}/>
               </div>
-              <div style={{fontSize:11,color:'var(--t3)'}}>Google may return stronger result quality for some searches, but it is also more likely to show a human-verification page inside embedded browsing workflows.</div>
+              <div style={{fontSize:11,color:'var(--t3)'}}>Google is now the active search engine for research and the Airport / Aircraft detail browser tabs.</div>
             </div>
 
             {/* Display Mode */}

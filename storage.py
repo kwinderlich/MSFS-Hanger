@@ -667,11 +667,16 @@ async def migrate_legacy_storage(db_path: Path = DB_PATH) -> dict:
     return report
 
 
-async def create_data_backup(db_path: Path = DB_PATH) -> dict:
+def _backup_filename() -> str:
+    stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    return f'MSFSHangar Backup {stamp}.zip'
+
+
+async def create_data_backup(db_path: Path = DB_PATH, destination: Optional[Path] = None) -> dict:
     initialize_user_data()
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    backup_zip = BACKUP_DIR / f'msfs_hangar_backup_{stamp}.zip'
+    backup_zip = Path(destination) if destination else (BACKUP_DIR / _backup_filename())
+    backup_zip.parent.mkdir(parents=True, exist_ok=True)
     manifest = {
         'created_at': datetime.now().isoformat(timespec='seconds'),
         'user_data_dir': str(DB_PATH.parent),
@@ -699,6 +704,7 @@ async def create_data_backup(db_path: Path = DB_PATH) -> dict:
         'ok': True,
         'backup_zip': str(backup_zip),
         'size': backup_zip.stat().st_size if backup_zip.exists() else 0,
+        'default_name': backup_zip.name,
     }
 
 
@@ -712,6 +718,12 @@ async def run_storage_test(db_path: Path = DB_PATH) -> dict:
     roundtrip = await get_json_setting(key, {}, db_path=db_path)
     marker = TEST_DIR / 'storage_test_marker.json'
     marker.write_text(json.dumps({'timestamp': stamp, 'marker': 'ok'}, indent=2), encoding='utf-8')
+    marker_roundtrip = {}
+    if marker.exists():
+        marker_roundtrip = json.loads(marker.read_text(encoding='utf-8'))
+    settings_snapshot = load_settings_file()
+    if not db_path.exists() or roundtrip != value or not marker.exists() or marker_roundtrip.get('timestamp') != stamp or 'storage_test_last_run' not in settings_snapshot:
+        raise RuntimeError('Storage test failed: data could not be re-read immediately after write.')
     await add_event_log({
         'id': f'storage-test-{stamp}',
         'category': 'system',
