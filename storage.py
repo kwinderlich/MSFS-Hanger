@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+import asyncio
 from pathlib import Path
 import shutil
 import zipfile
@@ -292,13 +294,25 @@ async def get_setting(key: str, default: str = "", db_path: Path = DB_PATH) -> s
             return row[0] if row else default
 
 async def set_setting(key: str, value: str, db_path: Path = DB_PATH):
-    async with aiosqlite.connect(str(db_path)) as db:
-        await db.execute(
-            "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (key, value),
-        )
-        await db.commit()
-    await _write_settings_snapshot(db_path)
+    last_exc = None
+    for attempt in range(4):
+        try:
+            async with aiosqlite.connect(str(db_path), timeout=8) as db:
+                await db.execute('PRAGMA busy_timeout = 8000')
+                await db.execute(
+                    "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (key, value),
+                )
+                await db.commit()
+            await _write_settings_snapshot(db_path)
+            return
+        except sqlite3.OperationalError as exc:
+            last_exc = exc
+            if 'locked' not in str(exc).lower() or attempt >= 3:
+                raise
+            await asyncio.sleep(0.12 * (attempt + 1))
+    if last_exc:
+        raise last_exc
 
 async def get_json_setting(key: str, default, db_path: Path = DB_PATH):
     raw = await get_setting(key, "", db_path)

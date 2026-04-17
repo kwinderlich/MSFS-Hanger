@@ -1,0 +1,14 @@
+MSFS-Hanger V1 Release 177
+
+Fixes and changes in this release:
+- Fixed Global Map airport weather normalization for OpenWeather current-weather payloads so the focused-airport weather panel can populate correctly.
+- Changed airport weather lookup to try OpenWeather current weather first, then One Call fallback.
+- Global Map now opens centered on the currently selected Library airport/scenery add-on when exactly one relevant add-on is selected; otherwise it opens to the default world view with no airport selected.
+- Global Map no longer restores a hidden prior focused airport on open.
+- Global Map now forces the airport list visible when the map is opened.
+- Reduced Global Map map-frame height so the airport weather panel and airport list remain visible more often without extra scrolling.
+- Weather overlay choices on Global Map were simplified to Cloud Cover and Storms / Precipitation.
+- Weather overlay opacity was increased for stronger visibility.
+- Weather API Settings now store keys only; overlay enable/layer choices remain only on Global Map.
+- Library grid card click now toggles selection off when the currently selected card is clicked again, clearing the sidebar without changing the current type filter.
+- Airport Detail -> Map generated overlay now adds a highly visible magenta runway centerline plus stronger taxiway styling to make the generated overlay easier to see above the basemap.

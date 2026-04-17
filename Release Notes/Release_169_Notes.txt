@@ -1,0 +1,9 @@
+MSFS-Hanger V1 Release 169
+
+Fixes
+- Fixed Global Map startup crash caused by the world globe preset being referenced before the region camera presets were available.
+- Added a Release Notes folder so future releases can include release-specific notes in a consistent place.
+
+Notes
+- This release is a hotfix for the Global Map crash in Release 168.
+- Route and region zoom behavior from Release 168 remain otherwise unchanged.

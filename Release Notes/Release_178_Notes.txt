@@ -1,0 +1,16 @@
+MSFS-Hanger V1 Release 178
+
+What changed:
+- Reworked Global Map layout to use a wider map/list area with a right sidebar for focused airport and weather.
+- Fixed Global Map startup selection logic so it no longer reopens a stale airport like YBBN by default.
+- Global Map now opens focused on exactly one selected geo add-on, otherwise it opens with no airport selected.
+- Added editable measured-route point chips so individual globe route points can be removed without clearing the whole route.
+- Added an optional checkbox to limit Range Aircraft suggestions to the current measured route total.
+- Added a Windy weather sidebar mode for Global Map when Windy is selected as the weather provider.
+- Kept OpenWeather as the in-map globe overlay provider.
+- Reworked Airport Detail map layout rendering to use a custom SVG overlay drawn above the Leaflet basemap.
+- Strengthened runway / centerline / taxiway / parking overlay visibility and labels.
+
+Notes:
+- OpenWeather remains the active in-map globe overlay provider.
+- Windy is now used as a dedicated weather map view in the Global Map sidebar instead of a direct transparent overlay on the globe.

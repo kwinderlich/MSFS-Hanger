@@ -1,0 +1,16 @@
+MSFS-Hanger V1 Release 189
+
+Changes:
+- Global Map weather browser now uses direct weather-site template URLs instead of Google-style site searches.
+- Weather View UI was simplified in Global Map. The extra URL / Go / Save Article controls and descriptive text were removed.
+- In desktop mode, custom Map Wx weather sites now auto-open in the native browser pane and show a simple status card in the app.
+- Clicking a map airport now sets Global Map into map-override scope so map interactions can override the Library-grid seed.
+- Region reset now uses scope=all so reapplying a region should zoom back out to the region instead of staying trapped on a previously focused airport.
+- Focused airport seed on Global Map now uses a stronger direct zoom value.
+- Route Weather detail now appears as an overlay popup on top of the map instead of only in the sidebar.
+- Airport website buttons now use the saved templated URL directly.
+- Airport data fetch now merges AI-enriched airport summary/details with the existing airport lookup data when a selected AI provider is configured.
+- Airport data UI now shows HTML summary text plus extra fields like Commercial and Passenger Year.
+- Export Layout JSON now writes the file to the user logs folder and reports the saved path.
+- Added extra native-browser render-process logging to help trace the silent Global Map crash.
+- Airport layout drawing was reworked again to use a GeoJSON overlay path for runways / centerlines / taxiways / parking when generated layout data exists.

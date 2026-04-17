@@ -1,0 +1,10 @@
+MSFS-Hanger V1 Release 174
+
+Hotfixes:
+- Fixed Global Map Explorer measure/route regression where adding the second measured point could crash because haversineMeters was not defined in the parent Global Map scope.
+- Globe measure now keeps additional clicked points and updates route totals without crashing.
+- Strengthened Airport Detail generated overlay visibility by drawing layout vectors in a dedicated high-z-index overlay pane and bringing runway/taxiway/parking layers to the front.
+- Airport overlay status text now reflects that the generated vectors should be visible on top of the basemap.
+
+Notes:
+- This release does not yet add true extracted airport package geometry. The overlay remains the generated first-pass layout from airport point plus runway metadata.

@@ -1,0 +1,16 @@
+MSFS-Hanger V1 Release 181
+
+Changes in this release:
+- Global Map startup now resets to World view when no airport/scenery is selected.
+- Global Map now honors a single focused airport from the Library grid on open and while the map is already open.
+- Added Source -> Show All on Global Map to ignore current library filtering and reset to a world-view airport/scenery list.
+- Removed the separate airport-weather provider choice from Global Map. Airport weather now uses METAR decoding only.
+- Added Map Wx selector for OpenWeather vs Windy.
+- Windy main-map embed was simplified to a map-first view with detail/forecast disabled.
+- Added localization controls for weather output units: temperature, wind speed, and barometric pressure.
+- Desktop shell now shows a startup overlay: "Please wait - App Starting" until the UI finishes loading.
+- Airport Detail Map now has a Hide Basemap Tiles checkbox to help debug the generated layout overlay visibility.
+
+Notes:
+- This release specifically targets the stale YBBN startup focus, Global Map weather controls, METAR-only airport weather output, and startup-screen clarity.
+- The Hide Basemap Tiles control is included as a diagnostic aid for the Airport Detail layout overlay while the overlay rendering is still being tuned.

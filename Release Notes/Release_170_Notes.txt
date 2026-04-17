@@ -1,0 +1,23 @@
+MSFS-Hanger V1 Release 170
+
+What changed in this release
+- Global Map region presets were adjusted to zoom out slightly across all regions.
+- South America region center was moved a little farther north.
+- Added more basemap choices to the Global Map type dropdown:
+  Liberty, Bright, Fiord, Positron, Voyager, Dark Matter, Colorful, Demotiles,
+  Satellite, Topography, plus MapTiler Streets / Satellite / Hybrid when a
+  MapTiler API key is entered in Settings.
+- Added Settings -> User Interface -> Map Basemap Providers with a MapTiler API key field.
+- Browser search provider setting now supports both Bing and Google.
+- Route management on the Global Map now includes route renaming in addition to
+  save / load / delete and total distance display.
+- Airport Detail -> Map tab now supports creating a first-pass airport layout overlay.
+  The overlay is generated from the saved airport point plus runway metadata and
+  includes runway shapes, a parallel taxiway guide, and parking spots.
+- Added Create Layout Overlay and Clear Layout buttons to the Airport Map tab.
+- Generated airport layouts are saved with the add-on so the overlay can be redrawn later.
+
+Important note
+- The new airport layout overlay is a lightweight generated diagram, not a full
+  extraction of MSFS 2024 airport package geometry. It is meant as the first phase
+  of airport rendering so the add-on can show a useful airport diagram on the map tab.

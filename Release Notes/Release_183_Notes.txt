@@ -1,0 +1,11 @@
+MSFS-Hanger V1 Release 183
+
+Fixes and changes in this release:
+- Fixed Global Map marker selection so clicking a marker, airport-list item, or search result no longer immediately clears Focused Airport when no grid selection exists.
+- Global Map now seeds from the currently selected Library card/sidebar airport or scenery item when opened.
+- Global Map now defaults Map Wx back to OpenWeather on open and when map types change.
+- Global Map airport weather is METAR-only and now loads from the currently focused airport ICAO/FAA identifier.
+- Fixed AVIPages airport URL templates to use the configured settings-style template with ?source=site_search.
+- Added retry handling for locked settings writes and prevented application window-state save failures from crashing the backend request path.
+- Adjusted region preset distances to be about 20 percent more zoomed out.
+- Airport Detail layout overlay now normalizes runway geometry after package/XML load so missing polygon/centerline fields are rebuilt before drawing.

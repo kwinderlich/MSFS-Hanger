@@ -1,0 +1,16 @@
+MSFS-Hanger V1 Release 179
+
+Fixes and improvements in this build:
+- Global Map now restores the prior focused airport/globe view when returning from Airport Detail during the same open map session.
+- Global Map startup focus logic was revised:
+  * exactly one airport/scenery selection in the Library grid focuses that item
+  * more than one selected item clears the focused airport and returns to world view
+  * fresh opens with no selected airport still use the default world view
+- Added a weather-provider selector directly on Global Map plus a Show Windy Pane checkbox.
+- OpenWeather remains the current airport-weather text provider; Windy is used for the sidebar weather map view.
+- Airport weather loading was reworked to bind to the focused airport ID more reliably.
+- Range Aircraft route filtering now shows only aircraft whose range is equal to or greater than the measured route total.
+- Globe ruler points now use numeric labels (Point 1, Point 2, etc.) and numbered point chips.
+- North America region preset adjusted closer to the supplied Minneapolis-centered reference view.
+- Global Map layout was tightened so the airport list has more room to stay visible below the globe.
+- Airport Detail generated layout overlay was made much more visually obvious with stronger SVG and Leaflet vector styling.

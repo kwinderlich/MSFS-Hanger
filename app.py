@@ -18,6 +18,8 @@ import time
 import uuid
 import sys
 import unicodedata
+import math
+import xml.etree.ElementTree as ET
 from html import escape, unescape
 from pathlib import Path
 from typing import Optional
@@ -262,8 +264,13 @@ async def application_window_state():
 async def application_save_window_state(body: WindowStateUpdate):
     payload = body.model_dump()
     payload['saved_at'] = payload.get('saved_at') or datetime.utcnow().isoformat() + 'Z'
-    await storage.set_json_setting('window_state', payload)
-    return {'ok': True, 'window_state': payload}
+    try:
+        await storage.set_json_setting('window_state', payload)
+        return {'ok': True, 'window_state': payload}
+    except Exception as exc:
+        if 'locked' in str(exc).lower():
+            return {'ok': False, 'warning': 'window_state_database_locked', 'window_state': payload}
+        raise
 
 
 @app.post('/api/frontend-log')
@@ -1673,6 +1680,7 @@ class UserDataUpdate(BaseModel):
     map_zoom: Optional[int] = None
     map_search_label: Optional[str] = None
     map_polygon: Optional[list] = None
+    map_layout: Optional[dict] = None
     liveries: Optional[list] = None
 
 @app.patch("/api/addons/{addon_id}/user")
@@ -1746,6 +1754,328 @@ async def toggle_addon(addon_id: str, body: ToggleRequest):
     addon = synced.get(addon.id, addon)
     await storage.set_enabled(addon_id, addon.enabled)
     return {"ok": True, "message": msg, "enabled": addon.enabled}
+
+
+
+def _openweather_units_from_setting(raw: str) -> str:
+    v = (raw or '').strip().lower()
+    if v in {'imperial','metric','standard'}:
+        return v
+    return 'imperial'
+
+
+def _fetch_openweather_onecall(lat: float, lon: float, api_key: str, units: str = 'imperial') -> dict:
+    params = {'lat': lat, 'lon': lon, 'appid': api_key, 'units': units, 'exclude': 'minutely,daily,alerts'}
+    resp = requests.get('https://api.openweathermap.org/data/3.0/onecall', params=params, timeout=25, headers={'User-Agent': 'MSFS-Hangar/2.0'})
+    resp.raise_for_status()
+    return resp.json() if resp.content else {}
+
+
+def _fetch_openweather_current(lat: float, lon: float, api_key: str, units: str = 'imperial') -> dict:
+    params = {'lat': lat, 'lon': lon, 'appid': api_key, 'units': units}
+    resp = requests.get('https://api.openweathermap.org/data/2.5/weather', params=params, timeout=25, headers={'User-Agent': 'MSFS-Hangar/2.0'})
+    resp.raise_for_status()
+    return resp.json() if resp.content else {}
+
+
+def _fetch_aviationweather_metar(icao: str) -> dict | None:
+    station=(icao or '').strip().upper()
+    if not station:
+        return None
+    resp = requests.get('https://aviationweather.gov/api/data/metar', params={'ids': station, 'format': 'json'}, timeout=25, headers={'User-Agent': 'MSFS-Hangar/2.0'})
+    if resp.status_code == 204:
+        return None
+    resp.raise_for_status()
+    data = resp.json() if resp.content else None
+    if isinstance(data, list):
+        return (data[0] if data else None)
+    if isinstance(data, dict) and isinstance(data.get('data'), list):
+        return (data.get('data')[0] if data.get('data') else None)
+    return data if isinstance(data, dict) else None
+
+
+def _normalize_aviationweather_payload(payload: dict | None, *, icao: str) -> dict:
+    item = payload if isinstance(payload, dict) else {}
+    clouds = item.get('clouds') if isinstance(item.get('clouds'), list) else []
+    cloud_parts = []
+    cover_map = {
+        'FEW': 'Few',
+        'SCT': 'Scattered',
+        'BKN': 'Broken',
+        'OVC': 'Overcast',
+        'CLR': 'Clear',
+        'SKC': 'Sky Clear',
+        'VV': 'Vertical Visibility',
+    }
+    for c in clouds:
+        if not isinstance(c, dict):
+            continue
+        raw_cover = str(c.get('cover') or c.get('type') or '').strip().upper()
+        cover = cover_map.get(raw_cover, raw_cover.title() if raw_cover else '')
+        base = c.get('base')
+        if cover and base not in (None, ''):
+            cloud_parts.append(f"{cover} {base}")
+        elif cover:
+            cloud_parts.append(cover)
+    raw = item.get('rawOb') or item.get('raw_text') or item.get('raw') or ''
+    flight_cat = item.get('fltCat') or item.get('flight_category') or ''
+    vis = item.get('visib') or item.get('visibility')
+    wind_speed = item.get('wspd') or item.get('wind_speed') or item.get('windSpeed')
+    wind_deg = item.get('wdir') or item.get('wind_deg') or item.get('windDirection')
+    temp_c = item.get('temp') if item.get('temp') is not None else item.get('temp_c')
+    dew_c = item.get('dewp') if item.get('dewp') is not None else item.get('dewpoint_c')
+    altim = item.get('altim') or item.get('altimeter')
+    current = {
+        'icao': icao,
+        'raw_metar': raw,
+        'obs_time': item.get('obsTime') or item.get('observation_time') or item.get('reportTime'),
+        'flight_category': flight_cat,
+        'temp': temp_c,
+        'dew_point': dew_c,
+        'visibility': vis,
+        'wind_speed': wind_speed,
+        'wind_deg': wind_deg,
+        'altimeter': altim,
+        'clouds_text': ', '.join(cloud_parts),
+        'clouds': clouds,
+        'description': item.get('wxString') or item.get('weather') or '',
+        'main': flight_cat or 'METAR',
+        'icon': '',
+    }
+    return {
+        'provider': 'aviationweather_metar',
+        'units': 'aviation',
+        'current': current,
+        'hourly_preview': [],
+        'raw_source': 'aviationweather_metar',
+    }
+
+
+
+
+def _xml_local_name(tag: str) -> str:
+    return str(tag or '').split('}')[-1]
+
+
+def _offset_latlon_from_ref(ref_lat: float, ref_lon: float, bias_x: float = 0.0, bias_z: float = 0.0) -> tuple[float, float]:
+    lat = float(ref_lat) + (float(bias_z) / 111320.0)
+    cos_lat = max(0.1, math.cos(math.radians(float(ref_lat))))
+    lon = float(ref_lon) + (float(bias_x) / (111320.0 * cos_lat))
+    return lat, lon
+
+
+def _airport_point_from_attrs(attrs: dict, ref_lat: float, ref_lon: float) -> tuple[float, float] | None:
+    try:
+        if attrs.get('lat') not in (None, '') and attrs.get('lon') not in (None, ''):
+            return float(attrs.get('lat')), float(attrs.get('lon'))
+        if attrs.get('biasX') not in (None, '') or attrs.get('biasZ') not in (None, ''):
+            bx = float(attrs.get('biasX') or 0.0)
+            bz = float(attrs.get('biasZ') or 0.0)
+            return _offset_latlon_from_ref(ref_lat, ref_lon, bx, bz)
+    except Exception:
+        return None
+    return None
+
+
+def _build_runway_polygon(center_lat: float, center_lon: float, heading_deg: float, length_m: float, width_m: float) -> dict:
+    def move(lat, lon, bearing, meters):
+        r = 6378137.0
+        d = meters / r
+        br = math.radians(bearing)
+        lat1 = math.radians(lat)
+        lon1 = math.radians(lon)
+        lat2 = math.asin(math.sin(lat1) * math.cos(d) + math.cos(lat1) * math.sin(d) * math.cos(br))
+        lon2 = lon1 + math.atan2(math.sin(br) * math.sin(d) * math.cos(lat1), math.cos(d) - math.sin(lat1) * math.sin(lat2))
+        return math.degrees(lat2), ((math.degrees(lon2) + 540.0) % 360.0) - 180.0
+    half_len = max(100.0, float(length_m or 0.0)) / 2.0
+    half_width = max(8.0, float(width_m or 0.0)) / 2.0
+    s_lat, s_lon = move(center_lat, center_lon, heading_deg + 180.0, half_len)
+    e_lat, e_lon = move(center_lat, center_lon, heading_deg, half_len)
+    p1 = move(s_lat, s_lon, heading_deg - 90.0, half_width)
+    p2 = move(e_lat, e_lon, heading_deg - 90.0, half_width)
+    p3 = move(e_lat, e_lon, heading_deg + 90.0, half_width)
+    p4 = move(s_lat, s_lon, heading_deg + 90.0, half_width)
+    return {
+        'polygon': [
+            {'lat': p1[0], 'lon': p1[1]},
+            {'lat': p2[0], 'lon': p2[1]},
+            {'lat': p3[0], 'lon': p3[1]},
+            {'lat': p4[0], 'lon': p4[1]},
+        ],
+        'centerline': [
+            {'lat': s_lat, 'lon': s_lon},
+            {'lat': e_lat, 'lon': e_lon},
+        ]
+    }
+
+
+def _score_airport_xml_candidate(path: Path, content_sample: str, icao: str) -> int:
+    score = 0
+    low = content_sample.lower()
+    if '<airport' in low:
+        score += 20
+    if icao and icao.lower() in low:
+        score += 80
+    if '<taxiwaypoint' in low:
+        score += 25
+    if '<taxiwaypath' in low:
+        score += 25
+    if '<taxiwayparking' in low:
+        score += 20
+    if '<runway' in low:
+        score += 20
+    return score
+
+
+def _parse_airport_layout_from_package_xml(addon: Addon) -> dict | None:
+    addon_path = Path((addon.addon_path or '').strip())
+    if not addon_path.exists():
+        return None
+    icao = str((addon.rw.icao or addon.rw.faa_id or '')).strip().upper()
+    xml_candidates: list[tuple[int, Path]] = []
+    try:
+        for idx, xml_path in enumerate(addon_path.rglob('*.xml')):
+            if idx > 250:
+                break
+            try:
+                sample = xml_path.read_text(encoding='utf-8', errors='ignore')[:200000]
+            except Exception:
+                continue
+            score = _score_airport_xml_candidate(xml_path, sample, icao)
+            if score > 0:
+                xml_candidates.append((score, xml_path))
+    except Exception:
+        return None
+    for _score, xml_path in sorted(xml_candidates, key=lambda t: (-t[0], len(str(t[1])))):
+        try:
+            root = ET.parse(xml_path).getroot()
+        except Exception:
+            continue
+        airport_nodes = [el for el in root.iter() if _xml_local_name(el.tag) == 'Airport']
+        for airport in airport_nodes:
+            attrs = airport.attrib or {}
+            airport_ident = str(attrs.get('ident') or attrs.get('icao') or '').strip().upper()
+            if icao and airport_ident and airport_ident != icao:
+                continue
+            try:
+                ref_lat = float(attrs.get('lat'))
+                ref_lon = float(attrs.get('lon'))
+            except Exception:
+                continue
+            taxi_points: dict[int, dict] = {}
+            taxi_paths: list[dict] = []
+            parking: list[dict] = []
+            runways: list[dict] = []
+            for child in list(airport):
+                name = _xml_local_name(child.tag)
+                cattrs = child.attrib or {}
+                if name == 'TaxiwayPoint':
+                    try:
+                        idx = int(cattrs.get('index'))
+                    except Exception:
+                        continue
+                    pt = _airport_point_from_attrs(cattrs, ref_lat, ref_lon)
+                    if pt:
+                        taxi_points[idx] = {'lat': pt[0], 'lon': pt[1], 'type': cattrs.get('type') or ''}
+                elif name == 'TaxiwayParking':
+                    try:
+                        idx = int(cattrs.get('index'))
+                    except Exception:
+                        idx = None
+                    pt = _airport_point_from_attrs(cattrs, ref_lat, ref_lon)
+                    if pt:
+                        info = {'lat': pt[0], 'lon': pt[1], 'name': cattrs.get('name') or '', 'type': cattrs.get('type') or ''}
+                        parking.append(info)
+                        if idx is not None:
+                            taxi_points[idx] = {'lat': pt[0], 'lon': pt[1], 'type': cattrs.get('type') or 'PARKING'}
+                elif name == 'TaxiwayPath':
+                    try:
+                        s = int(cattrs.get('start'))
+                        e = int(cattrs.get('end'))
+                    except Exception:
+                        continue
+                    p1 = taxi_points.get(s)
+                    p2 = taxi_points.get(e)
+                    if p1 and p2:
+                        taxi_paths.append({'name': cattrs.get('type') or cattrs.get('surface') or 'Taxiway', 'points': [{'lat': p1['lat'], 'lon': p1['lon']}, {'lat': p2['lat'], 'lon': p2['lon']}]})
+                elif name == 'Runway':
+                    pt = _airport_point_from_attrs(cattrs, ref_lat, ref_lon)
+                    if not pt:
+                        continue
+                    heading = None
+                    for key in ('heading', 'orientation', 'angle'):
+                        if cattrs.get(key) not in (None, ''):
+                            try:
+                                heading = float(cattrs.get(key))
+                                break
+                            except Exception:
+                                pass
+                    if heading is None:
+                        heading = 90.0
+                    try:
+                        length_m = float(cattrs.get('length') or cattrs.get('lengthMeters') or 1800.0)
+                    except Exception:
+                        length_m = 1800.0
+                    try:
+                        width_m = float(cattrs.get('width') or cattrs.get('widthMeters') or 45.0)
+                    except Exception:
+                        width_m = 45.0
+                    geom = _build_runway_polygon(pt[0], pt[1], heading, length_m, width_m)
+                    runways.append({'id': str(cattrs.get('number') or cattrs.get('designator') or cattrs.get('name') or cattrs.get('primaryNumber') or 'Runway'), 'heading_deg': heading, 'length_ft': round(length_m * 3.28084, 1), 'width_m': width_m, 'polygon': geom['polygon'], 'centerline': geom['centerline']})
+            if runways or taxi_paths or parking:
+                return {
+                    'version': 2,
+                    'generated_at': datetime.utcnow().isoformat() + 'Z',
+                    'source': 'package_xml',
+                    'source_file': str(xml_path),
+                    'center': {'lat': ref_lat, 'lon': ref_lon},
+                    'runways': runways,
+                    'taxiway_paths': taxi_paths,
+                    'parking': parking,
+                }
+    return None
+
+def _normalize_openweather_payload(payload: dict, *, provider: str, units: str) -> dict:
+    current = payload.get('current') if isinstance(payload, dict) and isinstance(payload.get('current'), dict) else payload
+    weather_list = current.get('weather') if isinstance(current, dict) else None
+    weather0 = weather_list[0] if isinstance(weather_list, list) and weather_list else {}
+    hourly = payload.get('hourly') if isinstance(payload, dict) and isinstance(payload.get('hourly'), list) else []
+    main_block = current.get('main') if isinstance(current, dict) and isinstance(current.get('main'), dict) else {}
+    wind_block = current.get('wind') if isinstance(current, dict) and isinstance(current.get('wind'), dict) else {}
+    clouds_block = current.get('clouds') if isinstance(current, dict) and isinstance(current.get('clouds'), dict) else {}
+    return {
+        'provider': provider,
+        'units': units,
+        'current': {
+            'temp': current.get('temp', main_block.get('temp')),
+            'feels_like': current.get('feels_like', main_block.get('feels_like')),
+            'pressure': current.get('pressure', main_block.get('pressure')),
+            'humidity': current.get('humidity', main_block.get('humidity')),
+            'dew_point': current.get('dew_point'),
+            'uvi': current.get('uvi'),
+            'clouds': current.get('clouds', clouds_block.get('all')),
+            'visibility': current.get('visibility'),
+            'wind_speed': current.get('wind_speed', wind_block.get('speed')),
+            'wind_gust': current.get('wind_gust', wind_block.get('gust')),
+            'wind_deg': current.get('wind_deg', wind_block.get('deg')),
+            'description': weather0.get('description') or '',
+            'main': weather0.get('main') or '',
+            'icon': weather0.get('icon') or '',
+        },
+        'hourly_preview': [
+            {
+                'dt': item.get('dt'),
+                'temp': item.get('temp', (item.get('main') or {}).get('temp') if isinstance(item.get('main'), dict) else None),
+                'wind_speed': item.get('wind_speed', (item.get('wind') or {}).get('speed') if isinstance(item.get('wind'), dict) else None),
+                'clouds': item.get('clouds', (item.get('clouds') or {}).get('all') if isinstance(item.get('clouds'), dict) else None),
+                'pop': item.get('pop'),
+                'description': ((item.get('weather') or [{}])[0] or {}).get('description', ''),
+                'main': ((item.get('weather') or [{}])[0] or {}).get('main', ''),
+            }
+            for item in hourly[:6] if isinstance(item, dict)
+        ],
+        'raw_source': provider,
+    }
 
 @app.get("/api/settings")
 async def get_settings():
@@ -2451,7 +2781,7 @@ DEFAULT_DATA_OPTIONS = {
     "airport_sites": [
         {"name":"SkyVector","url":"https://skyvector.com/airport/{CODE}"},
         {"name":"Airportdata.com","url":"https://www.airportdata.com/search-data/airport-details/icao/{CODE_LOWER}"},
-        {"name":"AVIPages","url":"https://aviapages.com/airport/{CODE}"},
+        {"name":"AVIPages","url":"https://aviapages.com/airport/{CODE_LOWER}/?source=site_search"},
         {"name":"Wikipedia","url":"https://en.wikipedia.org/wiki/{TITLE_UNDERSCORE}"},
         {"name":"AIRNAV","url":"https://www.airnav.com/airport/{CODE}"},
     ],
@@ -2462,6 +2792,11 @@ DEFAULT_DATA_OPTIONS = {
         {"name":"Airliners.net","url":"https://www.airliners.net"},
         {"name":"Simple Flying","url":"https://simpleflying.com"},
         {"name":"FlightGlobal","url":"https://www.flightglobal.com"},
+    ],
+    "weather_sites": [
+        {"name":"meteoblue Clouds","url":"https://www.meteoblue.com/en/weather/maps#coords=14.21/{LAT}/{LON}&map=totalClouds~hourlyAll~auto~sfc~none"},
+        {"name":"AviationWeather GFA","url":"https://aviationweather.gov/gfa/#pcpn"},
+        {"name":"Windy Radar","url":"https://embed.windy.com/embed2.html?lat={LAT}&lon={LON}&detailLat={LAT}&detailLon={LON}&zoom=7&level=surface&overlay=radar&product=radar&menu=&message=true&marker=true&calendar=now&pressure=true&type=map&location=coordinates&detail=true&metricWind=kt&metricTemp=%C2%B0F"},
     ],
     "subtypes": {
         "Aircraft": ["Airliner","General Aviation","Business Jet","Helicopter","Military","Regional"],
@@ -2477,7 +2812,7 @@ DEFAULT_DATA_OPTIONS = {
 
 def _merged_data_options(settings: dict[str, str]) -> dict:
     options = json.loads(json.dumps(DEFAULT_DATA_OPTIONS))
-    for key, setting_key in [("sources", "data_options_sources"), ("avionics", "data_options_avionics"), ("tags", "data_options_tags"), ("subtypes", "data_options_subtypes"), ("airport_sites", "data_options_airport_sites"), ("aircraft_sites", "data_options_aircraft_sites")]:
+    for key, setting_key in [("sources", "data_options_sources"), ("avionics", "data_options_avionics"), ("tags", "data_options_tags"), ("subtypes", "data_options_subtypes"), ("airport_sites", "data_options_airport_sites"), ("aircraft_sites", "data_options_aircraft_sites"), ("weather_sites", "data_options_weather_sites")]:
         raw = settings.get(setting_key)
         if not raw:
             continue
@@ -2503,7 +2838,7 @@ class DataOptionsUpdate(BaseModel):
 @app.put("/api/data-options")
 async def set_data_options(body: DataOptionsUpdate):
     options = body.options or {}
-    for key, setting_key in [("sources", "data_options_sources"), ("avionics", "data_options_avionics"), ("tags", "data_options_tags"), ("subtypes", "data_options_subtypes"), ("airport_sites", "data_options_airport_sites"), ("aircraft_sites", "data_options_aircraft_sites")]:
+    for key, setting_key in [("sources", "data_options_sources"), ("avionics", "data_options_avionics"), ("tags", "data_options_tags"), ("subtypes", "data_options_subtypes"), ("airport_sites", "data_options_airport_sites"), ("aircraft_sites", "data_options_aircraft_sites"), ("weather_sites", "data_options_weather_sites")]:
         if key in options:
             await storage.set_json_setting(setting_key, options[key])
     return {"ok": True}
@@ -2674,6 +3009,14 @@ class AirportFetchRequest(BaseModel):
     title: Optional[str] = None
 
 
+class LayoutExportRequest(BaseModel):
+    addon_id: str
+    title: Optional[str] = None
+    icao: Optional[str] = None
+    point: Optional[dict] = None
+    layout: Optional[dict] = None
+
+
 class MapResolveRequest(BaseModel):
     addon_id: str
 
@@ -2788,21 +3131,30 @@ def _airport_lookup_queries(icao: str = '', faa_id: str = '', title: str = '', m
     faa_id = (faa_id or '').strip().upper()
     title = (title or '').strip()
     clean_title = _clean_airport_name_for_lookup(title)
-    if icao:
-        queries.extend([f"{icao} airport", icao])
-    if faa_id and faa_id != icao:
-        queries.extend([f"{faa_id} airport", faa_id])
+    preferred = []
+    if icao and clean_title:
+        preferred.extend([f"{icao} {clean_title}", f"{icao} {clean_title} airport", f"{icao} {clean_title} international airport"])
+    if faa_id and clean_title and faa_id != icao:
+        preferred.extend([f"{faa_id} {clean_title}", f"{faa_id} {clean_title} airport"])
+    if clean_title:
+        preferred.extend([clean_title, f"{clean_title} airport", f"{clean_title} international airport"])
+    if title and title != clean_title:
+        preferred.extend([title, f"{title} airport"])
+    queries.extend(preferred)
     for candidate in [clean_title, title]:
         candidate = (candidate or '').strip()
         if not candidate:
             continue
-        queries.extend([candidate, f"{candidate} airport"])
         if municipality:
             queries.append(f"{candidate} airport {municipality}")
         if municipality and country:
             queries.append(f"{candidate} airport {municipality} {country}")
         elif country:
             queries.append(f"{candidate} airport {country}")
+    if icao:
+        queries.extend([f"{icao} airport", icao])
+    if faa_id and faa_id != icao:
+        queries.extend([f"{faa_id} airport", faa_id])
     seen = set()
     out = []
     for q in queries:
@@ -2811,6 +3163,32 @@ def _airport_lookup_queries(icao: str = '', faa_id: str = '', title: str = '', m
             out.append(q)
             seen.add(key)
     return out
+
+
+def _airport_wiki_candidate_score(candidate: str, icao: str = '', faa_id: str = '', title: str = '') -> int:
+    t = (candidate or '').strip().lower()
+    score = 0
+    if not t:
+        return score
+    clean_title = (_clean_airport_name_for_lookup(title) or title or '').strip().lower()
+    if clean_title and t == clean_title:
+        score += 220
+    if clean_title and clean_title in t:
+        score += 140
+    if icao and re.search(rf'{re.escape(icao.lower())}', t):
+        score += 140
+    if faa_id and re.search(rf'{re.escape(faa_id.lower())}', t):
+        score += 90
+    if 'airport' in t:
+        score += 30
+    title_tokens = [tok for tok in re.split(r'[^a-z0-9]+', clean_title) if len(tok) > 2]
+    coverage = sum(1 for tok in title_tokens if tok in t)
+    score += coverage * 16
+    if title_tokens and coverage == len(title_tokens):
+        score += 80
+    if 'international airport' in t:
+        score += 20
+    return score
 
 
 def _lookup_airport_coords_by_name(icao: str = '', faa_id: str = '', title: str = '', municipality: str = '', country: str = '') -> dict:
@@ -2852,13 +3230,17 @@ def _fetch_airport_data_sync(icao: str = '', faa_id: str = '', title: str = '') 
     wiki_url = ''
     for q in _airport_lookup_queries(icao, faa_id, title):
         try:
-            search = _wiki_request({"action": "opensearch", "search": q, "limit": 5, "namespace": 0})
+            search = _wiki_request({"action": "opensearch", "search": q, "limit": 8, "namespace": 0})
             titles = search[1] if isinstance(search, list) and len(search) > 1 else []
             urls = search[3] if isinstance(search, list) and len(search) > 3 else []
             if titles:
-                wiki_title = titles[0]
-                wiki_url = urls[0] if urls else (f"https://en.wikipedia.org/wiki/{quote(wiki_title.replace(' ', '_'))}" if wiki_title else '')
-                break
+                ranked = sorted([( _airport_wiki_candidate_score(t, icao=icao, faa_id=faa_id, title=title), idx, t) for idx, t in enumerate(titles)], reverse=True)
+                best = ranked[0] if ranked else None
+                if best and best[0] > 0:
+                    idx = best[1]
+                    wiki_title = titles[idx]
+                    wiki_url = urls[idx] if idx < len(urls) and urls[idx] else (f"https://en.wikipedia.org/wiki/{quote(wiki_title.replace(' ', '_'))}" if wiki_title else '')
+                    break
         except Exception:
             continue
     if wiki_title:
@@ -2909,6 +3291,35 @@ def _fetch_airport_data_sync(icao: str = '', faa_id: str = '', title: str = '') 
 
 
 
+def _build_airport_prompt(icao: str = '', faa_id: str = '', title: str = '', response_language: str = 'English') -> str:
+    ident = ' / '.join([x for x in [icao, faa_id] if x]).strip(' /')
+    subject = ' '.join([ident, title]).strip() or title or ident
+    return f"""Research the real-world airport identified by: {subject}
+
+Return one valid JSON object only with these keys:
+summary_html, airport_type, municipality, city, country, state, province, region, continent, first_opened, passenger_count, passenger_year, cargo_count, hub_airlines, world_rank, us_rank, commercial, source_name
+
+Requirements:
+- summary_html should be 1 to 2 rich paragraphs describing the airport, its role, and notable traffic significance.
+- airport_type should be a plain-language type such as International, Regional, General Aviation, Military, Cargo, or Heliport.
+- commercial should be yes or no.
+- passenger_count should include the number only when possible and passenger_year should include the year tied to that number.
+- hub_airlines should name airlines if the airport is a hub or focus city.
+- prefer official airport pages, Wikipedia, airport operator pages, and reputable aviation references.
+- if a field is unknown, return an empty string.
+- write the summary in {response_language}.
+"""
+
+
+async def _run_provider_airport_lookup(provider: str, settings: dict, icao: str, faa_id: str, title: str, *, gemini_model: Optional[str] = None, openai_model: Optional[str] = None, claude_model: Optional[str] = None):
+    provider = (provider or _selected_ai_provider(settings)).lower().strip()
+    prompt = _build_airport_prompt(icao=icao, faa_id=faa_id, title=title, response_language=_preferred_language(settings))
+    parsed, sources, raw = await asyncio.to_thread(lambda p=prompt, prv=provider: _provider_generate_json(prv, p, settings, use_search=True, gemini_model=(gemini_model or _selected_gemini_interactive_model(settings)), openai_model=(openai_model or _selected_openai_model(settings)), claude_model=(claude_model or _selected_claude_model(settings))))
+    if not parsed:
+        parsed = _extract_json_pairs_fallback(raw, ['summary_html','airport_type','municipality','city','country','state','province','region','continent','first_opened','passenger_count','passenger_year','cargo_count','hub_airlines','world_rank','us_rank','commercial','source_name'])
+    return parsed or {}, sources, raw
+
+
 @app.post("/api/airport/fetch-data")
 async def airport_fetch_data(body: AirportFetchRequest):
     icao = (body.icao or "").strip().upper()
@@ -2916,7 +3327,38 @@ async def airport_fetch_data(body: AirportFetchRequest):
     title = (body.title or "").strip()
     if len(icao) < 3 and len(faa_id) < 2 and len(title) < 2:
         raise HTTPException(400, "Airport ICAO, FAA ID, or title required")
-    return _fetch_airport_data_sync(icao=icao, faa_id=faa_id, title=title)
+    strict_title = '' if (icao or faa_id) else title
+    merged = _fetch_airport_data_sync(icao=icao, faa_id=faa_id, title=strict_title)
+    settings = await storage.get_all_settings()
+    provider = _selected_ai_provider(settings)
+    try:
+        if (provider == 'gemini' and settings.get('google_api_key')) or (provider == 'openai' and settings.get('openai_key')) or (provider == 'claude' and settings.get('claude_api_key')):
+            parsed, sources, _raw = await _run_provider_airport_lookup(provider, settings, icao, faa_id, ('' if (icao or faa_id) else (title or merged.get('name') or '')))
+            if parsed:
+                merged['airport_type'] = parsed.get('airport_type') or merged.get('airport_type')
+                merged['municipality'] = parsed.get('municipality') or merged.get('municipality') or merged.get('city')
+                merged['city'] = parsed.get('city') or merged.get('city')
+                merged['country'] = parsed.get('country') or merged.get('country')
+                merged['state'] = parsed.get('state') or merged.get('state')
+                merged['province'] = parsed.get('province') or merged.get('province')
+                merged['region'] = parsed.get('region') or merged.get('region')
+                merged['continent'] = parsed.get('continent') or merged.get('continent')
+                merged['first_opened'] = parsed.get('first_opened') or merged.get('first_opened')
+                merged['passenger_count'] = parsed.get('passenger_count') or merged.get('passenger_count')
+                merged['passenger_year'] = parsed.get('passenger_year') or merged.get('passenger_year')
+                merged['cargo_count'] = parsed.get('cargo_count') or merged.get('cargo_count')
+                merged['hub_airlines'] = parsed.get('hub_airlines') or merged.get('hub_airlines')
+                merged['world_rank'] = parsed.get('world_rank') or merged.get('world_rank')
+                merged['us_rank'] = parsed.get('us_rank') or merged.get('us_rank')
+                if parsed.get('summary_html'):
+                    merged['wiki_summary'] = parsed.get('summary_html')
+                src = parsed.get('source_name') or provider.title()
+                if sources:
+                    src += ' + ' + ', '.join(sources[:3])
+                merged['source'] = src
+    except Exception as exc:
+        log.warning('AI airport lookup failed icao=%s faa_id=%s title=%s error=%s', icao, faa_id, title, exc)
+    return _normalize_airport_region_fields(merged)
 
 
 class PlaceSearchRequest(BaseModel):
@@ -4663,11 +5105,13 @@ def _merge_product_into_addon(addon, parsed: dict, sources: list[str], *, includ
             addon.summary = ''
 
     if include_features:
-        incoming_features = _normalize_html_fragment(_render_ai_features_html(parsed, addon) or parsed.get('features_html'))
+        incoming_features = _normalize_html_fragment(_render_ai_features_html(parsed, addon) or parsed.get('features_html') or parsed.get('summary_html'))
         existing_features = addon.usr.features or ''
         existing_features_is_meaningful = _has_meaningful_existing_html(existing_features, field='features', addon=addon)
         if incoming_features and (override_existing or not existing_features_is_meaningful):
             addon.usr.features = incoming_features
+        elif include_overview and addon.summary and not existing_features_is_meaningful:
+            addon.usr.features = addon.summary
 
     if sources:
         addon.rw.source = ' / '.join(sources[:2])
@@ -4950,6 +5394,84 @@ async def _run_provider_product_lookup(addon, settings: dict, *, provider: Optio
 
 
 
+
+
+
+@app.get('/api/airport/package-layout/{addon_id}')
+async def get_airport_package_layout(addon_id: str):
+    addon = await storage.get_addon(addon_id)
+    if not addon:
+        raise HTTPException(status_code=404, detail='Add-on not found.')
+    layout = await asyncio.to_thread(_parse_airport_layout_from_package_xml, addon)
+    if not layout:
+        return {'ok': False, 'layout': None, 'detail': 'No readable airport XML layout was found in the add-on package.'}
+    return {'ok': True, 'layout': layout}
+
+
+@app.post('/api/airport/export-layout')
+async def export_airport_layout(body: LayoutExportRequest):
+    code = (body.icao or body.title or 'airport').strip() or 'airport'
+    safe = re.sub(r'[^A-Za-z0-9_-]+', '_', code)
+    ts = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
+    export_dir = LOG_DIR / 'airport_layout_exports'
+    out_path = export_dir / f'{safe}_layout_{ts}.json'
+    latest_path = export_dir / f'{safe}_layout_latest.json'
+    payload = {
+        'addon_id': body.addon_id,
+        'title': body.title or '',
+        'icao': body.icao or '',
+        'point': body.point or None,
+        'layout': body.layout or {},
+        'exported_at': datetime.utcnow().isoformat() + 'Z',
+    }
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+    out_path.write_text(serialized, encoding='utf-8')
+    try:
+        latest_path.write_text(serialized, encoding='utf-8')
+    except Exception:
+        pass
+    return {'ok': True, 'path': str(out_path), 'filename': out_path.name, 'latest_path': str(latest_path)}
+
+@app.get('/api/weather/airport')
+async def get_airport_weather(lat: float, lon: float, provider: str = 'aviationweather', icao: str = ''):
+    settings = await storage.get_all_settings()
+    provider_key = (provider or 'aviationweather').strip().lower()
+    units = _openweather_units_from_setting('imperial' if (settings.get('language') or '').strip().lower() == 'english' else 'metric')
+    if provider_key == 'aviationweather':
+        station = (icao or '').strip().upper()
+        if not station:
+            raise HTTPException(status_code=400, detail='An ICAO airport code is required for AviationWeather METAR.')
+        try:
+            payload = await asyncio.to_thread(_fetch_aviationweather_metar, station)
+            if not payload:
+                raise HTTPException(status_code=404, detail='No METAR data available for this airport right now.')
+            return _normalize_aviationweather_payload(payload, icao=station)
+        except HTTPException:
+            raise
+        except requests.HTTPError as exc:
+            detail = exc.response.text[:400] if exc.response is not None else str(exc)
+            raise HTTPException(status_code=502, detail=f'AviationWeather request failed: {detail}')
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f'AviationWeather request failed: {exc}')
+    if provider_key != 'openweather':
+        raise HTTPException(status_code=400, detail='Unsupported airport weather provider.')
+    api_key = (settings.get('openweather_key') or '').strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail='OpenWeather API key is not configured in Settings.')
+    try:
+        payload = await asyncio.to_thread(_fetch_openweather_current, lat, lon, api_key, units)
+        return _normalize_openweather_payload(payload, provider='openweather_current', units=units)
+    except requests.HTTPError as exc:
+        detail = exc.response.text[:400] if exc.response is not None else str(exc)
+        try:
+            payload = await asyncio.to_thread(_fetch_openweather_onecall, lat, lon, api_key, units)
+            return _normalize_openweather_payload(payload, provider='openweather_onecall', units=units)
+        except Exception:
+            raise HTTPException(status_code=502, detail=f'OpenWeather request failed: {detail}')
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f'OpenWeather request failed: {exc}')
+
 @app.get('/api/ai/usage-status')
 async def ai_usage_status():
     settings = await storage.get_all_settings()
@@ -5129,6 +5651,7 @@ async def _populate_addon_with_selected_ai(addon, settings: dict, *, provider: O
                 addon.rw.us_rank = airport_data.get('us_rank') or addon.rw.us_rank
                 addon.rw.world_rank = airport_data.get('world_rank') or addon.rw.world_rank
                 addon.rw.hub_airlines = airport_data.get('hub_airlines') or addon.rw.hub_airlines
+                addon.rw.wiki_summary = airport_data.get('wiki_summary') or getattr(addon.rw, 'wiki_summary', None)
                 addon.rw.source = airport_data.get('source') or addon.rw.source
                 if airport_data.get('airport_type'):
                     addon.sub = airport_data.get('airport_type')

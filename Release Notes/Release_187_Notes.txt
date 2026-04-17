@@ -1,0 +1,15 @@
+MSFS-Hanger V1 Release 187
+
+Fixes and changes:
+- Global Map marker/list selection now overrides library-grid seed more reliably while the map is open
+- Opening Global Map from a selected airport/scenery card now seeds that item even if it is not the only filtered result
+- Airport weather now follows the current map focus more directly instead of disappearing when marker focus changes
+- Clicking the same region again now forces a fresh region camera reset using a nonce-based globe view update
+- All region presets zoomed out another 20%
+- Airport site links now honor the templated settings URL instead of falling back to hardcoded airport-host rewrites
+- Global weather-site templates can use the native desktop browser path instead of failing in blocked iframes
+- Airport Detail map now prefers the airport's real coordinates over stale saved map points when generating/drawing layout overlays
+- Airport Wikipedia lookup was re-ranked to prefer airport-name / ICAO matches over unrelated articles
+
+Notes:
+- Export Layout JSON downloads a file to the user's normal download location. It is a full payload wrapper with addon id, title, point, and layout geometry. The on-screen debug block is only a compact summary.

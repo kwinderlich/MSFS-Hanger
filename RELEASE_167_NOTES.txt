@@ -1,0 +1,17 @@
+MSFS Hangar V1 Release 167
+
+This package was reconstructed from the current public GitHub repository snapshot and patched toward the documented Release 167 Globe/Map changes from the attached prior-session notes.
+
+Included Release 167 map/globe changes in this build:
+- Explorer Globe map type switched to a dropdown
+- Default globe basemap set to Satellite
+- Region changes widened toward about 1800 km style zoom
+- Range Aircraft list limited to aircraft with saved known range
+- Range Aircraft supports multi-select chips and multiple range rings
+- Route-planner total distance is used to filter range-aircraft suggestions
+- Range ring dotted lines darkened
+- Route planner panel restored/kept visible with Save Route and totals
+
+Notes:
+- This is a best-effort reconstructed release because the repo only exposes the latest code snapshot and not your historical release ZIPs.
+- Your runtime data should continue to live outside the app folder under Local AppData/MSFSHangar.

@@ -1,0 +1,18 @@
+MSFS-Hanger V1 Release 171
+
+What changed:
+- South America camera preset moved farther north.
+- All region camera presets zoomed out slightly.
+- Global Map now exposes two explicit modes: Explorer Globe and 2D Route Planner.
+- The hidden 2D route planner code path is now reachable from the current Global Map UI.
+- Saved-route management (save/load/rename/delete and total distance) is now available through the 2D Route Planner mode.
+- Global Map Map Type now supports true keyed MapTiler styles when a MapTiler API key is saved in Settings.
+- Added MapTiler Topo (API key required).
+- Added Terrarium Elevation as a separate no-key map type.
+- MapTiler styles are hidden from the dropdown unless a MapTiler key is present.
+- Airport Detail map overlay generation now recenters/fits to the generated layout after creation.
+- Airport Detail map no longer leaves stale 'Map failed to render.' text after a successful render.
+
+Important note:
+- Airport layout generation in this release is still metadata-driven from the saved airport point plus runway metadata.
+- It does not yet parse compiled MSFS airport package geometry directly from purchased airport files.

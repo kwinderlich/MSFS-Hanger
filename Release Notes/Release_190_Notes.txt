@@ -1,0 +1,9 @@
+MSFS-Hanger V1 Release 190
+
+Fixes in this release:
+- Airport Detail -> Airport Data fetch is now ICAO/FAA-first and avoids broad title-based lookups when a code is present.
+- Airport Data table values now wrap more cleanly as the window width changes.
+- Global Map no longer shows the extra in-app Weather View panel beneath Airport Weather.
+- Closing Global Map now closes the native weather browser pane; choosing Map Wx: None also closes it.
+- Airport layout exports now save under the user logs folder in airport_layout_exports, with a latest copy for the same airport code.
+- Airport Detail map overlay drawing was reworked again to use direct Leaflet polygon/polyline/marker layers on the overlay pane.

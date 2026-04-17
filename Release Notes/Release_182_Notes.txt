@@ -1,0 +1,11 @@
+MSFS-Hanger V1 Release 182
+
+Fixes and changes:
+- Global Map startup now ignores stale focused-airport state when nothing is selected and seeds only from the current grid selection on open.
+- Global Map can restore the focused airport more reliably after item resolution finishes, so a single selected airport should appear in Focused Airport and trigger METAR loading.
+- Airport Weather is METAR-only on Global Map and no longer shows the old top-label selector.
+- Choosing a new Map Type now forces Map Wx back to OpenWeather.
+- Show All resets focus to world view and clears map-side search/focus state more aggressively.
+- Populate with AI Data now has a stronger fallback for Features when Google/Gemini returns sparse product-structure fields.
+- Airport Detail -> Map Create Layout Overlay now first tries to read airport XML from the add-on package path and build runways, taxiway paths, and parking from package data when available.
+- Airport layout rendering was simplified away from the fragile custom renderer path so overlay vectors should draw more directly on the Leaflet overlay layer.

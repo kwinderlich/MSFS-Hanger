@@ -1,0 +1,15 @@
+MSFS-Hanger V1 Release 175
+
+What changed:
+- Fixed Globe measure point handling so Point B and later clicks use a stable measured-points reference instead of a stale closure.
+- Added OpenWeather-based weather overlay support on the current Global Map basemap.
+- Added OpenWeather airport weather info for the focused airport on Global Map.
+- Added Weather APIs settings for OpenWeather, Windy, and meteoblue keys.
+- Added overlay provider / overlay layer settings for weather.
+- Updated Terrarium Elevation globe style to use a proper terrain/hillshade presentation over imagery.
+- Strengthened airport detail layout overlay draw order using a dedicated overlay pane and stronger vector styling.
+
+Notes:
+- This release uses OpenWeather for in-map overlays and airport weather details.
+- Windy and meteoblue keys are saved in Settings for future weather modes.
+- Windy is not yet wired into the current map overlay path.

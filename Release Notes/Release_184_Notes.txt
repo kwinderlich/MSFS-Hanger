@@ -1,0 +1,16 @@
+MSFS-Hanger V1 Release 184
+
+Changes in this release
+- Fixed Global Map focus behavior so clicking a marker, airport-list item, or search result should keep that airport focused instead of briefly flashing and clearing.
+- Fixed Global Map startup focus when one airport/scenery add-on is selected from the Library grid. Opening Global Map should now seed that airport as the focused airport and zoom toward it.
+- Removed Show All from Global Map because it was slow and unstable.
+- Zoomed all region presets out by another 20 percent.
+- Airport METAR weather should now stay tied to the focused airport after selection.
+- Airport website links now prefer the templated settings-style URLs instead of hardcoded site-specific URL generation.
+- Airport Detail -> Airport Data now surfaces Wikipedia summary text when available.
+- Airport Detail -> Map runway overlay creation now supplements package/XML geometry with synthetic runway geometry from saved runway metadata when package geometry is unusable or produces no visible runway vectors.
+- Features fallback for Populate with AI Data was strengthened so Features can fall back to Overview content when provider output is sparse.
+
+Notes
+- Weather-website integration was not fully added in this release. The recommendation is documented in the chat response for the next design pass.
+- If airport overlays still do not appear after Hide Basemap Tiles, the next step is to log and inspect the generated geometry coordinates for that airport directly.

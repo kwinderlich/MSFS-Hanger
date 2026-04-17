@@ -1,0 +1,11 @@
+MSFS-Hanger V1 Release 176
+
+Fixes and changes in this release:
+- Explorer Globe measuring now uses a stable measurePoints ref so Point B and later clicks are appended reliably.
+- Global Map no longer auto-selects a previously focused airport when it opens. The map starts with no focused airport until the user clicks one.
+- Weather overlay layer changes now reload immediately on Global Map without requiring Show Overlay to be toggled off/on.
+- OpenWeather overlay opacity increased for better visibility.
+- Weather overlay enable/layer controls were removed from Settings and kept only on Global Map. Settings still retain Weather API keys and provider selection.
+- Global Map layout height increased so the map area expands more with the overall window.
+- Airport Detail -> Map overlay rendering now uses a dedicated SVG renderer pane so generated airport vectors are drawn above the basemap.
+- Airport weather status now prompts the user to select an airport marker when none is selected.

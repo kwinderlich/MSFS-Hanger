@@ -1,0 +1,9 @@
+MSFS-Hanger V1 Release 172
+
+Fixes and changes:
+- Fixed Global Map startup crash caused by a Globe map effect referencing viewMode where it was not defined.
+- Added Terrarium Elevation explicitly to the Map Type list and kept API-key basemaps at the bottom of the dropdown.
+- Expanded basemap provider settings so users can save API keys for MapTiler plus placeholder future providers (Stadia and Jawg).
+- Improved airport detail overlay visibility by automatically switching to Road + Runway view after overlay generation.
+- Airport layout overlays on the detail map are now drawn with bolder runway, taxiway, parking, and center markers so they are easier to see.
+- Airport Layout status text now explicitly says the generated overlay should be visible on the detail map.

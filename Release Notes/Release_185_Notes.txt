@@ -1,0 +1,17 @@
+MSFS-Hanger V1 Release 185
+
+What changed
+- Global Map airport selection no longer gets re-overridden by the Library grid after the user clicks a marker or airport-list item.
+- Global Map now seeds from the current Library selection on open, but in-map user actions take precedence afterward.
+- Clicking the currently selected region control now reapplies that region view so a user can quickly reset from a zoomed airport back to the region.
+- Region presets were zoomed out further.
+- METAR cloud abbreviations are expanded to clearer text such as Broken / Scattered / Overcast in the Airport Weather pane.
+- Weather Map Sites were added to Settings -> Data Management using templated URLs with placeholders including LAT and LON.
+- Global Map Map Wx dropdown now supports saved weather-map sites in addition to OpenWeather and Windy.
+- A Route Weather Strip example panel was added to the Global Map sidebar for the active measured route.
+- Airport Detail -> Map now supports Export Layout JSON and a layout-geometry debug panel so generated runway/taxiway/parking geometry can be inspected.
+- Airport site links now respect the saved templated URLs rather than host-based hardcoded rewrites.
+
+Notes
+- Create Layout Overlay now exports the generated geometry so the next pass can determine whether the problem is bad runway coordinates or rendering.
+- Weather-site templates support placeholders: {CODE}, {ICAO}, {FAA_ID}, {TITLE}, {TITLE_UNDERSCORE}, {QUERY}, {LAT}, {LON}, {MANUFACTURER}, {MODEL}.

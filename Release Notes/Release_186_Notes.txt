@@ -1,0 +1,10 @@
+MSFS-Hanger V1 Release 186
+
+Changes in this build:
+- Global Map marker/list selection now overrides Library-grid seed while the map is open.
+- Reapplying a region now forces the region view even if that region is already selected.
+- Region preset distances zoom out another 10%.
+- Weather sites that block framing now show an in-app notice with an Open Site action instead of a broken frame.
+- Route Weather Strip now shows segment-by-segment placeholders instead of generic point placeholders.
+- Airport Detail Map now exposes Export Layout JSON and a visible Layout Geometry Debug panel.
+- Global Map state storage key advanced to avoid stale previous-state restores.

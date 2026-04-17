@@ -1,0 +1,8 @@
+MSFS-Hanger V1 Release 173
+
+- Removed the old 2D Route Planner from the active Global Map workflow.
+- Route management now uses the current Explorer Globe measure tool.
+- Added globe route save/load/rename/delete controls and active total distance filtering for aircraft range suggestions.
+- Fixed Terrarium Elevation so it uses Terrarium raster-dem tiles as hillshade/terrain data instead of rendering the raw RGB elevation tiles directly.
+- Strengthened Airport Detail layout overlay visibility with brighter runway/taxi/parking styling and a center marker/ring.
+- Kept keyed MapTiler entries at the bottom of the map type list.

@@ -87,6 +87,7 @@ class RealWorld:
     us_rank: Optional[str] = None
     world_rank: Optional[str] = None
     hub_airlines: Optional[str] = None
+    wiki_summary: Optional[str] = None
 
 @dataclass
 class ProductInfo:
@@ -118,6 +119,7 @@ class UserData:
     map_zoom: Optional[int] = None
     map_search_label: str = ""
     map_polygon: List[Dict] = field(default_factory=list)
+    map_layout: Dict = field(default_factory=dict)
     liveries: List[Dict] = field(default_factory=list)
 
 @dataclass
@@ -216,7 +218,7 @@ class Addon:
                 "resolution": rw.resolution, "util_cat": rw.util_cat,
                 "compat": rw.compat, "source": rw.source,
                 "passenger_count": rw.passenger_count, "cargo_count": rw.cargo_count,
-                "us_rank": rw.us_rank, "world_rank": rw.world_rank, "hub_airlines": rw.hub_airlines,
+                "us_rank": rw.us_rank, "world_rank": rw.world_rank, "hub_airlines": rw.hub_airlines, "wiki_summary": rw.wiki_summary,
             },
             "pr": {
                 "ver": pr.ver, "latest_ver": pr.latest_ver, "latest_ver_date": pr.latest_ver_date, "released": pr.released, "price": pr.price,
@@ -229,7 +231,7 @@ class Addon:
                 "avionics": usr.avionics, "features": usr.features, "resources": usr.resources,
                 "research_resources": usr.research_resources, "data_resources": usr.data_resources,
                 "map_lat": usr.map_lat, "map_lon": usr.map_lon, "map_zoom": usr.map_zoom,
-                "map_search_label": usr.map_search_label, "map_polygon": usr.map_polygon,
+                "map_search_label": usr.map_search_label, "map_polygon": usr.map_polygon, "map_layout": usr.map_layout,
                 "liveries": usr.liveries,
             },
             "docs": [

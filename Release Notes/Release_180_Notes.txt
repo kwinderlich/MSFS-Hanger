@@ -1,0 +1,13 @@
+MSFS-Hanger V1 Release 180
+
+Fixes and changes in this release:
+- Global Map no longer reopens a stale airport by default when opened with no active grid selection.
+- Global Map can seed from the currently selected grid airport on open, but otherwise opens to the world view.
+- While Global Map is open, changing the current grid selection can refocus the globe on that airport.
+- Airport weather now supports AviationWeather METAR as the default provider, with OpenWeather as an alternate provider.
+- Global Map weather controls now include separate selectors for map weather provider and airport weather provider.
+- Windy can now use the main map area as a temporary weather-map mode.
+- Airport Detail -> Map layout overlay now switches to Satellite view after generation to improve visibility.
+- Airport overlay SVG styling was strengthened again.
+- Global Map map area was shortened slightly to leave more room for the airport list.
+- Returning from Airport Detail should restore the prior Global Map state more reliably.

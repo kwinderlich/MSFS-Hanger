@@ -1,0 +1,16 @@
+MSFS-Hanger V1 Release 188
+
+What changed:
+- Global Map now keeps the main map on the left and uses Map Wx only for custom weather-site templates in the right weather browser pane.
+- Map Wx dropdown now contains None plus saved weather-site templates only.
+- OpenWeather overlay remains the on-map weather overlay controlled by Show Overlay and Weather layer.
+- Region selector reapply behavior was strengthened so clicking the active region again forces that region view.
+- Added clickable Route Weather Strip rows that open a decoded-METAR detail panel using the nearest airport to the segment midpoint.
+- Weather sites that block browser-mode framing continue to show an explanation and open-site fallback; desktop mode uses the native browser pane.
+- Airport weather/site context continues to use current focused airport coordinates and code.
+- Airport data lookup queries and Wikipedia candidate scoring were tightened to better favor the actual airport ICAO/title match.
+- Export Layout JSON now confirms the download filename in the Map tab status message.
+
+Notes:
+- If airport layout overlay still does not render, the exported layout JSON should now be compared against the visible airport to determine whether the remaining issue is rendering-layer only.
+- Segment weather detail is a first-pass nearest-airport METAR popup and a stepping stone toward future time-along-route weather.

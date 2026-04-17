@@ -226,11 +226,20 @@ class HangarWindow(QMainWindow):
         self._splitter.setStretchFactor(1, 2)
         self._browser_sizes = None
         self.setCentralWidget(self._splitter)
+        self._loading_overlay = QLabel("Please wait - App Starting", self._splitter)
+        self._loading_overlay.setAlignment(Qt.AlignCenter)
+        self._loading_overlay.setStyleSheet("background:rgba(10,22,40,0.92);color:#F8FAFC;border:1px solid #334155;border-radius:12px;font-size:18px;font-weight:700;padding:18px;")
+        self._loading_overlay.raise_()
         self.hide_browser_panel(initial=True)
 
         self._browser.loadFinished.connect(self._on_load_finished)
         self._browser.loadStarted.connect(lambda: self._log(f"App load started: {self._url}"))
         self._browser.loadProgress.connect(lambda p: self._log(f"App load progress: {p}%"))
+        try:
+            self._browser.renderProcessTerminated.connect(lambda status, code: self._log(f"App browser render process terminated: status={status} code={code}"))
+            self._native_browser.renderProcessTerminated.connect(lambda status, code: self._log(f"Native browser render process terminated: status={status} code={code}"))
+        except Exception:
+            pass
 
         self._tray = QSystemTrayIcon(icon, self)
         self._tray.setToolTip(f"MSFS Hangar — {self._url}")
@@ -460,6 +469,14 @@ class HangarWindow(QMainWindow):
 
     def _on_load_finished(self, ok: bool):
         self._log(f"App load finished: ok={ok}, url={self._browser.url().toString()}")
+        try:
+            if ok:
+                self._loading_overlay.hide()
+            else:
+                self._loading_overlay.show()
+                self._loading_overlay.setText("MSFS Hangar could not load the UI")
+        except Exception:
+            pass
         if ok:
             return
         html = f'<html><body style="font-family:Segoe UI,Arial,sans-serif;background:#0A1628;color:#F1F5F9;padding:24px"><h2>MSFS Hangar could not load the UI</h2><p>The backend URL was <code>{self._url}</code>.</p></body></html>'
@@ -496,6 +513,17 @@ class HangarWindow(QMainWindow):
         self.show()
         self.raise_()
         self.activateWindow()
+
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        try:
+            sizes = self._splitter.sizes()
+            left_width = sizes[0] if sizes else max(320, int(self.width() * 0.68))
+            self._loading_overlay.setGeometry(18, 18, max(320, left_width - 36), max(72, self.height() - 54))
+            self._loading_overlay.raise_()
+        except Exception:
+            pass
 
     def closeEvent(self, event):
         self._cfg.setValue("geometry", self.saveGeometry())
