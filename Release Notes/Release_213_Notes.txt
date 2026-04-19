@@ -1,0 +1,12 @@
+MSFS Hangar - Release 213
+
+Changes in this build:
+- Fixed gallery image upload logging crash by restoring the missing library event logger path.
+- Flight screen telemetry collapsible area no longer duplicates Aircraft Control since those controls already live at the top.
+- Flight map Zoom overlay moved higher and given a stronger z-order so it stays visible above overlays.
+- Flight map embedded zoom control stack moved farther down to avoid overlap.
+- Analytics now includes a pie-chart drilldown flow:
+  - Add-on Types pie chart
+  - Subtypes pie chart for the selected type
+  - Library drillthrough actions from the charts
+- Zoom to Range now computes zoom directly from the ring diameter and map height to better fit the entire range circle.

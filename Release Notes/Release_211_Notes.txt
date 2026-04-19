@@ -1,0 +1,28 @@
+MSFS-Hanger Release 211 Notes
+
+Flight screen layout and control update:
+- Added top-left Sim Controls and Aircraft Controls cards directly under the Flight section.
+- Added a transparent Live Session status bar overlay across the top of the Flight map.
+- Added map action controls directly under the overlay bar.
+
+Flight map and follow behavior:
+- Fixed stale follow-aircraft state in the animation loop so Focus on aircraft now keeps the aircraft centered.
+- Reduced aircraft marker scale when zoomed out.
+- Increased Zoom to aircraft closeness.
+- Updated Zoom to range to fit the actual visible ring with larger padding and a lower max zoom.
+- Range ring now falls back to live remaining range when available.
+- Refined type-based aircraft symbology so the map can distinguish GA, turboprop, business jet, airliner, and helicopter markers more clearly.
+
+Sim command diagnostics:
+- Expanded sim command logging to record each command event attempted and the specific event name/argument sent.
+- Added broader pause and active-pause event fallbacks.
+- Added more explicit sim-rate reset event attempts.
+
+Telemetry / UI:
+- Retitled the left-side Live Session block to Telemetry Details and reduced duplicate primary data there.
+- Kept Flight logs and staging functionality intact.
+
+Library Analytics:
+- Added a new Analytics section in the left navigation.
+- Added chart-based views for add-on types, subtypes, publishers, source categories, obtained-from sources, and pricing totals.
+- Added click-through drilldowns so chart selections can jump back into the Library grid with matching filters applied.

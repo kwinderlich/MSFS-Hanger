@@ -1,0 +1,15 @@
+MSFS Hangar Release 200 Notes
+
+Flight Phase 1 polish build.
+
+Changes:
+- Fixed Flight breadcrumb trail layer color to use a resolved literal color for MapLibre.
+- Improved SimConnect angle handling with radians-to-degrees conversion heuristics for heading/track/wind direction.
+- Decoded SimConnect byte-string aircraft title/model values more cleanly.
+- Added separate Center Aircraft control while preserving Follow Aircraft toggle.
+- Reduced camera recenter aggressiveness and lengthened interpolation for smoother map motion.
+- Updated flight aircraft symbols to larger black silhouettes with better GA/turboprop/helicopter/airliner heuristics.
+- Reduced top Flight Map header height.
+- Reworked Live Session panel into compact primary cards plus collapsible detail groups.
+- Increased Flight status refresh cadence to improve telemetry responsiveness.
+- Suppressed transient connecting worker text from the Flight UI notice flow.

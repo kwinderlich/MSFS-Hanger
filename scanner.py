@@ -6,6 +6,9 @@ import re
 import time
 import uuid
 from pathlib import Path
+from datetime import datetime
+from html import escape
+import re
 from typing import Callable, Optional
 
 from logger import get_logger
@@ -201,6 +204,65 @@ def _normalize_title(addon_type: str, title: str, icao: Optional[str], manufactu
     return re.sub(r"\s+", " ", (title or "").strip()).strip()
 
 
+
+
+def _parse_manifest_release_date(value: str) -> str | None:
+    raw = str(value or '').strip()
+    if not raw:
+        return None
+    for fmt in ("%B %d, %Y", "%B %d %Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    return None
+
+
+def _render_update_notes_html(entries: list[dict]) -> str:
+    if not entries:
+        return ''
+    blocks = []
+    for item in entries:
+        ver = escape(str(item.get('version') or '').strip())
+        date_display = escape(str(item.get('date_display') or '').strip())
+        bullets = item.get('bullets') or []
+        lis = ''.join(f'<li>{escape(str(b).strip())}</li>' for b in bullets if str(b).strip())
+        header = f"<div style='font-weight:800;color:var(--t0);margin-bottom:6px'>Version {ver}{(' — ' + date_display) if date_display else ''}</div>"
+        body = f"<ul style='margin:0 0 0 18px;padding:0;line-height:1.7'>{lis}</ul>" if lis else ''
+        blocks.append(f"<div style='background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:12px 14px;margin-bottom:10px'>{header}{body}</div>")
+    return ''.join(blocks)
+
+
+def _parse_manifest_release_notes(manifest: dict) -> tuple[str | None, str]:
+    notes = (((manifest or {}).get('release_notes') or {}).get('neutral') or {})
+    chunks = []
+    for key in ('LastUpdate', 'OlderHistory'):
+        val = notes.get(key)
+        if val:
+            chunks.append(str(val).replace('\\n', '\n'))
+    raw = '\n'.join(chunks).strip()
+    if not raw:
+        return None, ''
+    pattern = re.compile(r'VERSION\s+([^\s]+)\s+RELEASED\s+([^\n]+)(.*?)(?=(?:\nVERSION\s+[^\s]+\s+RELEASED\s+)|\Z)', re.I | re.S)
+    entries = []
+    for m in pattern.finditer(raw):
+        version = str(m.group(1) or '').strip()
+        date_display = re.sub(r'\s+', ' ', str(m.group(2) or '').strip())
+        body = str(m.group(3) or '').replace('\r', '').strip()
+        bullets = []
+        for line in body.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            line = re.sub(r'^[-•*]+\s*', '', line).strip()
+            if line:
+                bullets.append(line)
+        entries.append({'version': version, 'date_display': date_display, 'date_sort': _parse_manifest_release_date(date_display) or '', 'bullets': bullets})
+    if not entries:
+        return None, ''
+    entries.sort(key=lambda x: (x.get('date_sort') or '', x.get('version') or ''), reverse=True)
+    latest_date = entries[0].get('date_sort') or None
+    return latest_date, _render_update_notes_html(entries)
 def build_addon_from_manifest(mf_path: Path, enabled_lookup: Optional[Path], container: Optional[Path] = None) -> Optional[Addon]:
     if not mf_path.exists():
         return None
@@ -250,6 +312,9 @@ def build_addon_from_manifest(mf_path: Path, enabled_lookup: Optional[Path], con
     addon.pr.size_mb = size_mb or None
     addon.pr.package_name = package_name
     addon.pr.manufacturer = manufacturer
+    latest_release_date, update_notes_html = _parse_manifest_release_notes(manifest)
+    addon.pr.latest_ver_date = latest_release_date or None
+    addon.pr.update_notes_html = update_notes_html or None
     if addon_type == "Airport":
         addon.rw.icao = probable_icao or guess_icao(" ".join([title, package_name, addon_root.name]))
     enrich_addon(addon)
@@ -316,6 +381,10 @@ def _merge_existing_addon(old: Addon, scanned: Addon) -> Addon:
     for attr in ["released","price","source_store","manufacturer"]:
         if getattr(merged.pr, attr) in (None, "", 0):
             setattr(merged.pr, attr, getattr(scanned.pr, attr))
+    if (not getattr(merged.pr, 'latest_ver_date', None)) or (scanned_version and scanned_version != old_version and getattr(scanned.pr, 'latest_ver_date', None)):
+        merged.pr.latest_ver_date = getattr(scanned.pr, 'latest_ver_date', None) or getattr(merged.pr, 'latest_ver_date', None)
+    if (not getattr(merged.pr, 'update_notes_html', None)) or (scanned_version and scanned_version != old_version and getattr(scanned.pr, 'update_notes_html', None)):
+        merged.pr.update_notes_html = getattr(scanned.pr, 'update_notes_html', None) or getattr(merged.pr, 'update_notes_html', None)
     if scanned_version and scanned_version != old_version:
         merged.pr.ver = scanned.pr.ver
     elif getattr(merged.pr, 'ver', None) in (None, '', 0):

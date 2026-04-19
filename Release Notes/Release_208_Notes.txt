@@ -1,0 +1,10 @@
+MSFS Hangar Release 208
+
+Flight fixes and polish:
+- Gear state now prefers actual gear handle/left/center/right extension variables so retractable aircraft on the runway should show Down.
+- Flight map one-shot actions (Center Now, Zoom to Aircraft, Zoom to Range) are now consumed only once instead of re-triggering on every telemetry update.
+- Follow/center checkbox renamed to Focus on Aircraft.
+- Zoom to Aircraft tightened for closer follow.
+- Added Global Map basemap choices to the Flight screen, including MapTiler layers when configured.
+- Refresh button renamed to Refresh Telemetry.
+- Added more SimConnect command fallbacks for Sim Rate Reset, Pause, and Active Pause.

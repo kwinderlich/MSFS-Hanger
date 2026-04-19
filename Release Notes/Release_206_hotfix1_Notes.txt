@@ -1,0 +1,9 @@
+MSFS Hangar Release 206 Hotfix 1
+
+Fixes:
+- Flight screen no longer crashes on first render when flight status has not loaded yet; safe defaults are now used for sim_rate and related fields.
+- Research tab now opens the native browser panel immediately with a neutral start page when the tab is accessed in desktop mode.
+- Preserved the lower-captcha browser behavior by avoiding an automatic Google search on tab open.
+
+Notes:
+- This hotfix is intentionally narrow and does not change Global Map or Flight telemetry behavior beyond the null-render fix.

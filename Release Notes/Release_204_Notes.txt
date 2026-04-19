@@ -1,0 +1,17 @@
+MSFS Hangar Release 204 Notes
+
+Focus: add-on data/browser stability and AI consistency without destabilizing Global Map or Flight.
+
+Changes included:
+- Airport and aircraft site templates now support both {TOKEN} and [TOKEN] placeholder formats.
+- Airport/aircraft site links now pass live ICAO / FAA / lat / lon / manufacturer / model values into template substitution.
+- Browser search flows now log the actual query and URL being sent to the built-in browser to the frontend console and backend log.
+- Add-on detail and Research browser reset/search actions now explicitly use the saved search-provider preference and the current search criteria.
+- Sidebar/selected-add-on Populate with AI Data now uses the interactive-detail path for single selected add-ons instead of the cheaper bulk model.
+- Airport Populate with AI Data now uses the same airport enrichment pipeline as Fetch Airport Data: OurAirports reference data + provider airport lookup.
+- Features generation no longer falls back to the overview summary HTML when no distinct feature content is returned.
+- Browser open requests are logged server-side for troubleshooting captcha/search issues.
+- Aircraft real-world summary font size increased for readability.
+
+Notes:
+- This build intentionally avoids deeper Global Map / Flight changes while stabilizing add-on functionality.

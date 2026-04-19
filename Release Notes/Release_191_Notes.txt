@@ -1,0 +1,22 @@
+MSFS Hangar - Release 191
+
+Built on top of the reconstructed Release 190 baseline.
+
+Changes included in this build:
+- Added attachment-aware context support for this development pass:
+  - previous chat-session context document
+  - layout export JSON examples
+  - livery import console error log
+- Fixed livery preview/import crash caused by missing iniBuilds family helper functions.
+- Global Map now resets Map Wx to None whenever the Global Map is opened.
+- Loading an existing saved route on the globe/global map now fits the map to show the full route instead of only centering roughly on the midpoint.
+- Aircraft Data screen now shows the populated AI/Wikipedia summary at the top, matching the airport summary presentation style.
+- Airport Data formatting improvements:
+  - larger, more readable summary block
+  - localized date formatting where applicable
+  - comma-separated whole-number formatting for counts/ranks
+  - MTOW values shown with weight units
+
+Notes:
+- The uploaded layout JSON examples (EGCC and KDEN) were used as context for runway overlay direction and future runway-drawing work.
+- This build does not claim a full runtime verification of every browser/map workflow; Python-side compile verification was completed.

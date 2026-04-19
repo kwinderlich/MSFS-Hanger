@@ -1,0 +1,8 @@
+MSFS Hangar Release 198 Hotfix 1
+
+Fixes:
+- Fixed Aircraft Detail Research tab crash caused by undefined aircraftSiteLinks reference.
+- Research tab now rebuilds aircraft and airport site shortcuts locally so the tab no longer depends on outer-scope variables.
+- Reduced Google/captcha regression by avoiding automatic search-provider page loads when opening the Research browser in desktop mode.
+- Research browser now opens to a blank pane initially and uses Bing for the default fallback search path in the Research tab.
+- Saved-mode browser fallback also opens a blank pane instead of triggering empty-provider searches.

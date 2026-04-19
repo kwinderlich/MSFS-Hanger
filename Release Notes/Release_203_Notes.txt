@@ -1,0 +1,20 @@
+MSFS Hanger Release 203
+
+This build focuses on add-on scan/update behavior, manifest-driven update history,
+AI populate consistency, and safer browser behavior, while leaving newer Global Map
+and Flight functionality untouched.
+
+Included changes:
+- Scan Now continues to import new add-ons and now preserves curated fields while
+  updating Current Version when manifest.json package_version changes.
+- Manifest release notes parsing now extracts version history and release dates into
+  a new Updates tab when release_notes data is present.
+- Current Version Date is seeded from manifest release note history when available.
+- Add-on detail Data browser no longer auto-opens a provider search on tab open in
+  desktop mode; it starts blank until the user explicitly searches.
+- Library/sidebar Populate with AI Data now enriches Airport records with the same
+  real-world summary/detail path used by Airport Data fetch.
+- Airport Data summary no longer falls back to the add-on Overview summary when no
+  airport real-world summary has been fetched yet.
+- Aircraft AI prompt now explicitly excludes addon/marketplace pricing from real-
+  world aircraft cost, and low-value addon-like pricing is filtered out.

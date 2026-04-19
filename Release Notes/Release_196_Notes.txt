@@ -1,0 +1,19 @@
+MSFS Hangar - Release 196
+
+Focus areas
+1. Global Map measured-route cleanup on close
+2. Flight / SimConnect connect-path diagnostics
+3. Aircraft Data direct browser shortcuts in the embedded pane
+
+What changed
+- Close Map now clears measured route points, saved route selection, route name, and route weather popup state before the Global Map overlay closes.
+- Clear Measured Segments now uses the same centralized cleanup path as Close Map.
+- Aircraft Data / Airport Data browser shortcuts are now passed into the embedded browser as direct site URLs.
+- Added endpoint-level SimConnect logging for /api/flight/connect and /api/flight/disconnect into logs/simconnect.log.
+- Flight connect now records a frontend breadcrumb and uses stricter JSON error handling.
+- Flight connect now refreshes status shortly after the request to catch worker startup and early state changes.
+- SimConnect logger now flushes more aggressively so connect attempts should appear in simconnect.log immediately.
+
+Notes
+- This build is aimed at proving whether the Flight screen click is actually reaching the backend connect path.
+- If Connect still appears to do nothing, simconnect.log should now show whether the click reached the API, whether the tracker connect() ran, and whether the worker thread started.

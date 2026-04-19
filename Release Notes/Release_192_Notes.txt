@@ -1,0 +1,14 @@
+MSFS Hangar Release 192
+
+Fixes in this build:
+- Fixed missing _sanitize_inibuilds_liveries backend helper that was breaking livery scans.
+- Added stricter iniBuilds livery cleanup so unrelated aircraft packages are filtered out after scan.
+- Fixed Global Map / Explorer Globe runtime bug where GlobalLibraryMap referenced mapObjRef outside GlobeExplorerPreview.
+- Loading a saved globe route now uses the live globe map instance to fit all route points into view.
+- Focused airport opening into Global Map now preserves the seeded globe camera path instead of being blocked by the mapObjRef error.
+- Aircraft Data now shows summary content above the specifications table by using rw.wiki_summary when present and falling back to the addon overview summary.
+- Populate with selected AI on Aircraft Data now stores returned summary_html into rw.wiki_summary so the summary block appears immediately.
+
+Notes:
+- Python source compile-checked successfully in this environment.
+- This build was not fully smoke-tested in a live Windows desktop session from here.

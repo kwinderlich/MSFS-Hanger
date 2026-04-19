@@ -1,0 +1,16 @@
+MSFS Hangar V1 - Release 212
+
+Focused fixes for Flight follow/map control stability and Analytics startup.
+
+Included:
+- Fixed Analytics crash caused by undefined money formatting helper.
+- Flight map navigation controls moved lower so overlays no longer cover them.
+- Added zoom overlay readout on Flight map.
+- Removed Active Pause from Flight UI.
+- Added flashing PAUSED badge when sim pause state is active.
+- Flight throttles now display only up to detected engine count.
+- Improved range-ring fallback to live aircraft addon range when available.
+- Improved business jet aircraft symbol detection.
+- Follow/zoom tuning and stronger range fit behavior.
+- Session state now distinguishes preflight from parked and promotes high-throttle runway states to takeoff.
+- Sim rate reset now holds UI state at 1x briefly while the sim catches up.

@@ -1,0 +1,13 @@
+MSFS Hangar — Release 198
+
+Flight screen improvements:
+- Removed the temporary debug/status helper text from the Flight screen header.
+- Added heading-aware aircraft drawing using a rotated live aircraft marker.
+- Added optional breadcrumb trail display plus a Clear Trail action.
+- Added selectable Flight Map basemaps similar to the Global Map choices.
+- Added optional moving range ring based on the staged aircraft range when available.
+- Added smoother aircraft movement interpolation between SimConnect updates.
+- Added airport finder support for Departure and Destination using the cached airport reference dataset instead of add-on-only airport dropdowns.
+
+Backend support:
+- Added /api/flight/airports airport search endpoint backed by cached airport reference data.

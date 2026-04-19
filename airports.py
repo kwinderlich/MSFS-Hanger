@@ -317,3 +317,62 @@ def lookup_airport_by_code(code: str) -> Optional[dict]:
 def lookup_airport_by_faa(faa_id: str) -> Optional[dict]:
     """Backwards-compatible FAA/local-code helper."""
     return lookup_airport_by_code(faa_id)
+
+
+def search_airports(query: str = '', limit: int = 50) -> list[dict]:
+    """Search cached airports by ICAO/IATA/local code, name, or municipality.
+    Keeps results lightweight for UI pickers.
+    """
+    _ensure_loaded()
+    q = (query or '').strip().upper()
+    rows = []
+    for ident, airport in _airports_cache.items():
+        score = 0
+        name = str(airport.get('name') or '')
+        city = str(airport.get('municipality') or airport.get('city') or '')
+        country = str(airport.get('country') or '')
+        local_code = str(airport.get('local_code') or airport.get('faa_id') or '')
+        iata = str(airport.get('iata') or '')
+        apt_type = str(airport.get('type') or '')
+        if q:
+            hay = ' '.join([ident, local_code, iata, name, city, country]).upper()
+            if ident == q:
+                score = 1000
+            elif local_code == q or iata == q:
+                score = 950
+            elif ident.startswith(q):
+                score = 900
+            elif name.upper().startswith(q):
+                score = 820
+            elif city.upper().startswith(q):
+                score = 760
+            elif q in hay:
+                score = 600
+            else:
+                continue
+        else:
+            # Without a query, return common scheduled airports first.
+            score = 200
+            if airport.get('scheduled') == 'yes':
+                score += 50
+        if apt_type == 'large_airport':
+            score += 40
+        elif apt_type == 'medium_airport':
+            score += 30
+        elif apt_type == 'small_airport':
+            score += 10
+        rows.append((score, ident, {
+            'icao': ident,
+            'faa_id': local_code,
+            'iata': iata,
+            'name': name,
+            'municipality': city,
+            'country': _COUNTRIES.get(country, country),
+            'region': _parse_location(airport).get('region_name') or airport.get('region', ''),
+            'lat': airport.get('lat'),
+            'lon': airport.get('lon'),
+            'airport_type': apt_type,
+            'scheduled': airport.get('scheduled', ''),
+        }))
+    rows.sort(key=lambda item: (-item[0], item[1]))
+    return [row for _, _, row in rows[:max(1, min(int(limit or 50), 200))]]

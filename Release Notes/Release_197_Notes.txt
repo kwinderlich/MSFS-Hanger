@@ -1,0 +1,19 @@
+MSFS Hangar - Release 197
+
+Focus areas
+1. Flight Connect path repair
+2. Explicit Flight connection states in the UI
+3. Better SimConnect diagnostics and readable errors
+
+What changed
+- Reworked /api/flight/connect and /api/flight/settings to parse JSON payloads directly from the request instead of relying on fragile body-model binding.
+- Added endpoint-level logging for connect/settings payloads and returned state into logs/simconnect.log.
+- Added explicit Flight states: ready, connecting, connected, failed, unavailable.
+- FlightTracker now returns a status_message alongside state so the UI can show readable progress instead of ambiguous status.
+- Fixed the Flight screen status badge so it can show Connecting/Connected/Failed/Ready/Unavailable.
+- Replaced raw object rendering in Flight notices with readable error extraction so [object Object] should no longer appear.
+- Flight connect/disconnect actions now write frontend log breadcrumbs and render backend messages more clearly.
+
+Notes
+- This build is specifically intended to prove whether clicking Connect reaches the backend and whether the backend reaches the SimConnect worker path.
+- If Connect still does not establish a live session, logs/simconnect.log should now show exactly where the chain stops.

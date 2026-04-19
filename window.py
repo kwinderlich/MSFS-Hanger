@@ -155,10 +155,13 @@ class HangarWindow(QMainWindow):
         self._profile.setHttpCacheType(QWebEngineProfile.NoCache)
         self._profile.setPersistentCookiesPolicy(QWebEngineProfile.ForcePersistentCookies)
 
-        self._native_profile = QWebEngineProfile("HangarNativeProfile", None)
-        self._native_profile.setPersistentStoragePath(str(native_storage))
+        # Use an off-the-record profile for the transient native browser pane.
+        # This avoids QtWebEngine's persistent shared-dictionary bookkeeping,
+        # which was producing noisy sqlite cache warnings and could make the Map
+        # Wx pane feel sticky when opening/closing repeatedly.
+        self._native_profile = QWebEngineProfile(self)
         self._native_profile.setHttpCacheType(QWebEngineProfile.NoCache)
-        self._native_profile.setPersistentCookiesPolicy(QWebEngineProfile.ForcePersistentCookies)
+        self._native_profile.setPersistentCookiesPolicy(QWebEngineProfile.NoPersistentCookies)
 
         # Main app browser
         self._app_page = HangarPage(self._profile)
@@ -265,7 +268,7 @@ class HangarWindow(QMainWindow):
 
         self._browser_timer = QTimer(self)
         self._browser_timer.timeout.connect(self._sync_browser_state)
-        self._browser_timer.start(2500)
+        self._browser_timer.start(400)
 
     def _enable_browser_settings(self, view: QWebEngineView):
         s = view.settings()
@@ -410,8 +413,14 @@ class HangarWindow(QMainWindow):
                 self._browser_sizes = self._splitter.sizes()
         except Exception:
             pass
+        self._requested_url = ""
+        self._requested_id = 0
         try:
             self._native_browser.stop()
+        except Exception:
+            pass
+        try:
+            self._native_profile.clearHttpCache()
         except Exception:
             pass
         try:

@@ -1,0 +1,17 @@
+MSFS Hangar - Release 195
+
+Focus areas
+1. Global Map stale route cleanup
+2. Aircraft Data direct site shortcuts
+3. Flight / SimConnect diagnostics
+
+What changed
+- Added detailed SimConnect activity logging to USER_DATA_DIR/logs/simconnect.log.
+- Flight connect/disconnect actions now surface returned status and errors more clearly in the Flight screen.
+- Aircraft Data recommended site shortcuts now open direct target site URLs instead of falling back through a Google search wrapper.
+- Global Map now clears measured route points from saved state when the map closes.
+- Clear Measured Segments now immediately clears the active measured route and saved measured segment state.
+
+Notes
+- This build improves observability for SimConnect, but an actual live simulator connection still depends on MSFS 2024 running with the Python SimConnect package working on the local machine.
+- Detailed connection attempts, errors, and periodic telemetry snapshots are now written to simconnect.log for troubleshooting.

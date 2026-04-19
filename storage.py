@@ -274,6 +274,8 @@ async def update_addon_core(addon_id: str, fields: dict, db_path: Path = DB_PATH
             addon.pr.package_name = value
         elif key == "product_source_store":
             addon.pr.source_store = value
+        elif key == "update_notes_html":
+            addon.pr.update_notes_html = value
         elif key == "rw_override" and isinstance(value, dict):
             for rk, rv in value.items():
                 if rk in addon.rw.__dataclass_fields__:

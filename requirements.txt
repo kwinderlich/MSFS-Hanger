@@ -6,3 +6,4 @@ python-multipart>=0.0.9
 requests>=2.31.0
 beautifulsoup4>=4.12.3
 PySide6>=6.6.0
+SimConnect>=0.4.26 ; platform_system=="Windows"

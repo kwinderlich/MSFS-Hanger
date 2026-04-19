@@ -1,0 +1,18 @@
+MSFS Hangar Release 201 Notes
+
+Flight Phase 1 Stabilization
+- Restored the live flight telemetry path to prefer underscore-style SimConnect variable names, with space-separated fallbacks.
+- Preserved prior valid telemetry values when optional advanced values come back blank.
+- Increased trail retention and lowered the trail-point threshold for better breadcrumb capture.
+- Added richer simconnect.log polling snapshots for heading, track, IAS, GS, VS, and trail count.
+
+Flight Map Rendering
+- Kept the aircraft marker persistent and rotated the inner icon instead of the marker container to avoid marker disappearance/jumping.
+- Switched the Flight controls to an Auto-center checkbox plus a one-shot Center now button.
+- Increased marker size and restored a more GA-friendly default aircraft silhouette.
+- Reduced camera recenter aggressiveness and shortened interpolation duration for smoother movement.
+- Reduced Flight Map header height slightly to reclaim space.
+
+Flight UI Cleanup
+- Suppressed lingering 'Starting SimConnect worker...' notice text.
+- Increased flight status refresh cadence.

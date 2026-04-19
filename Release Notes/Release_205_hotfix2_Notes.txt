@@ -1,0 +1,7 @@
+MSFS Hangar Release 205 Hotfix 2
+
+Fixes:
+- Corrected malformed JSX in the Application Log screen by closing the activeTab==='application' JSX block properly.
+- This resolves the Babel startup error about adjacent JSX elements around the Application Log view.
+
+No functional changes beyond the load-crash fix.

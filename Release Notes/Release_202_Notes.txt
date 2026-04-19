@@ -1,0 +1,10 @@
+MSFS Hangar Release 202
+
+Flight polish and telemetry refinement:
+- Range estimate now uses live fuel remaining and fuel flow instead of the old placeholder formula.
+- Added fuel remaining display in gallons and percent.
+- Improved breadcrumb retention and flight trail visibility.
+- Reworked flight marker silhouettes with larger black aircraft icons.
+- Improved continuous aircraft motion by starting new interpolation from the current drawn pose.
+- Increased Flight Map height and reduced lower card padding so the map has more room.
+- Renamed the follow control to Center aircraft and kept Center now as a one-shot action.

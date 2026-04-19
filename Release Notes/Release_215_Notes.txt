@@ -1,0 +1,4 @@
+Release 215
+- Flight marker typing and zoom/range fixes
+- Stable browser open/reset for detail, research, gallery
+- Range display fallback and native browser captcha mitigation

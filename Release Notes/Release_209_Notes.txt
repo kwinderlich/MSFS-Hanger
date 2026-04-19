@@ -1,0 +1,11 @@
+MSFS Hangar Release 209
+
+Flight fixes:
+- Focus on aircraft now keeps the map centered on the live aircraft without fighting zoom.
+- Zoom to aircraft is tighter and should stay put.
+- Aircraft marker scales down when zoomed out so it covers less of the map.
+- Sim rate reset now prioritizes SIM_RATE_SET to 1x.
+- Pause state polling added from PAUSE / PAUSE_EX1 simvars.
+- Pause and Active Pause commands use broader SimConnect fallback events and update local pause state.
+- Gear status is more defensive on the ground for retractable aircraft that report zeroed gear positions while on the runway.
+- Throttle total uses active engines only and is clamped to percent values.

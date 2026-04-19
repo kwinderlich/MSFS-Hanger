@@ -100,6 +100,7 @@ class ProductInfo:
     size_mb: Optional[float] = None
     package_name: Optional[str] = None
     manufacturer: Optional[str] = None
+    update_notes_html: Optional[str] = None
 
 @dataclass
 class UserData:
@@ -223,7 +224,7 @@ class Addon:
             "pr": {
                 "ver": pr.ver, "latest_ver": pr.latest_ver, "latest_ver_date": pr.latest_ver_date, "released": pr.released, "price": pr.price,
                 "source_store": pr.source_store, "size_mb": pr.size_mb,
-                "package_name": pr.package_name, "manufacturer": pr.manufacturer,
+                "package_name": pr.package_name, "manufacturer": pr.manufacturer, "update_notes_html": pr.update_notes_html,
             },
             "usr": {
                 "fav": usr.fav, "rating": usr.rating, "notes": usr.notes,

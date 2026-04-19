@@ -1,0 +1,20 @@
+MSFS Hangar — Release 214
+
+Flight / Analytics / Logging stabilization build.
+
+Changes:
+- Removed duplicate Sim Control / Status block from Telemetry Details.
+- Improved Flight aircraft symbol selection using aircraft-type hints and engine-count fallback.
+- Preserved Flight map center/zoom when changing map types.
+- Adjusted heading selection on the ground to prefer heading over track at low speed.
+- Added stronger Zoom readout visibility and moved map controls farther down.
+- Reworked Zoom to Range to fit actual range-ring geometry bounds.
+- Tightened Zoom to Aircraft to a reliable close-in zoom.
+- Added numeric range parsing so saved range values like "800 nm" can drive the Flight range ring.
+- Improved Live Aircraft matching against library aircraft for range/symbol hints.
+- Renamed Session labels to Aircraft State in Flight.
+- Analytics drilldown now supports Unspecified subtype filtering.
+- Restored text-file AI logging and fixed missing scan/AI log path constants.
+
+Notes:
+- Large Flight-route / POI / scenery-library expansion remains future work; this build focuses on stabilizing the current Flight foundations without regressing Global Map or library behavior.

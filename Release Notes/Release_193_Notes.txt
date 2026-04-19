@@ -1,0 +1,12 @@
+MSFS Hangar - Release 193
+
+Fixes in this build:
+- Restored the missing external livery helper used by iniBuilds/generic liveries so external livery scans no longer crash on _build_livery_item.
+- Kept the Release 192 iniBuilds family sanitizing path and extended it so existing enabled/favorite state is preserved when rebuilding livery cards.
+- Improved Global Map route fitting so saved routes fit all points with extra padding and a small follow-up zoom-out for better visibility.
+- Strengthened focused-airport globe seeding so opening Global Map from a focused airport pushes the globe toward that airport immediately.
+- Reduced native browser panel lag by switching the transient Map Wx browser pane to an off-the-record Qt profile and polling browser state more frequently.
+- Clearing/closing the native browser panel is now more aggressive to help the Map Wx pane disappear faster after closing Global Map.
+
+Notes:
+- The Chromium/QtWebEngine sqlite shared-dictionary warning may be reduced by the off-the-record browser profile. If it still appears occasionally, it is typically a browser-engine warning rather than an application-data corruption issue.

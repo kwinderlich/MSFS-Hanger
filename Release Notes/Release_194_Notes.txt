@@ -1,0 +1,24 @@
+MSFS Hangar - Release 194
+
+Focus areas:
+1. Global Map performance stabilization
+2. Phase 1 Flight workspace foundation for MSFS 2024 integration
+
+What changed
+- Reduced repeated globe refresh churn by removing the idle/styledata full-layer refresh cycle.
+- Weather overlay updates are now more targeted so the map does not keep tearing down and rebuilding the same raster layer when nothing changed.
+- Reduced redundant delayed ensure-layer passes after map load/style changes.
+- Added a new Flight section on the left navigation.
+- Added a simpler Flight Map intended to become the Phase 1 test bed for MSFS 2024 live integration before merging features back into Global Map.
+- Added backend flight service endpoints:
+  - /api/flight/status
+  - /api/flight/connect
+  - /api/flight/disconnect
+  - /api/flight/settings
+- Added an optional Python SimConnect bridge (best effort). If the SimConnect Python package is installed and MSFS is running, the Flight screen can start reading basic live telemetry.
+- Added staged Origin Airport and Aircraft selections for later launch/session workflows.
+- Added polling interval setting for the Flight service.
+
+Notes
+- The Flight screen is intentionally lighter than Global Map to avoid overlap/conflict while telemetry work is being built.
+- SimConnect support is optional and degrades gracefully if the package is not installed or the simulator is not running.

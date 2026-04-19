@@ -1,0 +1,17 @@
+MSFS Hangar Release 205 Notes
+
+Add-on / Browser / Logging improvements:
+- Browser/provider search now respects the selected provider from Settings instead of always using Google.
+- Browser console/debug output now includes the actual provider-search query and final URL.
+- Dedicated scan.log written under the user logs folder listing each add-on added and each version update (old -> new).
+- Scan logs UI renamed toward Application Log, with category tabs for Log Management, Scan, AI, and Application events.
+- Scan detail now shows Added Add-ons and clearer Existing Refreshed wording.
+- Structured application/library events now log gallery default changes, gallery uploads/deletes, activation/deactivation, browser search opens, and saved articles.
+- Selected Add-on Populate with AI Data now keeps the in-progress state until follow-up refresh/log updates complete.
+- Selected Add-on Populate with AI Data now performs the same airport/aircraft detail-fetch follow-up used by the detail-tab fetch flow.
+
+Flight improvements:
+- Added Sim Control / Status section with derived Session State and Sim Rate display.
+- Added Sim Rate controls (decrease / reset / increase) through SimConnect events.
+- Added Aircraft Control section showing flaps, gear, lights, and throttle percentages.
+- Added basic Flight Logs recording on disconnect with recent session summaries shown on the Flight screen.

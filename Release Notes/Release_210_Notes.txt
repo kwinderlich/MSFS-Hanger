@@ -1,0 +1,10 @@
+MSFS Hangar - Release 210 Notes
+
+Flight map zoom tuning:
+- Zoom to aircraft now uses a much tighter follow zoom.
+- Zoom to range now fits the actual computed range-ring geometry instead of a rough approximation.
+- Added slight range padding so the full ring stays visible.
+- One-shot zoom actions stop any current camera animation before applying the new zoom.
+- Fallback zooms were adjusted so aircraft view is closer and range view is wider.
+
+This build is intentionally narrow so the newer Flight and Global Map behavior is not disturbed unnecessarily.

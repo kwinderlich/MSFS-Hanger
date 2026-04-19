@@ -1,0 +1,18 @@
+MSFS Hangar Release 206 Notes
+
+Flight
+- Added Auto-center aircraft checkbox plus one-time Center now action.
+- Added Zoom aircraft and Zoom range controls on the Flight map.
+- Added Sim Pause and Active Pause controls.
+- Improved session-state detection for taxi, takeoff, airborne, landing, and parked.
+- Sim rate is now treated as an integer display value.
+- Gear now displays Up/Down and flaps scale 0-100% more cleanly.
+- Tightened aircraft motion interpolation and follow-camera timing.
+- Increased Flight map height and made the map column stay visible while controls scroll.
+
+Airport Data / Browser
+- Airport default browser search now uses ICAO plus the word airport when available.
+- Template substitution continues to URL-encode values, including spaces as %20.
+
+Logging
+- Batch Populate from AI now records start/completion application-log events.

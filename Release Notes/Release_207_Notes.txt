@@ -1,0 +1,15 @@
+MSFS Hangar Release 207
+
+Flight stabilization build focused on camera, controls, throttle handling, and trail behavior.
+
+Changes:
+- Reworked Flight map follow logic so auto-centering no longer forces zoom changes.
+- Zoom to Aircraft now uses a tighter follow zoom.
+- Zoom to Range now fits the current range ring without bouncing back.
+- Improved live aircraft smoothing using continuous dead-reckoning between SimConnect samples.
+- Rebuilt aircraft marker rendering with updated GA / turboprop / bizjet / airliner / helicopter silhouettes.
+- Breadcrumb trail now records only airborne historical positions and no longer starts ahead of the aircraft on the ground.
+- Added engine-count aware throttle calculations and only show throttle controls for detected engines.
+- Gear display is now conditional on retractable gear availability.
+- Improved session-state derivation so flights leave takeoff state more reliably once airborne.
+- Expanded command handling fallbacks for sim-rate reset and pause commands.
