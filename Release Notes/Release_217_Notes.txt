@@ -1,0 +1,29 @@
+MSFS Hangar — Release 217
+
+What changed in 217
+
+1. Flight route save fix
+- Fixed the Qt prompt override bug that caused route-save failures in desktop mode.
+- Flight route saving no longer depends on a JS prompt for the Flight screen; it uses the route-name field directly.
+
+2. Route builder improvements
+- Added a route name text box.
+- Added a read-only total distance box using the current localization distance unit.
+- Added per-leg route distance list.
+- Added distance labels above each segment on the Flight map.
+
+3. Flight weather visibility
+- Added a more prominent current-weather summary ribbon on the Flight map.
+- Added Refresh WX buttons in the overlay and weather panel.
+- Broadened nearby-airport candidate fallback for METAR lookup when strict 4-letter ICAO matching returns nothing.
+
+4. First controller / auto-fly pass
+- Added Flight Controller / Auto Fly panel.
+- Added heading / altitude / speed target inputs.
+- Added Move to first point button.
+- Added Apply Hdg / Alt / Speed button.
+- Added experimental Start Auto Fly / Stop Auto Fly route controller using SimConnect position updates.
+- Added controller / route-controller status fields to live flight status.
+
+Important note
+- The new route controller is intentionally a first experimental pass inspired by the FSStarter24-style workflow discussed in the prior design notes. It is not yet a full realism autopilot brain. Behavior may vary by aircraft and SimConnect support for position/variable writes.

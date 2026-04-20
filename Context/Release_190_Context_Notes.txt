@@ -1,0 +1,15 @@
+MSFS Hangar - Prior Session Context Notes for Release 190
+
+Recovered from the attached Word-session history:
+
+Release 190 focus
+- Airport Detail -> Airport Data fetch became ICAO / FAA-first to avoid drifting into the wrong airport.
+- Airport data table values were adjusted to word-wrap better as the screen width changes.
+- The extra Weather View section below the METAR card in Global Map was removed.
+- Closing Global Map now closes the native weather browser pane.
+- Choosing Map Wx: None also closes the native weather browser pane.
+- Export Layout JSON saves under logs/airport_layout_exports/ plus a *_layout_latest.json copy.
+- Airport Detail -> Map overlay drawing was reworked to use direct Leaflet polygon / polyline / circle-marker layers instead of the older GeoJSON wrapper path.
+
+Why these notes matter
+- They were the immediate pre-191 context recovered from the previous-session Word document and help explain the airport-data / global-map direction leading into later builds.

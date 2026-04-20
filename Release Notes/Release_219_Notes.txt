@@ -1,0 +1,15 @@
+MSFS Hanger Release 219
+
+What changed:
+- Flight left sidebar is now horizontally resizable and scrollable.
+- Flight map area is now vertically resizable.
+- Moved the top connected/aircraft status block farther left so it is less likely to clip.
+- Flight Weather now has a more obvious collapsed/expanded detail panel with the raw METAR and decoded lines shown when expanded.
+- Sim pause handling now prefers explicit PAUSE_ON / PAUSE_OFF / PAUSE_SET logic instead of relying only on PAUSE_TOGGLE.
+- Route controller arming now explicitly pauses the sim when moving to the first point.
+- Enlarged the compass-ring aircraft marker on the map.
+- Added a new Flying Test side panel inspired by are-we-flying concepts: larger compass, quick mode buttons, symbol previews, and test buttons for takeoff/landing/terrain-follow ideas.
+
+Notes:
+- Flying Test is a first-pass test harness, not a full clone of are-we-flying.
+- Auto takeoff / auto land buttons remain test placeholders in this build.

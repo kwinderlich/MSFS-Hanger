@@ -1,0 +1,39 @@
+MSFS Hangar - Release 216
+
+Built on top of the reconstructed 215 baseline.
+
+What changed in this build
+- Added a Flight weather endpoint that resolves the nearest likely airport and returns METAR data using AviationWeather.
+- Added nearest-airport helpers to the airport-data backend for flight weather lookup.
+- Added a Flight Route foundation on the Flight screen:
+  - route edit toggle
+  - click-to-add route points on the map
+  - undo / clear
+  - save route
+  - load saved route
+  - total route distance
+- Added a Current Weather panel on the Flight screen using the nearest METAR source.
+- Added a first-pass Virtual Pilot panel with quick autopilot/session actions:
+  - AP master
+  - heading hold
+  - altitude hold
+  - NAV hold
+  - approach hold
+  - pause toggle
+- Added missing support modules required by the current repo snapshot:
+  - bootstrap_cfg.py
+  - native_dialogs.py
+  - flight_tracker.py
+- flight_tracker.py was implemented as a practical SimConnect wrapper with graceful fallback so the build can run on machines with the local SimConnect Python environment already present.
+
+Important note
+- This release was compile-checked on the Python side before packaging.
+- It was not fully runtime-tested against a live Windows/MSFS session from inside this container.
+
+Bootstrap storage fix:
+- Runtime now looks for hangar_bootstrap.json in the application folder first and uses forced_storage_root from that JSON when present.
+- Legacy bootstrap.json is still recognized for older installs.
+- No storage path is hardcoded in the release.
+
+
+Superseded by Release 217 for route-save, weather visibility, and first-pass controller/autofly fixes.

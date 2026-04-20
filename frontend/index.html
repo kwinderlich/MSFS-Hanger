@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover"/>
-<title>MSFS Hangar Release 194</title>
+<title>MSFS Hangar Release 225</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700;800&family=Orbitron:wght@700;800&display=swap" rel="stylesheet"/>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
@@ -662,7 +662,7 @@ function ConfirmOverlay({dialog,onCancel,onConfirm}){
       <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:16,flexWrap:'wrap'}}>
         <Btn label={dialog.cancelLabel||'Cancel'} color='var(--t2)' onClick={onCancel}/>
         <Btn label={dialog.confirmLabel||'Confirm'} color={dialog.confirmColor||'var(--red)'} onClick={onConfirm}/>
-      </div>}
+      </div>
     </div>
   </div>;
 }
@@ -1032,7 +1032,7 @@ function AddonCard({a,selected,onClick,onFav,onTogglePick,picked,scale,onToggleE
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginTop:'auto',paddingTop:dataBlock?9:0,gap:8,minHeight:18}}>
         <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>{(a.usr.tags||[]).slice(0,2).map(t=><Chip key={t} label={t} color="var(--t3)" sm/>)}</div>
         {a.usr.rating>0&&<Stars v={a.usr.rating} sz={11}/>}
-      </div>}
+      </div>
     </div>
   </div>;
 }
@@ -1427,7 +1427,7 @@ function CollectionManager({profiles=[],addons=[],activeCollectionId='',setActiv
             </div>
           </div>
         </div>}
-      </div>}
+      </div>
     </div>
   </div>;
 }
@@ -2416,7 +2416,7 @@ function MapTab({a,allAddons,onOpenAddon,onSave}){
   const [hideBasemapTiles,setHideBasemapTiles]=useState(false);
   const [layoutDebug,setLayoutDebug]=useState('');
   useEffect(()=>{ setMapPoint(initialPoint); setMapPolygon(Array.isArray(a.usr&&a.usr.map_polygon)?(a.usr.map_polygon||[]):[]); setMapLayout((a.usr&&a.usr.map_layout&&typeof a.usr.map_layout==='object')?(a.usr.map_layout||{}):{}); setSearchText((a.usr&&a.usr.map_search_label)||((a.rw&&a.rw.icao)||a.title||'')); setFetchMsg(''); setLayoutDebug(''); setDrawMode('view'); },[a.id]);
-  const LAYERS={satellite:{l:"Satellite",tile:"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",attr:"Esri"},road:{l:"Road",tile:"https://tile.openstreetmap.org/{z}/{x}/{y}.png",attr:"OSM"}};
+  const LAYERS={satellite:{l:"Satellite",tile:"/api/map-tile/esri/{z}/{x}/{y}.png",attr:"Esri"},road:{l:"Road",tile:"/api/map-tile/osm/{z}/{x}/{y}.png",attr:"OSM"}};
   const ZOOMS={region:{l:"Region",z:9},airport:{l:"Airport",z:14},runway:{l:"Runway",z:17}};
   function hasValidPoint(pt){ return pt&&Number.isFinite(Number(pt.lat))&&Number.isFinite(Number(pt.lon))&&Number(pt.lat)>=-90&&Number(pt.lat)<=90&&Number(pt.lon)>=-180&&Number(pt.lon)<=180; }
   function centroid(poly){ if(!Array.isArray(poly)||!poly.length) return null; let lat=0,lon=0,count=0; poly.forEach(p=>{ const la=Number(p&&p.lat), lo=Number(p&&p.lon); if(Number.isFinite(la)&&Number.isFinite(lo)){ lat+=la; lon+=lo; count++; }}); return count?{lat:lat/count,lon:lon/count}:null; }
@@ -3500,7 +3500,7 @@ function GlobeExplorerPreview({items,selectedItem,onSelectItem,accent='var(--acc
         version:8,
         glyphs:'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
         projection:{type:'globe'},
-        sources:{sat:{type:'raster',tiles:['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],tileSize:256,attribution:'Esri World Imagery'}},
+        sources:{sat:{type:'raster',tiles:['/api/map-tile/esri/{z}/{x}/{y}.png'],tileSize:256,attribution:'Esri World Imagery'}},
         layers:[{id:'sat',type:'raster',source:'sat'}],
         sky:{'atmosphere-blend':['interpolate',['linear'],['zoom'],0,1,5,1,7,0.2]},
         light:{anchor:'map',position:[1.5,90,80]}
@@ -3512,7 +3512,7 @@ function GlobeExplorerPreview({items,selectedItem,onSelectItem,accent='var(--acc
         glyphs:'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
         projection:{type:'globe'},
         sources:{
-          base:{type:'raster',tiles:['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],tileSize:256,attribution:'Esri World Imagery'},
+          base:{type:'raster',tiles:['/api/map-tile/esri/{z}/{x}/{y}.png'],tileSize:256,attribution:'Esri World Imagery'},
           terrarium:{type:'raster-dem',tiles:['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],tileSize:256,encoding:'terrarium',attribution:'AWS Open Data Terrarium elevation tiles'}
         },
         terrain:{source:'terrarium',exaggeration:1.1},
@@ -4130,15 +4130,15 @@ function GlobalLibraryMap({items,allItems,selectedItems,focusedAddon=null,seedAd
 
   const mapTilerKey=(typeof localStorage!=='undefined' && localStorage.getItem('hangar_maptiler_key')) || '';
   const LAYERS={
-    satellite:{l:'Satellite',tile:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',attr:'Esri World Imagery'},
-    liberty:{l:'Liberty',tile:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',attr:'OpenFreeMap / OpenStreetMap'},
-    bright:{l:'Bright',tile:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',attr:'OpenFreeMap / OpenStreetMap'},
+    satellite:{l:'Satellite',tile:'/api/map-tile/esri/{z}/{x}/{y}.png',attr:'Esri World Imagery'},
+    liberty:{l:'Liberty',tile:'/api/map-tile/osm/{z}/{x}/{y}.png',attr:'OpenFreeMap / OpenStreetMap'},
+    bright:{l:'Bright',tile:'/api/map-tile/osm/{z}/{x}/{y}.png',attr:'OpenFreeMap / OpenStreetMap'},
     fiord:{l:'Fiord',tile:'https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',attr:'OpenFreeMap Fiord / dark fallback'},
     positron:{l:'Positron',tile:'https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',attr:'CARTO Positron'},
     voyager:{l:'Voyager',tile:'https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',attr:'CARTO Voyager'},
     dark:{l:'Dark Matter',tile:'https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',attr:'CARTO Dark Matter'},
-    colorful:{l:'Colorful',tile:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',attr:'VersaTiles / OpenStreetMap fallback'},
-    demotiles:{l:'Demotiles',tile:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',attr:'MapLibre demo / OpenStreetMap fallback'},
+    colorful:{l:'Colorful',tile:'/api/map-tile/osm/{z}/{x}/{y}.png',attr:'VersaTiles / OpenStreetMap fallback'},
+    demotiles:{l:'Demotiles',tile:'/api/map-tile/osm/{z}/{x}/{y}.png',attr:'MapLibre demo / OpenStreetMap fallback'},
     terrain:{l:'Topography',tile:'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',attr:'OpenTopoMap',subdomains:['a','b','c']},
     terrarium_elevation:{l:'Terrarium Elevation',tile:'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',attr:'AWS Open Data Terrarium elevation'}
   };
@@ -5024,7 +5024,7 @@ function GlobalLibraryMap({items,allItems,selectedItems,focusedAddon=null,seedAd
           <div style={{fontSize:11,color:'var(--t2)'}}>Example briefing strip for the active measured route. This shows the departure / midpoint / arrival checkpoints that weather sources can target next.</div>
           <div style={{display:'grid',gap:6}}>{routeWeatherStrip.map(stop=><button key={stop.idx} type='button' onClick={()=>openRouteWeatherPopup(stop)} style={{display:'grid',gridTemplateColumns:'84px 1fr auto',gap:8,alignItems:'center',background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:8,padding:'6px 8px',cursor:'pointer',textAlign:'left'}}><div style={{fontSize:10,color:'var(--acc)',fontWeight:700}}>{stop.label}</div><div style={{fontSize:11,color:'var(--t1)'}}>{stop.fromLabel} → {stop.toLabel} · {stop.summary}</div><div style={{fontSize:10,color:'var(--t3)'}}>{stop.lat.toFixed(2)}, {stop.lon.toFixed(2)}</div></button>)}</div>
         </div>}
-      </div>}
+      </div>
     </div>
   </div>;
 }
@@ -5158,15 +5158,15 @@ function ScanLogsPanel({logs,aiLogs,libraryLogs,onDeleteRange}){
 
 
 const FLIGHT_MAP_LAYERS={
-  satellite:{l:'Satellite',tile:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',attr:'Esri World Imagery'},
-  liberty:{l:'Liberty',tile:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',attr:'OpenFreeMap / OpenStreetMap'},
-  bright:{l:'Bright',tile:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',attr:'OpenFreeMap / OpenStreetMap'},
+  satellite:{l:'Satellite',tile:'/api/map-tile/esri/{z}/{x}/{y}.png',attr:'Esri World Imagery'},
+  liberty:{l:'Liberty',tile:'/api/map-tile/osm/{z}/{x}/{y}.png',attr:'OpenFreeMap / OpenStreetMap'},
+  bright:{l:'Bright',tile:'/api/map-tile/osm/{z}/{x}/{y}.png',attr:'OpenFreeMap / OpenStreetMap'},
   fiord:{l:'Fiord',tile:'https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',attr:'OpenFreeMap Fiord / dark fallback'},
   positron:{l:'Positron',tile:'https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',attr:'CARTO Positron'},
   voyager:{l:'Voyager',tile:'https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',attr:'CARTO Voyager'},
   dark:{l:'Dark Matter',tile:'https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',attr:'CARTO Dark Matter'},
-  colorful:{l:'Colorful',tile:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',attr:'VersaTiles / OpenStreetMap fallback'},
-  demotiles:{l:'Demotiles',tile:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',attr:'MapLibre demo / OpenStreetMap fallback'},
+  colorful:{l:'Colorful',tile:'/api/map-tile/osm/{z}/{x}/{y}.png',attr:'VersaTiles / OpenStreetMap fallback'},
+  demotiles:{l:'Demotiles',tile:'/api/map-tile/osm/{z}/{x}/{y}.png',attr:'MapLibre demo / OpenStreetMap fallback'},
   terrain:{l:'Topography',tile:'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',attr:'OpenTopoMap',subdomains:['a','b','c']},
   terrarium_elevation:{l:'Terrarium Elevation',tile:'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',attr:'AWS Open Data Terrarium elevation'}
 };
@@ -5260,7 +5260,9 @@ const FLIGHT_STATUS_DEFAULT={
   flaps_percent:null,gear_percent:null,throttle_percent_total:null,throttle_percent_engine1:null,throttle_percent_engine2:null,
   nav_lights:false,beacon_lights:false,strobe_lights:false,landing_lights:false,taxi_lights:false,on_ground:null,
   aircraft_title:'',aircraft_icao:'',sim_time_utc:'',sim_time_local:'',last_error:'',
-  engine_count:null,has_retractable_gear:null,pause_state:null
+  engine_count:null,has_retractable_gear:null,pause_state:null,
+  route_controller:{active:false,mode:'standby',message:'',current_index:0,waypoint_count:0,loop:false,speed_kt:null,altitude_ft:null},
+  controller_target:{heading_deg:null,speed_kt:null,altitude_ft:null}
 };
 
 
@@ -5279,13 +5281,37 @@ function guessFlightMarkerKind(flightStatus, hint=''){
   return 'singleprop';
 }
 
+function wrapFlightMarkerSvg(inner, size=58){
+  return `<svg viewBox="0 0 84 84" width="${size}" height="${size}" aria-hidden="true">
+    <defs>
+      <filter id="flightMarkerGlow" x="-50%" y="-50%" width="200%" height="200%">
+        <feDropShadow dx="0" dy="1" stdDeviation="1.2" flood-color="rgba(255,255,255,.75)"/>
+        <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="rgba(0,0,0,.32)"/>
+      </filter>
+    </defs>
+    <circle cx="42" cy="42" r="33" fill="rgba(15,23,42,.22)" stroke="rgba(248,250,252,.20)" stroke-width="1.5"/>
+    <circle cx="42" cy="42" r="28" fill="rgba(15,23,42,.12)" stroke="rgba(248,250,252,.26)" stroke-width="1.2" stroke-dasharray="1.5 5"/>
+    <g stroke="rgba(248,250,252,.65)" stroke-width="1.6" stroke-linecap="round">
+      <path d="M42 8v8"/><path d="M42 68v8"/><path d="M8 42h8"/><path d="M68 42h8"/>
+      <path d="M22 22l4 4"/><path d="M58 58l4 4"/><path d="M58 22l-4 4"/><path d="M22 58l4-4"/>
+    </g>
+    <g font-family="Segoe UI, sans-serif" font-size="8.5" font-weight="800" fill="rgba(248,250,252,.86)">
+      <text x="42" y="15" text-anchor="middle">N</text>
+      <text x="69" y="45" text-anchor="middle">E</text>
+      <text x="42" y="74" text-anchor="middle">S</text>
+      <text x="15" y="45" text-anchor="middle">W</text>
+    </g>
+    <g filter="url(#flightMarkerGlow)" transform="translate(10 10)">${inner}</g>
+  </svg>`;
+}
+
 function flightMarkerSvg(kind='singleprop', color='#111111'){
   const halo = 'filter="drop-shadow(0 1px 1px rgba(255,255,255,.85)) drop-shadow(0 2px 6px rgba(0,0,0,.28))"';
-  if(kind==='helicopter') return `<svg viewBox="0 0 64 64" width="50" height="50" aria-hidden="true"><g fill="${color}" ${halo}><rect x="29" y="20" width="6" height="20" rx="3"/><path d="M35 28h13l7 4-2 3H39z"/><path d="M29 29l-13 8 2 3 13-5z"/><rect x="18" y="15" width="28" height="2.6" rx="1.3"/><rect x="10" y="10" width="44" height="2.2" rx="1.1"/><rect x="30.5" y="40" width="3" height="10" rx="1.5"/><rect x="23" y="50" width="18" height="2.2" rx="1.1"/></g></svg>`;
-  if(kind==='airliner') return `<svg viewBox="0 0 64 64" width="52" height="52" aria-hidden="true"><g fill="${color}" ${halo}><path d="M30 4h4l3 15 19 10v4l-19-2v15l10 10v4.5L35 57l-3-7.5-3 7.5-12 3.5V56l10-10V31l-19 2v-4l19-10z"/></g></svg>`;
-  if(kind==='bizjet') return `<svg viewBox="0 0 64 64" width="50" height="50" aria-hidden="true"><g fill="${color}" ${halo}><path d="M30 5h4l2.8 14 14.5 7v3.5l-14.8-1.2v13.5l8 7v4l-9.4-2.4-2.7-6.1h-.8l-2.7 6.1-9.4 2.4v-4l8-7V28.3l-14.8 1.2V26l14.5-7z"/><path d="M22 22 32 24l10-2" fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round"/></g></svg>`;
-  if(kind==='twinprop') return `<svg viewBox="0 0 64 64" width="52" height="52" aria-hidden="true"><g fill="${color}" ${halo}><path d="M29 5h6l2 13 15 5v4l-15.5-1v12l8.5 8.5v4l-10.5-2.5-2.5-6.8h-.1l-2.5 6.8-10.5 2.5v-4l8.5-8.5V26l-15.5 1v-4l15-5z"/><circle cx="18" cy="23" r="3.2" fill="none" stroke="${color}" stroke-width="2.2"/><circle cx="46" cy="23" r="3.2" fill="none" stroke="${color}" stroke-width="2.2"/></g></svg>`;
-  return `<svg viewBox="0 0 64 64" width="50" height="50" aria-hidden="true"><g fill="${color}" ${halo}><path d="M31 5h2l1.6 15 15.4 4.8v3.8l-15.7-.9v10.8l8.5 7.8v4l-10.1-2.6-1.9-7.1h-.6l-1.9 7.1-10.1 2.6v-4l8.5-7.8V28.5l-15.7.9v-3.8L29.4 20z"/><path d="M18 24h10M36 24h10" fill="none" stroke="${color}" stroke-width="2.2" stroke-linecap="round"/></g></svg>`;
+  if(kind==='helicopter') return wrapFlightMarkerSvg(`<svg viewBox="0 0 64 64" width="64" height="64"><g fill="${color}" ${halo}><rect x="29" y="20" width="6" height="20" rx="3"/><path d="M35 28h13l7 4-2 3H39z"/><path d="M29 29l-13 8 2 3 13-5z"/><rect x="18" y="15" width="28" height="2.6" rx="1.3"/><rect x="10" y="10" width="44" height="2.2" rx="1.1"/><rect x="30.5" y="40" width="3" height="10" rx="1.5"/><rect x="23" y="50" width="18" height="2.2" rx="1.1"/></g></svg>`);
+  if(kind==='airliner') return wrapFlightMarkerSvg(`<svg viewBox="0 0 64 64" width="64" height="64"><g fill="${color}" ${halo}><path d="M30 4h4l3 15 19 10v4l-19-2v15l10 10v4.5L35 57l-3-7.5-3 7.5-12 3.5V56l10-10V31l-19 2v-4l19-10z"/></g></svg>`);
+  if(kind==='bizjet') return wrapFlightMarkerSvg(`<svg viewBox="0 0 64 64" width="64" height="64"><g fill="${color}" ${halo}><path d="M30 5h4l2.8 14 14.5 7v3.5l-14.8-1.2v13.5l8 7v4l-9.4-2.4-2.7-6.1h-.8l-2.7 6.1-9.4 2.4v-4l8-7V28.3l-14.8 1.2V26l14.5-7z"/><path d="M22 22 32 24l10-2" fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round"/></g></svg>`);
+  if(kind==='twinprop') return wrapFlightMarkerSvg(`<svg viewBox="0 0 64 64" width="64" height="64"><g fill="${color}" ${halo}><path d="M29 5h6l2 13 15 5v4l-15.5-1v12l8.5 8.5v4l-10.5-2.5-2.5-6.8h-.1l-2.5 6.8-10.5 2.5v-4l8.5-8.5V26l-15.5 1v-4l15-5z"/><circle cx="18" cy="23" r="3.2" fill="none" stroke="${color}" stroke-width="2.2"/><circle cx="46" cy="23" r="3.2" fill="none" stroke="${color}" stroke-width="2.2"/></g></svg>`);
+  return wrapFlightMarkerSvg(`<svg viewBox="0 0 64 64" width="64" height="64"><g fill="${color}" ${halo}><path d="M31 5h2l1.6 15 15.4 4.8v3.8l-15.7-.9v10.8l8.5 7.8v4l-10.1-2.6-1.9-7.1h-.6l-1.9 7.1-10.1 2.6v-4l8.5-7.8V28.5l-15.7.9v-3.8L29.4 20z"/><path d="M18 24h10M36 24h10" fill="none" stroke="${color}" stroke-width="2.2" stroke-linecap="round"/></g></svg>`);
 }
 
 function computeTrackFromTrail(trail){
@@ -5300,12 +5326,118 @@ function computeTrackFromTrail(trail){
   return Number.isFinite(brng)?brng:null;
 }
 
-function FlightTrackingMap({flightStatus,originAirport=null,destinationAirport=null,accent='var(--acc)',followAircraft=true,showTrail=true,mapType='satellite',rangeRingNm=0,centerTick=0,zoomAircraftTick=0,zoomRangeTick=0,markerColor='#111111',aircraftTypeHint=''}){
-  const wrapRef=useRef(null), mapRef=useRef(null), markerRef=useRef(null), animRef=useRef(null), lastCameraRef=useRef(0), currentPoseRef=useRef(null), latestSampleRef=useRef(null), lastFrameTsRef=useRef(0), consumedCenterTickRef=useRef(0), consumedZoomAircraftTickRef=useRef(0), consumedZoomRangeTickRef=useRef(0), followRef=useRef(followAircraft), statusRef=useRef(flightStatus), viewStateRef=useRef(null), cameraHoldUntilRef=useRef(0);
+function buildFlightRouteGeoJSON(routePoints){
+  const pts=(Array.isArray(routePoints)?routePoints:[]).filter(p=>Number.isFinite(Number(p&&p.lat))&&Number.isFinite(Number(p&&p.lon))).map((p,idx)=>({lat:Number(p.lat),lon:Number(p.lon),label:String(p.label||idx+1)}));
+  const pointFeatures=pts.map((pt,idx)=>({type:'Feature',geometry:{type:'Point',coordinates:[pt.lon,pt.lat]},properties:{label:String(idx+1),idx}}));
+  const lineFeatures=pts.length>1?[{type:'Feature',geometry:{type:'LineString',coordinates:pts.map(pt=>[pt.lon,pt.lat])},properties:{}}]:[];
+  const segmentFeatures=[];
+  for(let i=1;i<pts.length;i++){
+    const a=pts[i-1], b=pts[i];
+    const nm=haversineMeters([a.lon,a.lat],[b.lon,b.lat])/1852;
+    segmentFeatures.push({type:'Feature',geometry:{type:'Point',coordinates:[(a.lon+b.lon)/2,(a.lat+b.lat)/2]},properties:{label:formatDistanceFromNm(nm,1),idx:i,from_idx:i-1,to_idx:i}});
+  }
+  return {
+    points:{type:'FeatureCollection',features:pointFeatures},
+    lines:{type:'FeatureCollection',features:lineFeatures},
+    segments:{type:'FeatureCollection',features:segmentFeatures},
+  };
+}
+
+function buildDecodedMetarLines(payload){
+  const cur=(payload&&payload.current)||{};
+  const lines=[];
+  if(cur.raw_metar) lines.push(cur.raw_metar);
+  if(cur.flight_category) lines.push(`Flight Category ${cur.flight_category}`);
+  if(cur.description) lines.push(String(cur.description));
+  if(cur.obs_time) lines.push(`Observed ${cur.obs_time}`);
+  if(Number.isFinite(Number(cur.wind_deg)) || Number.isFinite(Number(cur.wind_speed))) lines.push(`Wind ${formatNumber(cur.wind_deg,0,'°')} / ${formatNumber(cur.wind_speed,0,' kt')}`);
+  if(cur.visibility!==undefined && cur.visibility!==null && cur.visibility!=='') lines.push(`Visibility ${cur.visibility}`);
+  if(cur.temp!==undefined && cur.temp!==null && cur.temp!=='') lines.push(`Temperature ${formatNumber(cur.temp,0,'°C')}`);
+  if(cur.dew_point!==undefined && cur.dew_point!==null && cur.dew_point!=='') lines.push(`Dew Point ${formatNumber(cur.dew_point,0,'°C')}`);
+  if(cur.altimeter!==undefined && cur.altimeter!==null && cur.altimeter!=='') lines.push(`Altimeter ${cur.altimeter}`);
+  if(cur.clouds_text) lines.push(`Clouds ${cur.clouds_text}`);
+  return lines;
+}
+
+function CompactFlightWeather({flightWeather,flightWeatherStatus,expanded,onToggle,onRefresh}){
+  const wx=(flightWeather&&flightWeather.current)||{};
+  const apt=(flightWeather&&flightWeather.airport)||{};
+  const lines=buildDecodedMetarLines(flightWeather).slice(0, expanded?12:3);
+  return <div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:14,padding:'10px 12px'}}>
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}>
+      <div>
+        <div style={{fontSize:14,fontWeight:800,color:'var(--t0)'}}>Flight Weather</div>
+        <div style={{fontSize:11,color:'var(--t2)',marginTop:3}}>{apt.icao||'Nearest METAR'}{apt.distance_nm!==undefined?` • ${formatDistanceFromNm(Number(apt.distance_nm)||0,1)}`:''}</div>
+      </div>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+        <Btn label={expanded?'Hide details':'Show details'} color='var(--acc)' sm onClick={onToggle}/>
+        <Btn label='Refresh WX' color='var(--acc)' sm onClick={onRefresh}/>
+      </div>
+    </div>
+    {flightWeatherStatus ? <div style={{fontSize:12,color:'var(--t2)',lineHeight:1.6}}>{flightWeatherStatus}</div> : <>
+      <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:8,fontSize:12,color:'var(--t1)'}}>
+        <span style={{fontWeight:800,color:'var(--acc)'}}>{wx.flight_category||'METAR'}</span>
+        {wx.description?<span>{wx.description}</span>:null}
+        {(Number.isFinite(Number(wx.wind_deg))||Number.isFinite(Number(wx.wind_speed)))?<span>{formatNumber(wx.wind_deg,0,'°')} / {formatNumber(wx.wind_speed,0,' kt')}</span>:null}
+        {wx.temp!==undefined&&wx.temp!==null&&wx.temp!==''?<span>{formatNumber(wx.temp,0,'°C')}</span>:null}
+        {wx.altimeter!==undefined&&wx.altimeter!==null&&wx.altimeter!==''?<span>{wx.altimeter}</span>:null}
+      </div>
+      {wx.raw_metar ? <div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:10,padding:'8px 10px',fontSize:11,color:'var(--t1)',lineHeight:1.55,wordBreak:'break-word',fontFamily:'ui-monospace, SFMono-Regular, Consolas, monospace',marginBottom:expanded?8:0}}>{wx.raw_metar}</div> : null}
+      {expanded ? <div style={{display:'grid',gap:6,maxHeight:210,overflow:'auto'}}>{lines.map((line,idx)=><div key={idx} style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:8,padding:'7px 10px',fontSize:11,color:'var(--t1)',lineHeight:1.55}}>{line}</div>)}</div> : null}
+    </>}
+  </div>;
+}
+
+function FlyingSymbolGallery({symbols=[]}){
+  const kinds=(Array.isArray(symbols)&&symbols.length?symbols:[{kind:'singleprop',label:'Single prop'},{kind:'twinprop',label:'Twin prop'},{kind:'bizjet',label:'Business jet'},{kind:'airliner',label:'Airliner'},{kind:'helicopter',label:'Helicopter'}]);
+  return <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(112px,1fr))',gap:8}}>{kinds.map(item=><div key={item.kind} style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:10,padding:'10px 8px',display:'grid',justifyItems:'center',gap:8}}><div dangerouslySetInnerHTML={{__html:flightMarkerSvg(item.kind,'#111111')}} style={{width:48,height:48,display:'grid',placeItems:'center'}}/><div style={{fontSize:11,fontWeight:700,color:'var(--t1)',textAlign:'center'}}>{item.label}</div></div>)}</div>;
+}
+
+function CompassRose({headingDeg=null,targetHeadingDeg=null,size=132}){
+  const radius=size/2;
+  const center=radius;
+  const toPoint=(deg,len)=>{
+    const rad=((Number(deg||0)-90)*Math.PI)/180;
+    return [center + Math.cos(rad)*len, center + Math.sin(rad)*len];
+  };
+  const marks=[];
+  for(let i=0;i<360;i+=30){
+    const outer=toPoint(i, radius-8);
+    const inner=toPoint(i, i%90===0 ? radius-20 : radius-14);
+    marks.push(<line key={i} x1={inner[0]} y1={inner[1]} x2={outer[0]} y2={outer[1]} stroke='rgba(226,232,240,0.72)' strokeWidth={i%90===0?2:1.1} strokeLinecap='round'/>);
+  }
+  const current=Number.isFinite(Number(headingDeg)) ? Number(headingDeg) : null;
+  const target=Number.isFinite(Number(targetHeadingDeg)) ? Number(targetHeadingDeg) : null;
+  const currentTip=current!==null ? toPoint(current, radius-24) : null;
+  const targetTip=target!==null ? toPoint(target, radius-16) : null;
+  return <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role='img' aria-label='Heading compass'>
+    <circle cx={center} cy={center} r={radius-6} fill='rgba(15,23,42,0.58)' stroke='rgba(148,163,184,0.35)' strokeWidth='1.4'/>
+    <circle cx={center} cy={center} r={radius-22} fill='rgba(2,6,23,0.55)' stroke='rgba(148,163,184,0.22)' strokeWidth='1'/>
+    {marks}
+    {['N','E','S','W'].map((label,idx)=>{ const deg=[0,90,180,270][idx]; const p=toPoint(deg, radius-28); return <text key={label} x={p[0]} y={p[1]+4} textAnchor='middle' fontSize='11' fontWeight='800' fill='rgba(248,250,252,0.88)'>{label}</text>; })}
+    {targetTip ? <><line x1={center} y1={center} x2={targetTip[0]} y2={targetTip[1]} stroke='rgba(34,197,94,0.95)' strokeWidth='3.2' strokeLinecap='round'/><circle cx={targetTip[0]} cy={targetTip[1]} r='4.5' fill='rgba(34,197,94,0.95)'/></> : null}
+    {currentTip ? <><line x1={center} y1={center} x2={currentTip[0]} y2={currentTip[1]} stroke='rgba(56,189,248,0.95)' strokeWidth='2.6' strokeLinecap='round'/><polygon points={`${center},${center-18} ${center-7},${center+10} ${center},${center+4} ${center+7},${center+10}`} fill='rgba(248,250,252,0.92)' transform={`rotate(${current} ${center} ${center})`}/></> : null}
+    <circle cx={center} cy={center} r='5' fill='rgba(248,250,252,0.95)'/>
+  </svg>;
+}
+
+function computeFlightRouteTotalNm(routePoints){
+  const pts=(Array.isArray(routePoints)?routePoints:[]).filter(p=>Number.isFinite(Number(p&&p.lat))&&Number.isFinite(Number(p&&p.lon)));
+  let total=0;
+  for(let i=1;i<pts.length;i++){ total += haversineMeters([Number(pts[i-1].lon),Number(pts[i-1].lat)],[Number(pts[i].lon),Number(pts[i].lat)])/1852; }
+  return total;
+}
+
+function FlightTrackingMap({flightStatus,originAirport=null,destinationAirport=null,accent='var(--acc)',followAircraft=true,showTrail=true,mapType='satellite',rangeRingNm=0,centerTick=0,zoomAircraftTick=0,zoomRangeTick=0,markerColor='#111111',aircraftTypeHint='',routePoints=[],routeEditEnabled=false,onRouteMapClick=null,onRoutePointPick=null,onRouteSegmentPick=null,activeWaypointIndex=-1}){
+  const wrapRef=useRef(null), mapRef=useRef(null), markerRef=useRef(null), animRef=useRef(null), lastCameraRef=useRef(0), currentPoseRef=useRef(null), latestSampleRef=useRef(null), lastFrameTsRef=useRef(0), consumedCenterTickRef=useRef(0), consumedZoomAircraftTickRef=useRef(0), consumedZoomRangeTickRef=useRef(0), followRef=useRef(followAircraft), statusRef=useRef(flightStatus), viewStateRef=useRef(null), cameraHoldUntilRef=useRef(0), routeClickRef=useRef(onRouteMapClick), routeEditRef=useRef(routeEditEnabled), routePointPickRef=useRef(onRoutePointPick), routeSegmentPickRef=useRef(onRouteSegmentPick), lastTrailSigRef=useRef('');
   const [mapZoomText,setMapZoomText]=useState('—');
   const accentColor=resolveCssColor(accent,'#38BDF8');
   useEffect(()=>{ followRef.current=!!followAircraft; },[followAircraft]);
   useEffect(()=>{ statusRef.current=flightStatus||{}; },[flightStatus]);
+  useEffect(()=>{ routeClickRef.current=onRouteMapClick; },[onRouteMapClick]);
+  useEffect(()=>{ routePointPickRef.current=onRoutePointPick; },[onRoutePointPick]);
+  useEffect(()=>{ routeSegmentPickRef.current=onRouteSegmentPick; },[onRouteSegmentPick]);
+  useEffect(()=>{ routeEditRef.current=!!routeEditEnabled; if(wrapRef.current){ try{ wrapRef.current.style.cursor=routeEditEnabled?'crosshair':''; }catch(e){} } },[routeEditEnabled]);
   const originPoint=(originAirport&&Number.isFinite(Number(originAirport.lat))&&Number.isFinite(Number(originAirport.lon)))?{lat:Number(originAirport.lat),lon:Number(originAirport.lon),title:String(originAirport.name||originAirport.title||''),code:String((originAirport.icao||originAirport.faa_id||''))}:null;
   const destinationPoint=(destinationAirport&&Number.isFinite(Number(destinationAirport.lat))&&Number.isFinite(Number(destinationAirport.lon)))?{lat:Number(destinationAirport.lat),lon:Number(destinationAirport.lon),title:String(destinationAirport.name||destinationAirport.title||''),code:String((destinationAirport.icao||destinationAirport.faa_id||''))}:null;
 
@@ -5313,12 +5445,25 @@ function FlightTrackingMap({flightStatus,originAirport=null,destinationAirport=n
     if(!wrapRef.current || typeof maplibregl==='undefined') return;
     const savedView=viewStateRef.current;
     const initialPoint=(savedView&&Number.isFinite(Number(savedView.lat))&&Number.isFinite(Number(savedView.lon)))?{lat:Number(savedView.lat),lon:Number(savedView.lon)}:((Number.isFinite(Number(flightStatus&&flightStatus.lat))&&Number.isFinite(Number(flightStatus&&flightStatus.lon)))?{lat:Number(flightStatus.lat),lon:Number(flightStatus.lon)}:(originPoint||destinationPoint||{lat:39,lon:-98}));
-    const map=new maplibregl.Map({container:wrapRef.current,style:buildFlightRasterStyle(mapType),center:[initialPoint.lon,initialPoint.lat],zoom:(savedView&&Number.isFinite(Number(savedView.zoom)))?Number(savedView.zoom):((originPoint||destinationPoint)?6.8:3.2),attributionControl:true,antialias:true});
+    const map=new maplibregl.Map({container:wrapRef.current,style:buildFlightRasterStyle(mapType),center:[initialPoint.lon,initialPoint.lat],zoom:(savedView&&Number.isFinite(Number(savedView.zoom)))?Number(savedView.zoom):((originPoint||destinationPoint)?6.8:3.2),attributionControl:true,antialias:true,renderWorldCopies:false,fadeDuration:0});
     mapRef.current=map;
     try{ map.addControl(new maplibregl.NavigationControl({showCompass:true,showZoom:true}), 'top-left'); }catch(e){}
     const captureView=()=>{ try{ const c=map.getCenter(); const z=map.getZoom(); if(c&&Number.isFinite(Number(c.lat))&&Number.isFinite(Number(c.lng))){ viewStateRef.current={lat:Number(c.lat),lon:Number(c.lng),zoom:Number.isFinite(Number(z))?Number(z):undefined}; } }catch(e){} };
     const updateMapZoomText=()=>{ try{ setMapZoomText((Number(map.getZoom())||0).toFixed(2)); captureView(); }catch(e){} };
+    const holdCamera=()=>{ cameraHoldUntilRef.current=Date.now()+2600; };
     map.on('zoom', updateMapZoomText); map.on('load', updateMapZoomText); map.on('moveend', updateMapZoomText);
+    map.on('dragstart', holdCamera); map.on('zoomstart', holdCamera); map.on('rotatestart', holdCamera); map.on('pitchstart', holdCamera); map.on('mousedown', holdCamera); map.on('touchstart', holdCamera);
+    const handleRouteClick=(ev)=>{ 
+      if(!(routeEditRef.current && routeClickRef.current && ev && ev.lngLat)) return;
+      try{
+        const hit=(typeof map.queryRenderedFeatures==='function') ? map.queryRenderedFeatures(ev.point, {layers:['flight-route-points-layer','flight-route-segment-labels']}) : [];
+        if(Array.isArray(hit) && hit.length) return;
+      }catch(e){}
+      try{ routeClickRef.current({lat:Number(ev.lngLat.lat), lon:Number(ev.lngLat.lng)}); }catch(e){} 
+    };
+    map.on('click', handleRouteClick);
+    const handlePointPick=(ev)=>{ try{ const feat=((ev&&ev.features)||[])[0]; const idx=Number(feat&&feat.properties&&feat.properties.idx); if(Number.isFinite(idx) && routePointPickRef.current) routePointPickRef.current(idx); }catch(e){} };
+    const handleSegmentPick=(ev)=>{ try{ const feat=((ev&&ev.features)||[])[0]; const idx=Number(feat&&feat.properties&&feat.properties.idx); if(Number.isFinite(idx) && routeSegmentPickRef.current) routeSegmentPickRef.current(idx); }catch(e){} };
     const boot=()=>{
       try{ const nav=wrapRef.current && wrapRef.current.querySelector('.maplibregl-ctrl-top-left'); if(nav){ nav.style.top='192px'; nav.style.left='10px'; } }catch(e){}
       try{
@@ -5333,7 +5478,18 @@ function FlightTrackingMap({flightStatus,originAirport=null,destinationAirport=n
         if(!map.getSource('flight-range-ring')) map.addSource('flight-range-ring',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
         if(!map.getLayer('flight-range-ring-fill')) map.addLayer({id:'flight-range-ring-fill',type:'fill',source:'flight-range-ring',paint:{'fill-color':accentColor,'fill-opacity':0.06}});
         if(!map.getLayer('flight-range-ring-line')) map.addLayer({id:'flight-range-ring-line',type:'line',source:'flight-range-ring',paint:{'line-color':accentColor,'line-width':2,'line-opacity':0.85,'line-dasharray':[2,2]}});
+        if(!map.getSource('flight-route-line')) map.addSource('flight-route-line',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
+        if(!map.getLayer('flight-route-line-layer')) map.addLayer({id:'flight-route-line-layer',type:'line',source:'flight-route-line',paint:{'line-color':'#FBBF24','line-width':3,'line-opacity':0.92,'line-dasharray':[1.6,1.2]}});
+        if(!map.getSource('flight-route-points')) map.addSource('flight-route-points',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
+        if(!map.getLayer('flight-route-points-layer')) map.addLayer({id:'flight-route-points-layer',type:'circle',source:'flight-route-points',paint:{'circle-color':['case',['==',['get','idx'], activeWaypointIndex],'#22C55E','#F59E0B'],'circle-radius':['case',['==',['get','idx'], activeWaypointIndex],8,6],'circle-stroke-color':'#fff','circle-stroke-width':2}});
+        if(!map.getLayer('flight-route-point-labels')) map.addLayer({id:'flight-route-point-labels',type:'symbol',source:'flight-route-points',layout:{'text-field':['get','label'],'text-size':11,'text-offset':[0,1.1],'text-anchor':'top','text-allow-overlap':true},paint:{'text-color':'#F8FAFC','text-halo-color':'rgba(15,23,42,0.95)','text-halo-width':2}});
+        if(!map.getSource('flight-route-segments')) map.addSource('flight-route-segments',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
+        if(!map.getLayer('flight-route-segment-labels')) map.addLayer({id:'flight-route-segment-labels',type:'symbol',source:'flight-route-segments',layout:{'text-field':['get','label'],'text-size':11,'text-offset':[0,-0.7],'text-anchor':'bottom','text-allow-overlap':true},paint:{'text-color':'#FDE68A','text-halo-color':'rgba(15,23,42,0.96)','text-halo-width':2.1}});
       }catch(e){}
+      try{ map.off('click','flight-route-points-layer', handlePointPick); }catch(e){}
+      try{ map.off('click','flight-route-segment-labels', handleSegmentPick); }catch(e){}
+      try{ map.on('click','flight-route-points-layer', handlePointPick); }catch(e){}
+      try{ map.on('click','flight-route-segment-labels', handleSegmentPick); }catch(e){}
       try{
         if(!markerRef.current){
           const el=document.createElement('div');
@@ -5394,9 +5550,16 @@ function FlightTrackingMap({flightStatus,originAirport=null,destinationAirport=n
           }catch(e){}
           if(followRef.current){
             const now=Date.now();
-            if(now>=cameraHoldUntilRef.current && now-lastCameraRef.current>70){
-              lastCameraRef.current=now;
-              try{ liveMap.setCenter([pose.lon,pose.lat]); }catch(e){ try{ liveMap.jumpTo({center:[pose.lon,pose.lat]}); }catch(e2){} }
+            if(now>=cameraHoldUntilRef.current && now-lastCameraRef.current>850){
+              try{
+                const c=liveMap.getCenter();
+                const dLat=Math.abs(Number(c&&c.lat)-pose.lat);
+                const dLon=Math.abs(Number(c&&c.lng)-pose.lon);
+                if(dLat>0.00035 || dLon>0.00035){
+                  lastCameraRef.current=now;
+                  try{ liveMap.easeTo({center:[pose.lon,pose.lat],duration:110,essential:true}); }catch(e){ try{ liveMap.setCenter([pose.lon,pose.lat]); }catch(e2){ try{ liveMap.jumpTo({center:[pose.lon,pose.lat]}); }catch(e3){} } }
+                }
+              }catch(e){}
             }
           }
         }
@@ -5404,7 +5567,7 @@ function FlightTrackingMap({flightStatus,originAirport=null,destinationAirport=n
       animRef.current=requestAnimationFrame(step);
     };
     animRef.current=requestAnimationFrame(step);
-    return ()=>{ try{ if(animRef.current) cancelAnimationFrame(animRef.current); }catch(e){} try{ if(markerRef.current){ markerRef.current.remove(); markerRef.current=null; } }catch(e){} try{ map.remove(); }catch(e){} if(mapRef.current===map) mapRef.current=null; };
+    return ()=>{ try{ map.off('click', handleRouteClick); }catch(e){} try{ map.off('click','flight-route-points-layer', handlePointPick); }catch(e){} try{ map.off('click','flight-route-segment-labels', handleSegmentPick); }catch(e){} try{ if(animRef.current) cancelAnimationFrame(animRef.current); }catch(e){} try{ if(markerRef.current){ markerRef.current.remove(); markerRef.current=null; } }catch(e){} try{ map.remove(); }catch(e){} if(mapRef.current===map) mapRef.current=null; };
   },[mapType]);
 
   useEffect(()=>{
@@ -5415,7 +5578,20 @@ function FlightTrackingMap({flightStatus,originAirport=null,destinationAirport=n
 
   useEffect(()=>{
     const map=mapRef.current; if(!map||!map.isStyleLoaded()) return;
+    const geo=buildFlightRouteGeoJSON(routePoints);
+    try{ const src=map.getSource('flight-route-line'); if(src) src.setData(geo.lines); }catch(e){}
+    try{ const src=map.getSource('flight-route-points'); if(src) src.setData(geo.points); }catch(e){}
+    try{ const src=map.getSource('flight-route-segments'); if(src) src.setData(geo.segments); }catch(e){}
+    try{ if(map.getLayer('flight-route-points-layer')) map.setPaintProperty('flight-route-points-layer','circle-color',['case',['==',['get','idx'], activeWaypointIndex],'#22C55E','#F59E0B']); }catch(e){}
+    try{ if(map.getLayer('flight-route-points-layer')) map.setPaintProperty('flight-route-points-layer','circle-radius',['case',['==',['get','idx'], activeWaypointIndex],8,6]); }catch(e){}
+  },[JSON.stringify(routePoints), mapType, activeWaypointIndex]);
+
+  useEffect(()=>{
+    const map=mapRef.current; if(!map||!map.isStyleLoaded()) return;
     const trail=(Array.isArray(flightStatus&&flightStatus.trail)?flightStatus.trail:[]).filter(p=>Number.isFinite(Number(p.lat))&&Number.isFinite(Number(p.lon)));
+    const sig=`${showTrail?'1':'0'}:${trail.length}:${trail.length?`${Number(trail[trail.length-1].lat).toFixed(5)},${Number(trail[trail.length-1].lon).toFixed(5)}`:'none'}`;
+    if(lastTrailSigRef.current===sig) return;
+    lastTrailSigRef.current=sig;
     const trailFeatures=(showTrail && trail.length>1)?[{type:'Feature',geometry:{type:'LineString',coordinates:trail.map(p=>[Number(p.lon),Number(p.lat)])},properties:{}}]:[];
     try{ const src=map.getSource('flight-trail'); if(src) src.setData({type:'FeatureCollection',features:trailFeatures}); if(map.getLayer('flight-trail-line')) map.setPaintProperty('flight-trail-line','line-color',accentColor); }catch(e){}
   },[showTrail, JSON.stringify((flightStatus&&flightStatus.trail)||[]), mapType]);
@@ -5480,10 +5656,10 @@ function FlightTrackingMap({flightStatus,originAirport=null,destinationAirport=n
     }catch(e){}
   },[zoomRangeTick, rangeRingNm, flightStatus&&flightStatus.lat, flightStatus&&flightStatus.lon]);
 
-  return <div style={{position:'relative',flex:1,minHeight:700,height:'80vh',borderRadius:14,overflow:'hidden',background:'#08111f',border:'1px solid var(--bdr)'}}><div ref={wrapRef} style={{position:'absolute',inset:0}}/><div style={{position:'absolute',right:10,top:156,zIndex:20,pointerEvents:'none',background:'rgba(8,17,31,0.82)',backdropFilter:'blur(6px)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:10,padding:'6px 10px',fontSize:12,fontWeight:800,color:'#F8FAFC'}}>Zoom {mapZoomText}</div></div>;
+  return <div style={{position:'relative',flex:1,minHeight:700,height:'80vh',borderRadius:14,overflow:'hidden',background:'#08111f',border:'1px solid var(--bdr)'}}><div ref={wrapRef} style={{position:'absolute',inset:0,cursor:routeEditEnabled?'crosshair':''}}/><div style={{position:'absolute',right:10,top:156,zIndex:20,pointerEvents:'none',background:'rgba(8,17,31,0.82)',backdropFilter:'blur(6px)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:10,padding:'6px 10px',fontSize:12,fontWeight:800,color:'#F8FAFC'}}>Zoom {mapZoomText}</div>{routeEditEnabled?<div style={{position:'absolute',left:10,bottom:10,zIndex:20,background:'rgba(124,58,237,0.78)',border:'1px solid rgba(196,181,253,0.55)',borderRadius:999,padding:'6px 12px',fontSize:12,fontWeight:800,color:'#F5F3FF'}}>Route edit enabled · click map to add points</div>:null}</div>;
 }
 
-function FlightOpsScreen({addons,selectedAddon,setSelected,onOpenAddon,accent='var(--acc)'}){
+function FlightOpsScreen({addons,selectedAddon,setSelected,onOpenAddon,accent='var(--acc)',panelMode='flight'}){
   const [flightStatus,setFlightStatus]=useState(()=>({...FLIGHT_STATUS_DEFAULT}));
   const [busy,setBusy]=useState(false);
   const [followAircraft,setFollowAircraft]=useState(true);
@@ -5498,15 +5674,39 @@ function FlightOpsScreen({addons,selectedAddon,setSelected,onOpenAddon,accent='v
   const [stagedAircraftId,setStagedAircraftId]=useState(()=>localStorage.getItem('hangar_flight_aircraft_id')||'');
   const [notice,setNotice]=useState('');
   const [finderMode,setFinderMode]=useState('');
+  const [routeEditEnabled,setRouteEditEnabled]=useState(false);
+  const [flightRoutePoints,setFlightRoutePoints]=useState(()=>{ try{ const raw=JSON.parse(localStorage.getItem('hangar_flight_route_points')||'[]'); return Array.isArray(raw)?raw:[]; }catch(e){ return []; } });
+  const [savedFlightRoutes,setSavedFlightRoutes]=useState(()=>{ try{ const raw=JSON.parse(localStorage.getItem('hangar_flight_saved_routes')||'[]'); return Array.isArray(raw)?raw:[]; }catch(e){ return []; } });
+  const [selectedFlightRouteId,setSelectedFlightRouteId]=useState(()=>localStorage.getItem('hangar_flight_selected_route_id')||'');
+  const [flightRouteName,setFlightRouteName]=useState(()=>localStorage.getItem('hangar_flight_route_name')||'');
+  const [controllerAltitudeFt,setControllerAltitudeFt]=useState(()=>Number(localStorage.getItem('hangar_flight_controller_altitude')||'3500')||3500);
+  const [controllerSpeedKt,setControllerSpeedKt]=useState(()=>Number(localStorage.getItem('hangar_flight_controller_speed')||'140')||140);
+  const [controllerHeadingDeg,setControllerHeadingDeg]=useState(()=>Number(localStorage.getItem('hangar_flight_controller_heading')||'0')||0);
+  const [controllerLoop,setControllerLoop]=useState(()=>localStorage.getItem('hangar_flight_controller_loop')==='1');
+  const [weatherRefreshTick,setWeatherRefreshTick]=useState(0);
+  const [flightWeather,setFlightWeather]=useState(null);
+  const [flightWeatherStatus,setFlightWeatherStatus]=useState('');
+  const [showFlightWeatherPanel,setShowFlightWeatherPanel]=useState(true);
+  const [routeJumpIndex,setRouteJumpIndex]=useState(-1);
+  const [virtualPilotMode,setVirtualPilotMode]=useState('standby');
   const [centerTick,setCenterTick]=useState(0);
   const [zoomAircraftTick,setZoomAircraftTick]=useState(0);
   const [zoomRangeTick,setZoomRangeTick]=useState(0);
+  const [pidTestConfig,setPidTestConfig]=useState({modes:[],notes:[]});
+  const [weAreFlyingConfig,setWeAreFlyingConfig]=useState({modes:[],notes:[]});
+  const [virtualPilotConfig,setVirtualPilotConfig]=useState({modes:[],notes:[]});
+  const [pauseBusy,setPauseBusy]=useState(false);
+  const pauseIntentRef=useRef(null);
+  const isPidTest=panelMode==='pid';
+  const isVirtualPilot=panelMode==='virtualpilot';
+  const isPomaxTest=panelMode==='pomax' || isVirtualPilot;
+  const isTestScreen=isPidTest||isPomaxTest;
   useEffect(()=>{ if(/Starting SimConnect worker/i.test(String(notice||''))) setNotice(''); },[notice]);
   const aircraft=useMemo(()=>addons.filter(a=>addonTypeFor(a)==='Aircraft'),[addons]);
   const stagedAircraft=useMemo(()=>aircraft.find(a=>String(a.id)===String(stagedAircraftId)) || ((selectedAddon&&addonTypeFor(selectedAddon)==='Aircraft')?selectedAddon:null),[aircraft,stagedAircraftId,selectedAddon&&selectedAddon.id]);
   const liveAircraftAddon=useMemo(()=>{ const norm=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim(); const title=norm(flightStatus&&flightStatus.aircraft_title); const icao=norm(flightStatus&&flightStatus.aircraft_icao); if(!title && !icao) return null; const titleWords=title.split(/\s+/).filter(Boolean); return aircraft.find(a=>{ const parts=[a.title,a.manufacturer,(a.rw&&a.rw.model),(a.rw&&a.rw.icao),a.sub,(a.rw&&a.rw.category),(a.rw&&a.rw.engine_type)].map(norm).filter(Boolean); const joined=parts.join(' '); const score=(icao&&parts.some(tok=>tok===icao||tok.includes(icao)||icao.includes(tok))?6:0) + (title&&parts.some(tok=> tok===title || title.includes(tok) || tok.includes(title))?5:0) + titleWords.filter(w=>w.length>2 && joined.includes(w)).length; return score>=3; })||null; },[aircraft, flightStatus&&flightStatus.aircraft_title, flightStatus&&flightStatus.aircraft_icao]);
   const refreshStatus=useCallback(async()=>{
-    try{ const r=await fetch('/api/flight/status'); const data=await r.json(); setFlightStatus({...FLIGHT_STATUS_DEFAULT, ...(data||{})}); }catch(e){ setFlightStatus({...FLIGHT_STATUS_DEFAULT, connected:false, available:false, last_error:e.message||'Unable to reach flight service.'}); }
+    try{ const r=await fetch('/api/flight/status'); const data=await r.json(); if(data && data.pause_state) pauseIntentRef.current=null; setFlightStatus({...FLIGHT_STATUS_DEFAULT, ...(data||{})}); }catch(e){ setFlightStatus({...FLIGHT_STATUS_DEFAULT, connected:false, available:false, last_error:e.message||'Unable to reach flight service.'}); }
   },[]);
   useEffect(()=>{ refreshStatus(); const t=setInterval(refreshStatus, 600); return ()=>clearInterval(t); },[refreshStatus]);
   useEffect(()=>{ fetch('/api/flight/logs').then(r=>r.ok?r.json():{items:[]}).then(d=>setFlightLogs(Array.isArray(d.items)?d.items:[])).catch(()=>{}); },[flightStatus&&flightStatus.connected]);
@@ -5515,6 +5715,16 @@ function FlightOpsScreen({addons,selectedAddon,setSelected,onOpenAddon,accent='v
   useEffect(()=>{ localStorage.setItem('hangar_flight_map_type', mapType||'satellite'); },[mapType]);
   useEffect(()=>{ localStorage.setItem('hangar_flight_origin_obj', JSON.stringify(stagedOrigin||null)); },[stagedOrigin]);
   useEffect(()=>{ localStorage.setItem('hangar_flight_destination_obj', JSON.stringify(stagedDestination||null)); },[stagedDestination]);
+  useEffect(()=>{ localStorage.setItem('hangar_flight_route_points', JSON.stringify(flightRoutePoints||[])); },[flightRoutePoints]);
+  useEffect(()=>{ localStorage.setItem('hangar_flight_saved_routes', JSON.stringify(savedFlightRoutes||[])); },[savedFlightRoutes]);
+  useEffect(()=>{ localStorage.setItem('hangar_flight_route_name', flightRouteName||''); },[flightRouteName]);
+  useEffect(()=>{ localStorage.setItem('hangar_flight_selected_route_id', selectedFlightRouteId||''); },[selectedFlightRouteId]);
+  useEffect(()=>{ localStorage.setItem('hangar_flight_controller_altitude', String(controllerAltitudeFt||'')); },[controllerAltitudeFt]);
+  useEffect(()=>{ localStorage.setItem('hangar_flight_controller_speed', String(controllerSpeedKt||'')); },[controllerSpeedKt]);
+  useEffect(()=>{ localStorage.setItem('hangar_flight_controller_heading', String(controllerHeadingDeg||'')); },[controllerHeadingDeg]);
+  useEffect(()=>{ localStorage.setItem('hangar_flight_controller_loop', controllerLoop?'1':'0'); },[controllerLoop]);
+  useEffect(()=>{ if(!isPidTest) return; let cancelled=false; fetch('/api/flying-test/config').then(r=>r.ok?r.json():null).then(data=>{ if(!cancelled && data) setPidTestConfig(data); }).catch(()=>{}); return ()=>{ cancelled=true; }; },[isPidTest]);
+  useEffect(()=>{ if(isVirtualPilot){ let cancelled=false; fetch('/api/virtual-pilot/config').then(r=>r.ok?r.json():null).then(data=>{ if(!cancelled && data) setVirtualPilotConfig(data); }).catch(()=>{}); return ()=>{ cancelled=true; }; } if(!isPomaxTest) return; let cancelled=false; fetch('/api/we-are-flying/config').then(r=>r.ok?r.json():null).then(data=>{ if(!cancelled && data) setWeAreFlyingConfig(data); }).catch(()=>{}); return ()=>{ cancelled=true; }; },[isPomaxTest,isVirtualPilot]);
   const connect=async()=>{ setBusy(true); setNotice(''); try{ const data=await fetchJsonSafe('/api/flight/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({poll_interval:pollInterval})}); setFlightStatus({...FLIGHT_STATUS_DEFAULT, ...(data||{})}); if(data&&data.connected) setNotice('Connected to SimConnect.'); else if(data&&data.state==='connecting') setNotice(''); else if(data&&data.last_error) setNotice(extractErrorMessage(data.last_error)); else setNotice((data&&data.status_message)||'Connect request sent.'); await refreshStatus(); setTimeout(()=>refreshStatus(),700); setTimeout(()=>refreshStatus(),1800); }catch(e){ setNotice(extractErrorMessage(e)||'Connection failed.'); } finally{ setBusy(false); } };
   const disconnect=async()=>{ setBusy(true); setNotice(''); try{ const data=await fetchJsonSafe('/api/flight/disconnect',{method:'POST'}); setFlightStatus({...FLIGHT_STATUS_DEFAULT, ...(data||{})}); setNotice((data&&data.status_message)||'Disconnected.'); await refreshStatus(); }catch(e){ setNotice(extractErrorMessage(e)||'Disconnect failed.'); } finally{ setBusy(false); } };
   const savePolling=async()=>{ setBusy(true); setNotice(''); try{ const data=await fetchJsonSafe('/api/flight/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({poll_interval:pollInterval})}); setFlightStatus(prev=>({...FLIGHT_STATUS_DEFAULT, ...(prev||{}), ...(data||{})})); await refreshStatus(); setNotice((data&&data.status_message)||'Polling interval saved.'); }catch(e){ setNotice(extractErrorMessage(e)||'Could not save polling interval.'); } finally{ setBusy(false); } };
@@ -5527,14 +5737,83 @@ function FlightOpsScreen({addons,selectedAddon,setSelected,onOpenAddon,accent='v
   const liveRangeNm=parseRangeNmValue(flightStatus&&flightStatus.range_remaining_nm);
   const displayRangeNm=(liveRangeNm!==null && liveRangeNm>0)?liveRangeNm:matchedRangeNm;
   const rangeRingNm=showRangeRing ? (((flightStatus&&flightStatus.on_ground) || Number(flightStatus&&flightStatus.ground_speed_kt||0)<25) ? matchedRangeNm : ((liveRangeNm!==null && liveRangeNm>0)?liveRangeNm:matchedRangeNm)) : 0;
+  const routeTotalNm=useMemo(()=>computeFlightRouteTotalNm(flightRoutePoints),[flightRoutePoints]);
+  const activeRouteWaypointIndex=useMemo(()=>{ const idx=Number(flightStatus&&flightStatus.route_controller&&flightStatus.route_controller.current_index); return Number.isFinite(idx) ? Math.max(0, Math.min(idx, Math.max(0, (flightRoutePoints||[]).length-1))) : (routeJumpIndex>=0?routeJumpIndex:-1); },[flightStatus&&flightStatus.route_controller&&flightStatus.route_controller.current_index, flightRoutePoints, routeJumpIndex]);
+  const addFlightRoutePoint=useCallback((pt)=>{ if(!pt || !Number.isFinite(Number(pt.lat)) || !Number.isFinite(Number(pt.lon))) return; setFlightRoutePoints(prev=>[...(Array.isArray(prev)?prev:[]), {lat:Number(pt.lat), lon:Number(pt.lon)}]); },[]);
+  const undoFlightRoutePoint=useCallback(()=>setFlightRoutePoints(prev=>(Array.isArray(prev)&&prev.length)?prev.slice(0,-1):[]),[]);
+  const clearFlightRoute=useCallback(()=>{ setRouteJumpIndex(-1); setFlightRoutePoints([]); },[]);
+  const saveFlightRoute=useCallback(()=>{ const pts=(Array.isArray(flightRoutePoints)?flightRoutePoints:[]).filter(p=>Number.isFinite(Number(p&&p.lat))&&Number.isFinite(Number(p&&p.lon))); if(pts.length<2){ setNotice('Add at least two route points before saving a flight route.'); return; } const name=String(flightRouteName||'').trim() || `Flight Route ${new Date().toLocaleString()}`; const existingId=String(selectedFlightRouteId||'').trim(); const entry={id:existingId || `route_${Date.now()}`,name,points:pts,total_nm:routeTotalNm,updated_at:new Date().toISOString()}; setSavedFlightRoutes(prev=>[entry,...(Array.isArray(prev)?prev.filter(r=>String(r.id||'')!==entry.id && String(r.name||'').trim().toLowerCase()!==name.toLowerCase()):[])].slice(0,40)); setSelectedFlightRouteId(entry.id); setFlightRouteName(name); setNotice(`${existingId?'Updated':'Saved'} flight route “${entry.name}”.`); },[flightRoutePoints,routeTotalNm,flightRouteName,selectedFlightRouteId]);
+  const loadFlightRoute=useCallback((routeId)=>{ setSelectedFlightRouteId(routeId||''); const src=(Array.isArray(savedFlightRoutes)?savedFlightRoutes:[]).find(r=>String(r.id)===String(routeId||'')); if(src && Array.isArray(src.points)){ setRouteJumpIndex(-1); setFlightRoutePoints(src.points); setFlightRouteName(String(src.name||'')); setNotice(`Loaded flight route “${src.name||'Route'}”.`); } },[savedFlightRoutes]);
+  useEffect(()=>{ if(!(savedFlightRoutes||[]).length) return; if(!(selectedFlightRouteId||'').trim()) return; const hasPoints=Array.isArray(flightRoutePoints) && flightRoutePoints.length>0; if(hasPoints) return; const src=(Array.isArray(savedFlightRoutes)?savedFlightRoutes:[]).find(r=>String(r.id)===String(selectedFlightRouteId||'')); if(src && Array.isArray(src.points)){ setFlightRoutePoints(src.points); if(src.name) setFlightRouteName(String(src.name||'')); } },[savedFlightRoutes, selectedFlightRouteId]);
+  const flightWeatherQueryKey=useMemo(()=>{ const lat=Number(flightStatus&&flightStatus.lat), lon=Number(flightStatus&&flightStatus.lon); if(!Number.isFinite(lat)||!Number.isFinite(lon)||!(flightStatus&&flightStatus.connected)) return ''; return `${lat.toFixed(3)}|${lon.toFixed(3)}|${weatherRefreshTick}`; },[flightStatus&&flightStatus.lat, flightStatus&&flightStatus.lon, flightStatus&&flightStatus.connected, weatherRefreshTick]);
+  useEffect(()=>{ if(!flightWeatherQueryKey){ setFlightWeather(null); setFlightWeatherStatus((flightStatus&&flightStatus.connected)?'Waiting for aircraft position…':'Connect to SimConnect to load current weather.'); return; } let cancelled=false; const lat=Number(flightStatus&&flightStatus.lat), lon=Number(flightStatus&&flightStatus.lon); setFlightWeatherStatus('Loading nearby METAR weather…'); fetch(`/api/flight/weather?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`).then(async r=>{ const data=await r.json().catch(()=>({})); if(!r.ok) throw new Error((data&&data.detail)||'Weather request failed'); return data; }).then(data=>{ if(cancelled) return; setFlightWeather(data||null); setFlightWeatherStatus(''); }).catch(err=>{ if(cancelled) return; setFlightWeather(null); setFlightWeatherStatus(err&&err.message?String(err.message):'Weather unavailable.'); }); return ()=>{ cancelled=true; }; },[flightWeatherQueryKey]);
+  const runFlightCommand=useCallback(async(command, successMessage='Command sent.')=>{ try{ const data=await fetchJsonSafe('/api/flight/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command})}); if(data&&data.ok){ setNotice(successMessage); } else { setNotice((data&&data.message)||'Flight command was not accepted.'); } refreshStatus(); if(String(command||'').startsWith('pause_')){ setTimeout(()=>refreshStatus(),180); setTimeout(()=>refreshStatus(),650); } }catch(e){ setNotice(extractErrorMessage(e)||'Flight command failed.'); } },[refreshStatus]);
+  const repositionToPoint=useCallback(async(point, label='Selected point')=>{ if(!(point&&Number.isFinite(Number(point.lat))&&Number.isFinite(Number(point.lon)))){ setNotice('Choose a valid route point first.'); return; } try{ const data=await fetchJsonSafe('/api/flight/reposition',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lat:Number(point.lat),lon:Number(point.lon),altitude_ft:Number(controllerAltitudeFt)||undefined,heading_deg:Number(controllerHeadingDeg)||undefined,speed_kt:Number(controllerSpeedKt)||undefined})}); if(data&&data.ok){ setNotice(`${label} reposition command sent.`); } else { setNotice((data&&data.message)||'Reposition command failed.'); } refreshStatus(); setWeatherRefreshTick(Date.now()); }catch(e){ setNotice(extractErrorMessage(e)||'Reposition failed.'); } },[controllerAltitudeFt,controllerHeadingDeg,controllerSpeedKt,refreshStatus]);
+  const jumpToRouteWaypoint=useCallback(async(idx, sourceLabel='route point')=>{ const pts=(Array.isArray(flightRoutePoints)?flightRoutePoints:[]); const safeIdx=Math.max(0, Math.min(Number(idx)||0, Math.max(0, pts.length-1))); if(!pts.length){ setNotice('Build or load a route first.'); return; } try{ const data=await fetchJsonSafe('/api/flight/route/jump',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({waypoint_index:safeIdx})}); setRouteJumpIndex(safeIdx); if(data&&data.ok){ setNotice((data&&data.message)||`Jumped to ${sourceLabel}.`); } else { setNotice((data&&data.message)||`Could not jump to ${sourceLabel}.`); } refreshStatus(); setWeatherRefreshTick(Date.now()); }catch(e){ setNotice(extractErrorMessage(e)||`Could not jump to ${sourceLabel}.`); } },[flightRoutePoints, refreshStatus]);
+  const startRouteController=useCallback(async()=>{ const pts=(Array.isArray(flightRoutePoints)?flightRoutePoints:[]).filter(p=>Number.isFinite(Number(p&&p.lat))&&Number.isFinite(Number(p&&p.lon))); if(pts.length<2){ setNotice('Add at least two route points before starting Auto Fly.'); return; } try{ const data=await fetchJsonSafe('/api/flight/route/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:pts,altitude_ft:Number(controllerAltitudeFt)||undefined,speed_kt:Number(controllerSpeedKt)||undefined,heading_deg:Number(controllerHeadingDeg)||undefined,loop:controllerLoop===true,control_mode:isVirtualPilot?'pomax-law':(isPomaxTest?'pomax-law':(isPidTest?'virtual-surface':'ap-guidance'))})}); if(data&&data.ok){ setRouteJumpIndex(1); setNotice((data&&data.message)||((isPomaxTest?'We are-Flying test started.':(isPidTest?'PID Test started.':'Auto Fly started.')))); } else { setNotice((data&&data.message)||'Auto Fly could not start.'); } refreshStatus(); }catch(e){ setNotice(extractErrorMessage(e)||'Auto Fly start failed.'); } },[flightRoutePoints,controllerAltitudeFt,controllerSpeedKt,controllerHeadingDeg,controllerLoop,refreshStatus,isPidTest,isPomaxTest]);
+  const stopRouteController=useCallback(async()=>{ try{ const data=await fetchJsonSafe('/api/flight/route/stop',{method:'POST'}); if(data&&data.ok){ setNotice((data&&data.message)||'Auto Fly stopped.'); } else { setNotice((data&&data.message)||'Stop command failed.'); } refreshStatus(); }catch(e){ setNotice(extractErrorMessage(e)||'Auto Fly stop failed.'); } },[refreshStatus]);
   const chooseAirport=(item)=>{ if(finderMode==='origin') setStagedOrigin(item); else if(finderMode==='destination') setStagedDestination(item); setFinderMode(''); };
   const nearestAirportLabel=(stagedOrigin&&stagedDestination)?`${stagedOrigin.icao||''} → ${stagedDestination.icao||''}`:(stagedOrigin?(stagedOrigin.icao||stagedOrigin.name||''):stagedDestination?(stagedDestination.icao||stagedDestination.name||''):'—');
+  const isPaused=String(flightStatus&&flightStatus.pause_state||'').toLowerCase()==='paused';
+  const effectivePaused=(pauseBusy && pauseIntentRef.current!==null)?!!pauseIntentRef.current:isPaused;
+  const routeControllerMode=String(flightStatus&&flightStatus.route_controller&&flightStatus.route_controller.control_mode || '').toLowerCase() || (isPomaxTest?'pomax-law':(isPidTest?'virtual-surface':'ap-guidance'));
+  const testScreenTitle=isVirtualPilot?'Virtual Pilot':(isPomaxTest?'We are-Flying Test':'PID Test');
+  const testIntro=isPomaxTest?'Map-first virtual pilot harness inspired by the are-we-flying path-policy approach: custom line following, own virtual pilot, and no stock HDG/NAV autopilot dependency.':'Gemini-inspired PID/control-surface harness for tuning smoothness, straight-line tracking, and route-follow stability.';
+  const testConfig=isVirtualPilot?virtualPilotConfig:(isPomaxTest?weAreFlyingConfig:pidTestConfig);
+  const runPauseCommand=useCallback(async(desiredPaused)=>{ if(pauseBusy) return; pauseIntentRef.current=!!desiredPaused; setPauseBusy(true); setFlightStatus(prev=>({...FLIGHT_STATUS_DEFAULT, ...(prev||{}), pause_state: desiredPaused?'paused':'running', session_state: desiredPaused?'paused':(((prev||{}).session_state==='paused')?'cruise':(prev||{}).session_state)})); try{ const data=await fetchJsonSafe('/api/flight/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:desiredPaused?'pause_on':'pause_off'})}); if(data&&data.status) setFlightStatus({...FLIGHT_STATUS_DEFAULT, ...(data.status||{})}); if(data&&data.ok){ setNotice(desiredPaused?'Pause command sent. Waiting for simulator confirmation…':'Resume command sent. Waiting for simulator confirmation…'); } else { pauseIntentRef.current=null; setNotice((data&&data.message)||'Pause command was not accepted by the simulator.'); } }catch(e){ pauseIntentRef.current=null; setNotice(extractErrorMessage(e)||'Pause command failed.'); } finally{ refreshStatus(); setTimeout(()=>refreshStatus(),220); setTimeout(()=>refreshStatus(),700); setTimeout(()=>{ pauseIntentRef.current=null; setPauseBusy(false); },900); } },[pauseBusy,refreshStatus,isPidTest,isPomaxTest]);
+  if(isTestScreen){ return <div style={{padding:16,height:'100%',overflow:'hidden'}}>
+    <div style={{display:'grid',gridTemplateColumns:'340px minmax(0,1fr)',gap:12,height:'100%',minWidth:0}}>
+      <div style={{display:'grid',gap:12,alignContent:'start',overflow:'auto',paddingRight:6}}>
+        <div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:14,padding:'10px 12px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:8}}><div style={{fontSize:16,fontWeight:900,color:'var(--t0)'}}>{testScreenTitle}</div><div style={{fontSize:11,fontWeight:800,color:statusTone}}>{statusLabel}</div></div>
+          <div style={{fontSize:11,color:'var(--t2)',lineHeight:1.55,marginBottom:10}}>{testIntro}</div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><Btn label={busy?'Working…':'Connect'} color='var(--grn)' sm onClick={connect}/><Btn label='Disconnect' color='var(--red)' sm onClick={disconnect}/><Btn label='Refresh' color='var(--acc)' sm onClick={refreshStatus}/></div>
+          {notice && !/Starting SimConnect worker/i.test(String(notice)) ? <div style={{fontSize:11,color:'var(--amb)',marginTop:8,lineHeight:1.5,whiteSpace:'pre-wrap'}}>{extractErrorMessage(notice)}</div> : null}
+          {flightStatus&&flightStatus.last_error ? <div style={{fontSize:11,color:'var(--red)',marginTop:8,lineHeight:1.5,whiteSpace:'pre-wrap'}}>{extractErrorMessage(flightStatus.last_error)}</div> : null}
+        </div>
+        <div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:14,padding:'10px 12px'}}>
+          <div style={{fontSize:13,fontWeight:800,color:'var(--t0)',marginBottom:8}}>Controller</div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:8,marginBottom:10}}>
+            <div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:10,padding:'8px 10px'}}><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.07em'}}>Mode</div><div style={{fontSize:12,fontWeight:800,color:'var(--t0)'}}>{routeControllerMode || 'virtual-direct'}</div></div>
+            <div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:10,padding:'8px 10px'}}><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.07em'}}>State</div><div style={{fontSize:12,fontWeight:800,color:'var(--t0)'}}>{(flightStatus&&flightStatus.route_controller&&flightStatus.route_controller.phase)||'idle'}</div></div>
+            <div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:10,padding:'8px 10px'}}><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.07em'}}>Target Altitude</div><div style={{fontSize:12,fontWeight:800,color:'var(--t0)'}}>{formatNumber(controllerAltitudeFt,0,' ft')}</div></div>
+            <div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:10,padding:'8px 10px'}}><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.07em'}}>Virtual Speed</div><div style={{fontSize:12,fontWeight:800,color:'var(--t0)'}}>{formatNumber(controllerSpeedKt,0,' kt')}</div></div>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:8,marginBottom:10}}>
+            <input type='number' value={controllerAltitudeFt} onChange={e=>setControllerAltitudeFt(Number(e.target.value)||0)} style={{background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:8,padding:'7px 9px',color:'var(--t0)'}} title='Target altitude'/>
+            <input type='number' value={controllerSpeedKt} onChange={e=>setControllerSpeedKt(Number(e.target.value)||0)} style={{background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:8,padding:'7px 9px',color:'var(--t0)'}} title='Virtual speed'/>
+            <label style={{display:'inline-flex',alignItems:'center',gap:8,fontSize:12,color:'var(--t1)',fontWeight:700,background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:8,padding:'7px 9px'}}><input type='checkbox' checked={controllerLoop} onChange={e=>setControllerLoop(e.target.checked)}/> Loop route</label>
+          </div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}><Btn label='Fly route' color='var(--grn)' sm onClick={startRouteController}/><Btn label='Stop' color='var(--red)' sm onClick={stopRouteController}/><Btn label={pauseBusy ? 'Working…' : (effectivePaused?'Unpause':'Pause Sim')} color={effectivePaused?'var(--grn)':'var(--red)'} sm onClick={()=>runPauseCommand(!effectivePaused)}/></div>
+          <div style={{fontSize:11,color:'var(--t2)',lineHeight:1.55}}>{(flightStatus&&flightStatus.route_controller&&flightStatus.route_controller.message)||'No active route controller.'}</div>
+        </div>
+        <div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:14,padding:'10px 12px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:8}}><div style={{fontSize:13,fontWeight:800,color:'var(--t0)'}}>Route Plan</div><div style={{fontSize:12,fontWeight:800,color:'var(--acc)'}}>{formatNumber(routeTotalNm,1,' nm')}</div></div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}><Btn label={routeEditEnabled?'Map click: On':'Map click: Off'} color={routeEditEnabled?'var(--grn)':'var(--t2)'} sm onClick={()=>setRouteEditEnabled(v=>!v)}/><Btn label='Undo' color='var(--t2)' sm onClick={undoFlightRoutePoint}/><Btn label='Clear' color='var(--t2)' sm onClick={clearFlightRoute}/><Btn label='Save route' color='var(--acc)' sm onClick={saveFlightRoute}/><label style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:12,color:'#E2E8F0',fontWeight:700,padding:'0 4px'}}><input type='checkbox' checked={showTrail} onChange={e=>setShowTrail(e.target.checked)}/> Trail</label></div>
+          <div style={{display:'grid',gap:8,marginBottom:8}}><input value={flightRouteName} onChange={e=>setFlightRouteName(e.target.value)} placeholder='Saved route name' style={{width:'100%',background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:8,padding:'7px 9px',color:'var(--t0)'}}/><div style={{display:'flex',gap:8,alignItems:'center'}}><select value={selectedFlightRouteId} onChange={e=>setSelectedFlightRouteId(e.target.value)} style={{flex:1,background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:8,padding:'7px 9px',color:'var(--t0)',fontSize:12}}><option value=''>Load saved route…</option>{(savedFlightRoutes||[]).map(r=><option key={r.id} value={r.id}>{r.name}{Number(r&&r.total_nm)>0?` • ${formatDistanceFromNm(Number(r.total_nm),1)}`:''}</option>)}</select><Btn label='Load onto map' color='var(--acc)' sm onClick={()=>loadFlightRoute(selectedFlightRouteId)}/></div></div>
+          <div style={{display:'grid',gap:6,maxHeight:280,overflow:'auto'}}>{(flightRoutePoints||[]).map((pt,idx)=>{ const prev=(flightRoutePoints||[])[idx-1]; const leg=prev?(haversineMeters([Number(prev.lon),Number(prev.lat)],[Number(pt.lon),Number(pt.lat)])/1852):null; const active=idx===activeRouteWaypointIndex; return <button key={`route_${idx}`} onClick={()=>jumpToRouteWaypoint(idx, `waypoint ${idx+1}`)} style={{textAlign:'left',background:active?'rgba(56,189,248,0.16)':'var(--bg1)',border:active?'1px solid rgba(56,189,248,0.55)':'1px solid var(--bdr)',borderRadius:10,padding:'8px 10px',cursor:'pointer',color:'inherit'}}><div style={{display:'flex',justifyContent:'space-between',gap:8}}><div style={{fontSize:12,fontWeight:800,color:'var(--t0)'}}>Waypoint {idx+1}</div><div style={{fontSize:11,fontWeight:800,color:active?'var(--acc)':'var(--t2)'}}>{leg===null?'START':formatNumber(leg,1,' nm')}</div></div><div style={{fontSize:11,color:'var(--t2)',marginTop:3}}>{formatNumber(pt&&pt.lat,4,'')} , {formatNumber(pt&&pt.lon,4,'')}</div></button>; })}{!(flightRoutePoints||[]).length ? <div style={{fontSize:12,color:'var(--t2)'}}>Build or load a route, then click Fly route. Click any waypoint row to jump directly there.</div> : null}</div>
+        </div>
+      </div>
+      <div style={{position:'relative',minWidth:0,minHeight:0,overflow:'hidden',border:'1px solid var(--bdr)',borderRadius:16,background:'var(--bg1)'}}>
+        <div style={{position:'absolute',top:10,left:10,right:10,zIndex:9,display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',background:'rgba(8,17,31,0.58)',backdropFilter:'blur(6px)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:12,padding:'8px 10px'}}>
+          <div style={{fontSize:12,fontWeight:900,color:'#F8FAFC'}}>{testScreenTitle}</div>
+          <label style={{display:'inline-flex',alignItems:'center',gap:8,fontSize:12,color:'#E2E8F0',fontWeight:700}}><input type='checkbox' checked={followAircraft} onChange={e=>setFollowAircraft(e.target.checked)}/> Center map on plane</label>
+          <label style={{display:'inline-flex',alignItems:'center',gap:8,fontSize:12,color:'#E2E8F0',fontWeight:700}}><input type='checkbox' checked={routeEditEnabled} onChange={e=>setRouteEditEnabled(e.target.checked)}/> Edit path by map click</label>
+          <Btn label='Center' color='var(--acc)' sm onClick={()=>setCenterTick(Date.now())}/><Btn label='Zoom plane' color='var(--acc)' sm onClick={()=>setZoomAircraftTick(Date.now())}/><Btn label='Zoom route' color='var(--acc)' sm onClick={()=>setZoomRangeTick(Date.now())}/>
+          <div style={{marginLeft:'auto',fontSize:11,fontWeight:800,color:'#E2E8F0'}}>{isPomaxTest?'Virtual pilot • path-policy mode':'Virtual pilot • PID surface mode'}</div>
+        </div>
+        <FlightTrackingMap flightStatus={flightStatusView||{}} originAirport={null} destinationAirport={null} accent={accent} followAircraft={followAircraft} showTrail={showTrail} mapType={mapType} rangeRingNm={0} centerTick={centerTick} zoomAircraftTick={zoomAircraftTick} zoomRangeTick={zoomRangeTick} markerColor='#111111' aircraftTypeHint={String((liveAircraftAddon&&((liveAircraftAddon.title||'')+' '+(liveAircraftAddon.manufacturer||'')+' '+(liveAircraftAddon.sub||''))) || '')} routePoints={flightRoutePoints} routeEditEnabled={routeEditEnabled} onRouteMapClick={addFlightRoutePoint} onRoutePointPick={(idx)=>jumpToRouteWaypoint(idx, `waypoint ${idx+1}`)} onRouteSegmentPick={(idx)=>jumpToRouteWaypoint(idx, `leg ${idx}`)} activeWaypointIndex={activeRouteWaypointIndex}/>
+        <div style={{position:'absolute',top:74,right:14,zIndex:8,width:146,pointerEvents:'none'}}><div style={{background:'rgba(15,23,42,0.86)',backdropFilter:'blur(6px)',border:'1px solid rgba(255,255,255,0.14)',borderRadius:18,padding:'10px 10px 8px',boxShadow:'0 18px 40px rgba(0,0,0,0.35)'}}><CompassRose headingDeg={flightStatus&&flightStatus.heading_deg} targetHeadingDeg={flightStatus&&flightStatus.controller_target&&flightStatus.controller_target.heading_deg} size={108}/><div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:8,marginTop:10}}><div style={{textAlign:'center'}}><div style={{fontSize:10,color:'rgba(226,232,240,0.72)',textTransform:'uppercase'}}>HDG</div><div style={{fontSize:16,fontWeight:900,color:'#F8FAFC'}}>{formatNumber(flightStatus&&flightStatus.heading_deg,0,'°')}</div></div><div style={{textAlign:'center'}}><div style={{fontSize:10,color:'rgba(226,232,240,0.72)',textTransform:'uppercase'}}>Target</div><div style={{fontSize:16,fontWeight:900,color:'#86EFAC'}}>{formatNumber(flightStatus&&flightStatus.controller_target&&flightStatus.controller_target.heading_deg,0,'°')}</div></div><div style={{textAlign:'center'}}><div style={{fontSize:10,color:'rgba(226,232,240,0.72)',textTransform:'uppercase'}}>GS</div><div style={{fontSize:16,fontWeight:900,color:'#F8FAFC'}}>{formatNumber(flightStatus&&flightStatus.ground_speed_kt,0,' kt')}</div></div></div></div></div>
+        <div style={{position:'absolute',left:12,bottom:12,zIndex:8,maxWidth:440,background:'rgba(8,17,31,0.60)',backdropFilter:'blur(6px)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:12,padding:'8px 10px',color:'#E2E8F0',fontSize:11,lineHeight:1.55}}>{isVirtualPilot?'This is the Pomax-port branch: one Virtual Pilot screen with AP toggles, a navigation map, and one active path-policy controller.':(isPomaxTest?'This screen borrows the map-first, own-virtual-pilot idea: waypoint policy, turn anticipation, and custom control laws instead of stock NAV/HDG modes.':'This screen keeps the Gemini-style PID/control-surface approach for comparison against the We are-Flying path-policy harness.')}</div>
+      </div>
+    </div>
+  </div>; }
   return <div style={{padding:16,height:'100%',overflow:'hidden'}}>
     {finderMode&&<AirportFinderModal label={finderMode==='origin'?'Choose Departure Airport':'Choose Destination Airport'} onClose={()=>setFinderMode('')} onPick={chooseAirport}/>} 
-    <div style={{display:'grid',gridTemplateColumns:'minmax(300px,350px) minmax(0,1fr)',gap:12,alignItems:'start',height:'100%'}}>
-      <div style={{display:'grid',gap:12,alignContent:'start',maxHeight:'calc(100vh - 120px)',overflowY:'auto',paddingRight:4}}>
+    <div style={{display:'flex',gap:12,alignItems:'stretch',height:'100%',minWidth:0}}>
+      <div style={{display:'grid',gap:12,alignContent:'start',width:isTestScreen?420:360,minWidth:300,maxWidth:620,maxHeight:'calc(100vh - 120px)',overflow:'auto',paddingRight:6,resize:'horizontal'}}>
         <div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:14,padding:'8px 10px'}}>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}><div style={{fontSize:16,fontWeight:800,color:'var(--t0)'}}>Flight</div><div style={{fontSize:11,fontWeight:800,color:statusTone}}>{statusLabel}</div></div>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}><div style={{fontSize:16,fontWeight:800,color:'var(--t0)'}}>{isTestScreen?testScreenTitle:'Flight'}</div><div style={{fontSize:11,fontWeight:800,color:statusTone}}>{statusLabel}</div></div>
           <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}><Btn label={busy?'Working…':'Connect'} color='var(--grn)' sm onClick={connect}/><Btn label='Disconnect' color='var(--red)' sm onClick={disconnect}/><Btn label='Refresh Telemetry' color='var(--acc)' sm onClick={refreshStatus}/></div>
           <div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:8,alignItems:'center',marginBottom:10}}><div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:11,color:'var(--t2)',fontWeight:800}}>Poll interval (sec):</span><input type='number' min='0.4' max='5' step='0.2' value={pollInterval} onChange={e=>setPollInterval(Number(e.target.value)||1)} style={{width:88,background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:8,padding:'7px 9px',color:'var(--t0)'}}/><Btn label='Save' color='var(--acc)' sm onClick={savePolling}/></div><select value={mapType} onChange={e=>setMapType(e.target.value)} style={{background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:8,padding:'7px 9px',color:'var(--t0)',fontSize:12}}>{Object.entries(FLIGHT_MAP_LAYERS).sort((a,b)=>{ const order={satellite:0,liberty:1,bright:2,fiord:3,positron:4,voyager:5,dark:6,colorful:7,demotiles:8,terrain:9,terrarium_elevation:10,maptiler_streets:11,maptiler_satellite:12,maptiler_hybrid:13,maptiler_topo:14}; return (order[a[0]]??99)-(order[b[0]]??99) || String(a[1].l).localeCompare(String(b[1].l)); }).map(([k,v])=><option key={k} value={k}>{v.l}</option>)}</select></div>
 
@@ -5544,7 +5823,7 @@ function FlightOpsScreen({addons,selectedAddon,setSelected,onOpenAddon,accent='v
         <div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:14,padding:'10px 12px'}}>
           <div style={{fontSize:13,fontWeight:800,color:'var(--t0)',marginBottom:8}}>Sim Controls</div>
           <div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:8,marginBottom:8}}>{[['Aircraft State', flightStatus&&flightStatus.session_state || '—'],['Sim Rate', Number.isFinite(Number(flightStatus&&flightStatus.sim_rate))?`${Math.round(Number(flightStatus.sim_rate))}x`:'—']].map(([label,value])=><div key={label} style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:10,padding:'8px 10px'}}><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.07em'}}>{label}</div><div style={{fontSize:12,fontWeight:800,color:'var(--t0)'}}>{value}</div></div>)}</div>
-          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><Btn label='− Rate' color='var(--t2)' sm onClick={async()=>{await fetchJsonSafe('/api/flight/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'sim_rate_decrease'})}).catch(()=>{}); refreshStatus();}}/><Btn label='Reset 1x' color='var(--acc)' sm onClick={async()=>{await fetchJsonSafe('/api/flight/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'sim_rate_reset'})}).catch(()=>{}); refreshStatus();}}/><Btn label='+ Rate' color='var(--t2)' sm onClick={async()=>{await fetchJsonSafe('/api/flight/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'sim_rate_increase'})}).catch(()=>{}); refreshStatus();}}/><Btn label='⏸ Sim Pause' color='var(--t2)' sm onClick={async()=>{await fetchJsonSafe('/api/flight/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'pause_toggle'})}).catch(()=>{}); refreshStatus();}}/></div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><Btn label='− Rate' color='var(--t2)' sm onClick={async()=>{await fetchJsonSafe('/api/flight/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'sim_rate_decrease'})}).catch(()=>{}); refreshStatus();}}/><Btn label='Reset 1x' color='var(--acc)' sm onClick={async()=>{await fetchJsonSafe('/api/flight/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'sim_rate_reset'})}).catch(()=>{}); refreshStatus();}}/><Btn label='+ Rate' color='var(--t2)' sm onClick={async()=>{await fetchJsonSafe('/api/flight/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:'sim_rate_increase'})}).catch(()=>{}); refreshStatus();}}/><Btn label={effectivePaused?'Unpause':'Pause Sim'} color='var(--t2)' sm onClick={()=>runPauseCommand(!effectivePaused)}/></div>
         </div>
         <div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:14,padding:'10px 12px'}}>
           <div style={{fontSize:13,fontWeight:800,color:'var(--t0)',marginBottom:8}}>Aircraft Controls</div>
@@ -5570,12 +5849,105 @@ function FlightOpsScreen({addons,selectedAddon,setSelected,onOpenAddon,accent='v
             <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><Btn label='Use selected airport as departure' color='var(--acc)' sm onClick={()=>{ if(selectedAddon&&addonTypeFor(selectedAddon)==='Airport'&&selectedAddon.point){ setStagedOrigin({icao:selectedAddon.icao||selectedAddon.faa_id||'',name:selectedAddon.title||'',lat:selectedAddon.point.lat,lon:selectedAddon.point.lon}); setSelected(selectedAddon); } }} /><Btn label='Use selected aircraft' color='var(--acc)' sm onClick={()=>{ if(selectedAddon&&addonTypeFor(selectedAddon)==='Aircraft'){ setStagedAircraftId(selectedAddon.id); setSelected(selectedAddon); } }} /></div>
           </div>
         </div>
+        <div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:14,padding:'10px 12px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}><div style={{fontSize:14,fontWeight:800,color:'var(--t0)'}}>Flight Route Builder</div><div style={{fontSize:11,color:'var(--t2)'}}>{flightRoutePoints.length} pts • {formatDistanceFromNm(routeTotalNm,1)}</div></div>
+          <div style={{display:'grid',gridTemplateColumns:'minmax(180px,1fr) minmax(170px,220px)',gap:8,marginBottom:8}}>
+            <input value={flightRouteName} onChange={e=>setFlightRouteName(e.target.value)} placeholder='Route name' style={{background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:8,padding:'8px 10px',color:'var(--t0)',fontSize:12}}/>
+            <input value={formatDistanceFromNm(routeTotalNm,1)} readOnly placeholder='Total distance' style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:8,padding:'8px 10px',color:'var(--t0)',fontSize:12}}/>
+          </div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
+            <label style={{display:'inline-flex',alignItems:'center',gap:8,fontSize:12,color:'var(--t1)',fontWeight:700}}><input type='checkbox' checked={routeEditEnabled} onChange={e=>setRouteEditEnabled(e.target.checked)}/> Route edit</label>
+            <Btn label='Undo' color='var(--t2)' sm onClick={undoFlightRoutePoint}/>
+            <Btn label='Clear' color='var(--red)' sm onClick={clearFlightRoute}/>
+            <Btn label='Save / Update Route' color='var(--acc)' sm onClick={saveFlightRoute}/>
+            <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}><select value={selectedFlightRouteId} onChange={e=>setSelectedFlightRouteId(e.target.value)} style={{minWidth:220,background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:8,padding:'7px 9px',color:'var(--t0)',fontSize:12}}><option value=''>Load saved route…</option>{(savedFlightRoutes||[]).map(r=><option key={r.id} value={r.id}>{r.name}{Number(r&&r.total_nm)>0?` • ${formatDistanceFromNm(Number(r.total_nm),1)}`:''}</option>)}</select><Btn label='Load route' color='var(--acc)' sm onClick={()=>loadFlightRoute(selectedFlightRouteId)}/></div>
+          </div>
+          {flightRoutePoints.length? <div style={{display:'grid',gap:6,maxHeight:188,overflowY:'auto',marginBottom:8}}>
+            {flightRoutePoints.map((pt,idx)=>{
+              const isActive=idx===activeRouteWaypointIndex;
+              const prev=idx>0 ? flightRoutePoints[idx-1] : null;
+              const nm=prev ? haversineMeters([Number(prev.lon),Number(prev.lat)],[Number(pt.lon),Number(pt.lat)])/1852 : 0;
+              return <button key={idx} type='button' onClick={()=>jumpToRouteWaypoint(idx, idx===0 ? 'first route point' : `waypoint ${idx+1}`)} style={{display:'grid',gridTemplateColumns:'auto 1fr auto',alignItems:'center',gap:10,textAlign:'left',background:isActive?'rgba(34,197,94,0.14)':'var(--bg1)',border:`1px solid ${isActive?'rgba(34,197,94,0.45)':'var(--bdr)'}`,borderRadius:10,padding:'8px 10px',fontSize:11,cursor:'pointer',fontFamily:'inherit'}}>
+                <div style={{width:22,height:22,borderRadius:999,display:'grid',placeItems:'center',fontWeight:900,color:isActive?'#052e16':'#0f172a',background:isActive?'#22C55E':'#F59E0B'}}>{idx+1}</div>
+                <div>
+                  <div style={{color:'var(--t1)',fontWeight:800}}>{idx===0 ? 'Start point' : `Leg ${idx}: Point ${idx} → Point ${idx+1}`}</div>
+                  <div style={{color:'var(--t3)',marginTop:3}}>{Number(pt.lat).toFixed(5)}, {Number(pt.lon).toFixed(5)}</div>
+                </div>
+                <div style={{color:'var(--acc)',fontWeight:800,whiteSpace:'nowrap'}}>{idx===0?'Start':formatDistanceFromNm(nm,1)}</div>
+              </button>;
+            })}
+          </div>:null}
+          <div style={{fontSize:11,color:'var(--t2)',lineHeight:1.6}}>Click Route edit, then click the map to add route points. Click any point marker on the map or any route row here to make that waypoint the active handoff point. Segment distance labels on the map use your current localization distance unit.</div>
+        </div>
+        {isTestScreen ? <div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:14,padding:'10px 12px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}><div style={{fontSize:14,fontWeight:800,color:'var(--t0)'}}>{isVirtualPilot?'Virtual Pilot • Pomax port branch':(isPomaxTest?'We are-Flying • path-policy prototype':'PID Test • control-surface prototype')}</div><div style={{fontSize:11,color:(flightStatus&&flightStatus.route_controller&&flightStatus.route_controller.active)?'var(--grn)':'var(--t2)',fontWeight:800}}>{(flightStatus&&flightStatus.route_controller&&flightStatus.route_controller.active)?'Auto Fly active':'Standby'}</div></div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:8,marginBottom:8}}>
+            <div><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:4}}>Altitude (ft)</div><input type='number' value={controllerAltitudeFt} onChange={e=>setControllerAltitudeFt(Number(e.target.value)||0)} style={{width:'100%',background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:8,padding:'8px 10px',color:'var(--t0)',fontSize:12}}/></div>
+            <div><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:4}}>Speed (kt)</div><input type='number' value={controllerSpeedKt} onChange={e=>setControllerSpeedKt(Number(e.target.value)||0)} style={{width:'100%',background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:8,padding:'8px 10px',color:'var(--t0)',fontSize:12}}/></div>
+            <div><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:4}}>Heading (°)</div><input type='number' value={controllerHeadingDeg} onChange={e=>setControllerHeadingDeg(Number(e.target.value)||0)} style={{width:'100%',background:'var(--bg0)',border:'1px solid var(--bdr)',borderRadius:8,padding:'8px 10px',color:'var(--t0)',fontSize:12}}/></div>
+          </div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
+            <label style={{display:'inline-flex',alignItems:'center',gap:8,fontSize:12,color:'var(--t1)',fontWeight:700}}><input type='checkbox' checked={controllerLoop} onChange={e=>setControllerLoop(e.target.checked)}/> Loop route</label>
+            <Btn label='Apply Hdg / Alt / Speed' color='var(--acc)' sm onClick={()=>repositionToPoint({lat:Number(flightStatus&&flightStatus.lat),lon:Number(flightStatus&&flightStatus.lon)},'Controller target')}/>
+            <Btn label='Move to first point' color='var(--acc)' sm onClick={()=>jumpToRouteWaypoint(0,'first route point')}/>
+            <Btn label='Jump to active point' color='var(--acc)' sm onClick={()=>jumpToRouteWaypoint(Math.max(0,activeRouteWaypointIndex),`waypoint ${Math.max(0,activeRouteWaypointIndex)+1}`)}/>
+            <Btn label='Start Auto Fly' color='var(--grn)' sm onClick={startRouteController}/>
+            <Btn label='Stop Auto Fly' color='var(--red)' sm onClick={stopRouteController}/>
+            <Btn label={effectivePaused?'Unpause':'Pause Sim'} color={effectivePaused?'var(--grn)':'var(--red)'} sm onClick={()=>runPauseCommand(!effectivePaused)}/>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'minmax(220px,260px) minmax(0,1fr)',gap:8,marginBottom:8,alignItems:'stretch'}}>
+            <div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:10,padding:'10px 10px',display:'grid',placeItems:'center'}}>
+              <CompassRose headingDeg={flightStatus&&flightStatus.heading_deg} targetHeadingDeg={flightStatus&&flightStatus.controller_target&&flightStatus.controller_target.heading_deg} size={132}/>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:8,width:'100%',marginTop:8}}>
+                <div style={{fontSize:11,color:'var(--t2)',textAlign:'center'}}>Current<br/><span style={{fontSize:13,fontWeight:800,color:'var(--acc)'}}>{formatNumber(flightStatus&&flightStatus.heading_deg,0,'°')}</span></div>
+                <div style={{fontSize:11,color:'var(--t2)',textAlign:'center'}}>Target<br/><span style={{fontSize:13,fontWeight:800,color:'var(--grn)'}}>{formatNumber(flightStatus&&flightStatus.controller_target&&flightStatus.controller_target.heading_deg,0,'°')}</span></div>
+              </div>
+            </div>
+            <div style={{display:'grid',gap:8}}>
+              <div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:10,padding:'8px 10px'}}><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.07em'}}>Controller targets</div><div style={{fontSize:12,fontWeight:800,color:'var(--t0)'}}>{`${formatNumber(flightStatus&&flightStatus.controller_target&&flightStatus.controller_target.heading_deg,0,'°')} • ${formatNumber(flightStatus&&flightStatus.controller_target&&flightStatus.controller_target.speed_kt,0,' kt')} • ${formatNumber(flightStatus&&flightStatus.controller_target&&flightStatus.controller_target.altitude_ft,0,' ft')}`}</div></div>
+              <div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:10,padding:'8px 10px'}}><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.07em'}}>Route controller</div><div style={{fontSize:12,fontWeight:800,color:'var(--t0)'}}>{(flightStatus&&flightStatus.route_controller&&flightStatus.route_controller.message)||'No active route controller.'}</div></div>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                <Btn label='Auto Takeoff (plan)' color='var(--t2)' sm onClick={()=>setNotice('Auto Takeoff is UI-planned in this build; takeoff logic is not implemented yet.')}/>
+                <Btn label='Auto Land (plan)' color='var(--t2)' sm onClick={()=>setNotice('Auto Land is UI-planned in this build; landing logic is not implemented yet.')}/>
+              </div>
+            </div>
+          </div>
+          <div style={{display:'grid',gap:8,marginTop:8}}>
+            <div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:10,padding:'10px 12px'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}><div style={{fontSize:14,fontWeight:800,color:'var(--t0)'}}>Are-we-flying inspired test deck</div><div style={{fontSize:11,color:'var(--t2)'}}>Python-side harness</div></div>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>{((testConfig&&testConfig.modes)||[]).map((mode,idx)=><Btn key={mode.code||idx} label={mode.label||mode.code||'mode'} color={['SURF','LVL','ALT','CRS'].includes(String(mode.code||''))?'var(--acc)':'var(--t2)'} sm onClick={()=>{ const code=String(mode.code||''); if(code==='PID') setNotice('PID Test uses a control-surface controller with course and altitude corrections.'); else if(isVirtualPilot && code==='AP') setNotice('Virtual Pilot follows the Pomax-style split: AP toggles plus a navigation map with one server-owned active controller.'); else if(isVirtualPilot && code==='LVL') setNotice('Wing leveler toggle placeholder for the Pomax-port branch.'); else if(isVirtualPilot && code==='ALT') setNotice('Altitude hold target is controlled from the field beside ALT.'); else if(isVirtualPilot && code==='ATT') setNotice('Auto-throttle target is controlled from the speed field beside ATT.'); else if(isVirtualPilot && code==='TER') setNotice('Terrain-follow is reserved for later port work.'); else if(isVirtualPilot && code==='HDG') setNotice('Heading hold stays tied to the current active route leg heading in this branch.'); else if(isVirtualPilot && code==='take off') setNotice('Auto takeoff is planned for the Pomax-port branch.'); else if(isVirtualPilot && code==='land') setNotice('Auto land is planned for the Pomax-port branch.'); else if(code==='LVL') setNotice('Level hold tuning will live here.'); else if(code==='ALT') setNotice('Altitude hold tuning is blended into the current controller.'); else if(code==='CRS' || code==='PATH') setNotice(isPomaxTest?'Path policy is the core of this screen: fly the leg, not just the point.':'Course hold is part of the current line-following PID controller.'); else if(code==='TURN') setNotice('Turn anticipation is part of the We are-Flying comparison harness.'); else if(code==='TRIM') setNotice('Trim/control-law work is planned for the We are-Flying harness.'); else if(code==='LAND') setNotice('Landing phases are planned for the We are-Flying harness.'); else if(code==='SPD') setNotice('Speed hold tuning is part of the PID test harness.'); }}/>)}</div>
+              <div style={{display:'grid',gridTemplateColumns:'minmax(220px,280px) minmax(0,1fr)',gap:10,alignItems:'start'}}>
+                <div style={{background:'linear-gradient(180deg,#123 0%,#1e293b 100%)',border:'1px solid var(--bdr)',borderRadius:14,padding:'12px 10px',display:'grid',justifyItems:'center',gap:8}}>
+                  <CompassRose headingDeg={flightStatus&&flightStatus.heading_deg} targetHeadingDeg={flightStatus&&flightStatus.controller_target&&flightStatus.controller_target.heading_deg} size={220}/>
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:8,width:'100%'}}>
+                    <div style={{fontSize:11,color:'var(--t2)',textAlign:'center'}}>Current<br/><span style={{fontSize:14,fontWeight:900,color:'var(--acc)'}}>{formatNumber(flightStatus&&flightStatus.heading_deg,0,'°')}</span></div>
+                    <div style={{fontSize:11,color:'var(--t2)',textAlign:'center'}}>Target<br/><span style={{fontSize:14,fontWeight:900,color:'var(--grn)'}}>{formatNumber(flightStatus&&flightStatus.controller_target&&flightStatus.controller_target.heading_deg,0,'°')}</span></div>
+                  </div>
+                </div>
+                <div style={{display:'grid',gap:8}}>
+                  <div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:10,padding:'8px 10px'}}><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.07em'}}>Test notes</div><div style={{fontSize:12,fontWeight:800,color:'var(--t0)'}}>Waypoint navigation, flight-path policy experiments, and future terrain-follow / auto-takeoff / auto-landing controls live here instead of cluttering the main Flight screen.</div></div>
+                  <div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:10,padding:'8px 10px'}}><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.07em'}}>Route controller</div><div style={{fontSize:12,fontWeight:800,color:'var(--t0)'}}>{(flightStatus&&flightStatus.route_controller&&flightStatus.route_controller.message)||'No active route controller.'}</div></div>
+                  <div style={{background:'var(--bg1)',border:'1px solid var(--bdr)',borderRadius:10,padding:'8px 10px'}}><div style={{fontSize:10,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'0.07em'}}>Notes</div><div style={{fontSize:12,fontWeight:700,color:'var(--t0)',lineHeight:1.6}}>{((testConfig&&testConfig.notes)||[]).join(' ') || 'No notes loaded.'}</div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div style={{fontSize:11,color:'var(--t2)',lineHeight:1.6}}>{isVirtualPilot?'This screen resets the experiment around the Pomax-style server/client concept: one virtual pilot, one navigation map, and save/load/reset flight-plan behavior.':(isPomaxTest?'This screen compares a Pomax-style map-first path policy against the PID controller, using a custom virtual pilot instead of the stock aircraft autopilot.':'This screen is the PID/control-surface test bed: tune smoothness, reduce drift, and compare line-follow behavior against the We are-Flying path-policy screen.')}</div>
+        </div> : <CompactFlightWeather flightWeather={flightWeather} flightWeatherStatus={flightWeatherStatus} expanded={showFlightWeatherPanel} onToggle={()=>setShowFlightWeatherPanel(v=>!v)} onRefresh={()=>setWeatherRefreshTick(Date.now())}/>} 
       </div>
-      <div style={{display:'grid',gap:10,minWidth:0,position:'sticky',top:10,alignSelf:'start',maxHeight:'calc(100vh - 40px)',overflow:'hidden'}}>
+      <div style={{display:'flex',flexDirection:'column',gap:10,minWidth:0,flex:1,minHeight:0,overflow:'auto',resize:'vertical'}}>
         <div style={{position:'relative'}}>
-          <FlightTrackingMap flightStatus={flightStatusView||{}} originAirport={stagedOrigin} destinationAirport={stagedDestination} accent={accent} followAircraft={followAircraft} showTrail={showTrail} mapType={mapType} rangeRingNm={rangeRingNm} centerTick={centerTick} zoomAircraftTick={zoomAircraftTick} zoomRangeTick={zoomRangeTick} markerColor='#111111' aircraftTypeHint={String((liveAircraftAddon&&((liveAircraftAddon.title||'')+' '+(liveAircraftAddon.manufacturer||'')+' '+(liveAircraftAddon.sub||'')+' '+((liveAircraftAddon.rw&&liveAircraftAddon.rw.model)||'')+' '+((liveAircraftAddon.rw&&liveAircraftAddon.rw.category)||'')+' '+((liveAircraftAddon.rw&&liveAircraftAddon.rw.engine_type)||''))) || (stagedAircraft&&((stagedAircraft.title||'')+' '+(stagedAircraft.manufacturer||'')+' '+(stagedAircraft.sub||'')+' '+((stagedAircraft.rw&&stagedAircraft.rw.model)||'')+' '+((stagedAircraft.rw&&stagedAircraft.rw.category)||'')+' '+((stagedAircraft.rw&&stagedAircraft.rw.engine_type)||''))) || '')}/> 
-          <div style={{position:'absolute',top:10,left:10,right:10,display:'grid',gridTemplateColumns:'repeat(7,minmax(0,1fr)) auto',gap:8,background:'rgba(8,17,31,0.52)',backdropFilter:'blur(6px)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:12,padding:'8px 10px',zIndex:6}}>
-            {[[flightStatus&&flightStatus.aircraft_title||'Aircraft', flightStatus&&flightStatus.aircraft_icao || '—'],['IAS', formatNumber(flightStatus&&flightStatus.indicated_airspeed_kt,0,' kt')],['GS', formatNumber(flightStatus&&flightStatus.ground_speed_kt,0,' kt')],['Altitude', formatNumber(flightStatus&&flightStatus.altitude_ft,0,' ft')],['Heading / Track', (Number.isFinite(Number(flightStatus&&flightStatus.heading_deg))||Number.isFinite(Number(flightStatus&&flightStatus.track_deg))) ? `${formatNumber(flightStatus&&flightStatus.heading_deg,0,'°')} / ${formatNumber(flightStatus&&flightStatus.track_deg,0,'°')}` : '—'],['Aircraft State', flightStatus&&flightStatus.session_state || '—'],['Range', formatNumber(displayRangeNm,0,' nm')]].map(([label,value],idx)=><div key={idx} style={{minWidth:0}}><div style={{fontSize:10,color:'rgba(226,232,240,0.78)',textTransform:'uppercase',letterSpacing:'0.08em',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{label}</div><div style={{fontSize:idx===0?12:13,fontWeight:800,color:'#F8FAFC',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{value}</div></div>)}
+          <FlightTrackingMap flightStatus={flightStatusView||{}} originAirport={stagedOrigin} destinationAirport={stagedDestination} accent={accent} followAircraft={followAircraft} showTrail={showTrail} mapType={mapType} rangeRingNm={rangeRingNm} centerTick={centerTick} zoomAircraftTick={zoomAircraftTick} zoomRangeTick={zoomRangeTick} markerColor='#111111' aircraftTypeHint={String((liveAircraftAddon&&((liveAircraftAddon.title||'')+' '+(liveAircraftAddon.manufacturer||'')+' '+(liveAircraftAddon.sub||'')+' '+((liveAircraftAddon.rw&&liveAircraftAddon.rw.model)||'')+' '+((liveAircraftAddon.rw&&liveAircraftAddon.rw.category)||'')+' '+((liveAircraftAddon.rw&&liveAircraftAddon.rw.engine_type)||''))) || (stagedAircraft&&((stagedAircraft.title||'')+' '+(stagedAircraft.manufacturer||'')+' '+(stagedAircraft.sub||'')+' '+((stagedAircraft.rw&&stagedAircraft.rw.model)||'')+' '+((stagedAircraft.rw&&stagedAircraft.rw.category)||'')+' '+((stagedAircraft.rw&&stagedAircraft.rw.engine_type)||''))) || '')} routePoints={flightRoutePoints} routeEditEnabled={routeEditEnabled} onRouteMapClick={addFlightRoutePoint} onRoutePointPick={(idx)=>jumpToRouteWaypoint(idx, `waypoint ${idx+1}`)} onRouteSegmentPick={(idx)=>jumpToRouteWaypoint(idx, `leg ${idx}`)} activeWaypointIndex={activeRouteWaypointIndex}/> 
+          <div style={{position:'absolute',top:10,left:10,right:10,display:'grid',gridTemplateColumns:'minmax(240px,1.7fr) repeat(6,minmax(0,1fr)) auto',gap:8,background:'rgba(8,17,31,0.52)',backdropFilter:'blur(6px)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:12,padding:'8px 10px',zIndex:6}}>
+            <div style={{minWidth:0,display:'grid',gap:4,alignContent:'start'}}>
+              <div style={{fontSize:10,color:'rgba(226,232,240,0.78)',textTransform:'uppercase',letterSpacing:'0.08em'}}>Aircraft</div>
+              <div style={{fontSize:12,fontWeight:800,color:'#F8FAFC',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{flightStatus&&flightStatus.aircraft_title||'Aircraft'}</div>
+              <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                <div style={{fontSize:11,fontWeight:900,color:statusTone,whiteSpace:'nowrap'}}>{statusLabel}</div>
+                <div style={{fontSize:11,color:'rgba(226,232,240,0.85)',whiteSpace:'nowrap'}}>{flightStatus&&flightStatus.aircraft_icao || '—'}</div>
+              </div>
+            </div>
+            {[[ 'IAS', formatNumber(flightStatus&&flightStatus.indicated_airspeed_kt,0,' kt') ],[ 'GS', formatNumber(flightStatus&&flightStatus.ground_speed_kt,0,' kt') ],[ 'Altitude', formatNumber(flightStatus&&flightStatus.altitude_ft,0,' ft') ],[ 'Heading / Track', (Number.isFinite(Number(flightStatus&&flightStatus.heading_deg))||Number.isFinite(Number(flightStatus&&flightStatus.track_deg))) ? `${formatNumber(flightStatus&&flightStatus.heading_deg,0,'°')} / ${formatNumber(flightStatus&&flightStatus.track_deg,0,'°')}` : '—' ],[ 'Aircraft State', flightStatus&&flightStatus.session_state || '—' ],[ 'Range', formatNumber(displayRangeNm,0,' nm') ]].map(([label,value],idx)=><div key={idx} style={{minWidth:0}}><div style={{fontSize:10,color:'rgba(226,232,240,0.78)',textTransform:'uppercase',letterSpacing:'0.08em',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{label}</div><div style={{fontSize:13,fontWeight:800,color:'#F8FAFC',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{value}</div></div>)}
             {String(flightStatus&&flightStatus.pause_state||'').toLowerCase()==='paused' ? <div style={{alignSelf:'center',justifySelf:'end',padding:'6px 10px',borderRadius:999,border:'1px solid rgba(248,113,113,0.55)',background:'rgba(127,29,29,0.55)',color:'#FCA5A5',fontSize:12,fontWeight:900,letterSpacing:'0.08em',animation:'pulse 1s ease-in-out infinite'}}>PAUSED</div> : <div />}
           </div>
           <div style={{position:'absolute',top:88,left:10,display:'flex',gap:8,flexWrap:'wrap',background:'rgba(8,17,31,0.50)',backdropFilter:'blur(6px)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:12,padding:'8px 10px',zIndex:6}}>
@@ -5587,11 +5959,12 @@ function FlightOpsScreen({addons,selectedAddon,setSelected,onOpenAddon,accent='v
             <label style={{display:'inline-flex',alignItems:'center',gap:8,fontSize:12,color:'#E2E8F0',fontWeight:700}}><input type='checkbox' checked={showRangeRing} onChange={e=>setShowRangeRing(e.target.checked)}/> Range ring</label>
             <Btn label='Clear trail' color='var(--acc)' sm onClick={()=>setTrailCutoff(Date.now())}/>
           </div>
-        </div>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:8}}>
-          <div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:14,padding:10}}><div style={{fontSize:14,fontWeight:800,color:'var(--t0)',marginBottom:8}}>Departure</div>{stagedOrigin?<><div style={{fontSize:13,fontWeight:800,color:'var(--acc)'}}>{(stagedOrigin.icao||'')+' '+(stagedOrigin.name||'')}</div><div style={{fontSize:11,color:'var(--t2)',marginTop:6}}>{formatCoord(stagedOrigin.lat, stagedOrigin.lon)}</div></>:<div style={{fontSize:12,color:'var(--t2)'}}>No departure staged yet.</div>}</div>
-          <div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:14,padding:10}}><div style={{fontSize:14,fontWeight:800,color:'var(--t0)',marginBottom:8}}>Destination</div>{stagedDestination?<><div style={{fontSize:13,fontWeight:800,color:'var(--grn)'}}>{(stagedDestination.icao||'')+' '+(stagedDestination.name||'')}</div><div style={{fontSize:11,color:'var(--t2)',marginTop:6}}>{formatCoord(stagedDestination.lat, stagedDestination.lon)}</div></>:<div style={{fontSize:12,color:'var(--t2)'}}>No destination staged yet.</div>}</div>
-          <div style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:14,padding:10}}><div style={{fontSize:14,fontWeight:800,color:'var(--t0)',marginBottom:8}}>Aircraft</div>{stagedAircraft?<><div style={{fontSize:13,fontWeight:800,color:'var(--acc)'}}>{(stagedAircraft.manufacturer?stagedAircraft.manufacturer+' ':'')+stagedAircraft.title}</div><div style={{fontSize:11,color:'var(--t2)',marginTop:6}}>{stagedAircraft.publisher||'—'}{stagedAircraft&&stagedAircraft.rw&&stagedAircraft.rw.range_nm?` • Range ${stagedAircraft.rw.range_nm} nm`:''}</div><div style={{marginTop:10,display:'flex',gap:8,flexWrap:'wrap'}}><Btn label='Open Add-on' color='var(--acc)' sm onClick={()=>onOpenAddon&&onOpenAddon(stagedAircraft)}/>{liveAircraftAddon && (!stagedAircraft || liveAircraftAddon.id!==stagedAircraft.id) ? <Btn label='Open Live Aircraft' color='var(--grn)' sm onClick={()=>onOpenAddon&&onOpenAddon(liveAircraftAddon)}/> : null}</div></>:<div style={{fontSize:12,color:'var(--t2)'}}>No aircraft staged yet.</div>}</div>
+          <div style={{position:'absolute',top:138,left:10,maxWidth:'min(760px, calc(100% - 120px))',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',background:'rgba(8,17,31,0.58)',backdropFilter:'blur(6px)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:12,padding:'8px 10px',zIndex:6}}>
+            <div style={{fontSize:11,fontWeight:800,color:'#F8FAFC'}}>WX</div>
+            <div style={{fontSize:11,color:'#E2E8F0',minWidth:220,flex:'1 1 220px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{flightWeatherStatus || (flightWeather&&flightWeather.airport ? `${(flightWeather.airport.icao||'METAR')} • ${(flightWeather.current&&flightWeather.current.flight_category)||'—'} • ${flightWeather.current&&flightWeather.current.description ? `${flightWeather.current.description} • ` : ''}${formatNumber(flightWeather.current&&flightWeather.current.wind_speed,0,' kt')} wind • ${formatNumber(flightWeather.current&&flightWeather.current.temp,0,'°C')}` : 'Current weather not loaded yet.')}</div>
+            <Btn label={showFlightWeatherPanel ? 'Hide WX' : 'Show WX'} color='var(--acc)' sm onClick={()=>setShowFlightWeatherPanel(v=>!v)}/>
+            <Btn label='Refresh WX' color='var(--acc)' sm onClick={()=>setWeatherRefreshTick(Date.now())}/>
+          </div>
         </div>
       </div>
     </div>
@@ -7215,7 +7588,7 @@ async function removeSingleAddon(addon){
   const filteredTotals=useMemo(()=>({count:filtered.length,active:filtered.filter(a=>a.enabled).length,favorites:filtered.filter(a=>a.usr.fav).length,diskMb:filtered.reduce((sum,a)=>sum+((a.pr&&Number(a.pr.size_mb))||0),0),listPrice:filtered.reduce((sum,a)=>sum+((a.pr&&Number(a.pr.price))||0),0),pricePaid:filtered.reduce((sum,a)=>sum+((a.usr&&Number(a.usr.paid))||0),0)}),[filtered]);
   const collectionMembershipsForSelected=useMemo(()=>selected?(profiles||[]).filter(p=>(p.addon_ids||[]).includes(selected.id)):[],[profiles,selected]);
   const gridCardMin=gridScale==='small'?220:(gridScale==='large'?330:270);
-  const NAV=[{id:"library",ic:"L",l:"Library"},{id:"analytics",ic:"A",l:"Analytics"},{id:"flight",ic:"✈",l:"Flight"},{id:"collections",ic:"C",l:"Collections"},{id:"finder",ic:"F",l:"Aircraft Finder"},{id:"logs",ic:"G",l:"Logs"},{id:"settings",ic:"S",l:"Settings"}];
+  const NAV=[{id:"library",ic:"L",l:"Library"},{id:"analytics",ic:"A",l:"Analytics"},{id:"flight",ic:"✈",l:"Flight"},{id:"virtualpilot",ic:"🧭",l:"Virtual Pilot"},{id:"collections",ic:"C",l:"Collections"},{id:"finder",ic:"F",l:"Aircraft Finder"},{id:"logs",ic:"G",l:"Logs"},{id:"settings",ic:"S",l:"Settings"}];
   const openAnalyticsType=(value)=>{ setFilterType(value&&value!=='Unknown'?value:'All'); setFinderIds(null); setSection('library'); };
   const openAnalyticsSubtype=(value)=>{ setFilterSub(value==='Unspecified'?'Unspecified':(value&&value!=='Unknown'?value:'All')); setFinderIds(null); setSection('library'); };
   const openAnalyticsPublisher=(value)=>{ setSearch(value&&value!=='Unknown'?value:'' ); setFinderIds(null); setSection('library'); };
@@ -7392,7 +7765,8 @@ async function removeSingleAddon(addon){
             </div>
           </div>}
           {section==="analytics"&&<AnalyticsPanel addons={addons} onDrillType={openAnalyticsType} onDrillSubtype={openAnalyticsSubtype} onDrillPublisher={openAnalyticsPublisher} onDrillSource={openAnalyticsSource} onDrillObtained={openAnalyticsObtained} />}
-          {section==="flight"&&<FlightOpsScreen addons={addons} selectedAddon={selected} setSelected={setSelected} onOpenAddon={(addon)=>{ setSelected(addon); setDetailContext({type:'flight'}); setDetailInitialTab('overview'); setDetail(addon); }} />}
+          {section==="flight"&&<FlightOpsScreen addons={addons} selectedAddon={selected} setSelected={setSelected} onOpenAddon={(addon)=>{ setSelected(addon); setDetailContext({type:'flight'}); setDetailInitialTab('overview'); setDetail(addon); }} panelMode='flight'/>}
+          {section==="virtualpilot"&&<FlightOpsScreen addons={addons} selectedAddon={selected} setSelected={setSelected} onOpenAddon={(addon)=>{ setSelected(addon); setDetailContext({type:'flight'}); setDetailInitialTab('overview'); setDetail(addon); }} panelMode='virtualpilot'/>}
           {section==="finder"&&<AircraftFinder addons={addons} onFilterGrid={ids=>{setFinderIds(ids);setSection("library");}} onOpenDetail={(addon)=>{setDetailContext({type:'finder'}); setDetailInitialTab('overview'); setDetail(addon);}} initialState={finderState} onStateChange={setFinderState}/>}
           {section==="logs"&&<ScanLogsPanel logs={scanLogs} aiLogs={aiLogs} libraryLogs={libraryLogs} onDeleteRange={deleteLogRange}/>}
           {section==="collections"&&<CollectionManager profiles={profiles} addons={addons} activeCollectionId={activeCollectionId} setActiveCollectionId={setActiveCollectionId} activeCollection={activeCollection} collectionStatsById={collectionStatsById} collectionPickedIds={collectionPickedIds} setCollectionPickedIds={setCollectionPickedIds} collectionAddPickedIds={collectionAddPickedIds} setCollectionAddPickedIds={setCollectionAddPickedIds} collectionAvailableItems={collectionAvailableItems} activeCollectionItems={activeCollectionItems} collectionMemberSearch={collectionMemberSearch} setCollectionMemberSearch={setCollectionMemberSearch} collectionSearch={collectionSearch} setCollectionSearch={setCollectionSearch} onRemoveFromCollection={removeFromCollection} onAddToCollection={addToCollectionFromManager} onDeleteCollection={deleteProfile} onRenameCollection={renameCollection} onViewInLibrary={viewCollectionInLibrary}/>}

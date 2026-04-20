@@ -376,3 +376,44 @@ def search_airports(query: str = '', limit: int = 50) -> list[dict]:
         }))
     rows.sort(key=lambda item: (-item[0], item[1]))
     return [row for _, _, row in rows[:max(1, min(int(limit or 50), 200))]]
+
+
+
+def _haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    from math import radians, sin, cos, asin, sqrt
+    r_nm = 3440.065
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    lat1r = radians(lat1)
+    lat2r = radians(lat2)
+    a = sin(dlat / 2) ** 2 + cos(lat1r) * cos(lat2r) * sin(dlon / 2) ** 2
+    return 2 * r_nm * asin(min(1.0, sqrt(a)))
+
+
+def nearest_airports(lat: float, lon: float, limit: int = 10, require_four_letter_icao: bool = True) -> list[dict]:
+    """Return nearest cached airports to a lat/lon point."""
+    _ensure_loaded()
+    try:
+        lat = float(lat)
+        lon = float(lon)
+    except Exception:
+        return []
+    rows = []
+    for ident, airport in _airports_cache.items():
+        if require_four_letter_icao and (len(ident) != 4 or not ident.isalpha()):
+            continue
+        apt_lat = airport.get('lat')
+        apt_lon = airport.get('lon')
+        if apt_lat is None or apt_lon is None:
+            continue
+        distance_nm = _haversine_nm(lat, lon, float(apt_lat), float(apt_lon))
+        info = lookup_airport(ident) or {}
+        info['distance_nm'] = distance_nm
+        rows.append(info)
+    rows.sort(key=lambda row: float(row.get('distance_nm') or 1e9))
+    return rows[:max(1, min(int(limit or 10), 100))]
+
+
+def nearest_airport(lat: float, lon: float, require_four_letter_icao: bool = True) -> Optional[dict]:
+    items = nearest_airports(lat, lon, limit=1, require_four_letter_icao=require_four_letter_icao)
+    return items[0] if items else None

@@ -1,0 +1,9 @@
+MSFS Hangar - Release 231 Notes
+
+Changes in this build:
+- Prevented premature waypoint advance by requiring the aircraft to be genuinely at the active waypoint before switching to the next leg.
+- We are-Flying guidance now stays biased to the active leg/path heading longer, instead of cutting toward the following waypoint too early.
+- Added support for route extension during testing: when the final currently-known waypoint is reached, the controller now waits for additional waypoints instead of completing immediately.
+- This allows a user to keep adding waypoints during a test and have the controller continue with the next sequence.
+- Improved controller status messaging to show remaining distance and current leg context more clearly.
+- Preserved saved-route loading onto the map for repeated testing.

@@ -1,0 +1,34 @@
+MSFS Hangar — Release 218
+
+Flight / Auto Fly / Weather focus build
+
+What changed
+- Moved the Flight status text so the connected/readiness state is shown on the left with the aircraft name instead of being clipped on the top bar.
+- Flight Weather is now a fuller decoded METAR briefing block, not just a few values.
+- Added collapse / expand controls for Flight Weather in both the top strip and the full weather panel.
+- Route save / update now supports renaming the current saved route using the Route Name field.
+- Route rows are clickable: click any route point row to jump the aircraft to that point and make it the active handoff point.
+- Route point markers on the flight map are clickable for waypoint jumps.
+- Added active-waypoint highlighting for the flight route list and flight map points.
+- Added a compass-style graphic around the aircraft symbol on the map.
+- Added a heading compass card in the Flight Controller panel showing current heading and target heading.
+- Added UI placeholders for Auto Takeoff / Auto Land planning so the Virtual Pilot section can grow without changing layout again.
+
+Controller / Auto Fly changes
+- Route controller now starts by moving to waypoint 1, aligning the aircraft toward waypoint 2, pausing the sim, and waiting for the user to unpause.
+- Reworked route following away from pure point-chasing toward smoother leg-following.
+- Added heading smoothing to reduce left-right oscillation while tracking a leg.
+- Reduced aggressive altitude forcing while tracking so the aircraft is less likely to look pitched oddly during route playback.
+- Added jump-to-active-point control in the Flight Controller panel.
+- Improved route jump messages and active target tracking.
+
+Implementation notes
+- This build was guided by the prior Hangar conversation document and by ideas from the “are-we-flying” JS/MSFS project, especially its distinction between naive waypoint chasing and true flight-path following.
+- The Auto Takeoff / Auto Land buttons in this release are UI-planned only; full takeoff / landing logic is not implemented yet.
+
+Validation done here
+- Python files compile cleanly.
+- Front-end JSX/TSX parses cleanly after the Flight UI changes.
+
+Honest note
+- The route controller is still experimental because it uses SimConnect position stepping rather than a full aircraft-specific autopilot model.

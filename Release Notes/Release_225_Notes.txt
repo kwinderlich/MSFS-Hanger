@@ -1,0 +1,6 @@
+Release 225
+- Fixed We are-Flying/PID separation.
+- Fixed transient SimConnect telemetry failures no longer blacklisting vars.
+- Added proxied map tiles to avoid browser CORS tile failures.
+- Smoothed route heading logic to use lookahead path heading and actual current heading.
+- Preserved correct route mode labels through leg transitions.

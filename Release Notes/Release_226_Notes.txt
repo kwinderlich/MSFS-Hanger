@@ -1,0 +1,16 @@
+Release 226
+
+What changed
+- Added clearer saved-route loading controls directly inside PID Test and We are-Flying Test.
+- Added a breadcrumb trail toggle directly in the test Route Plan card.
+- Added timestamped console logging for backend output.
+- Added throttled controller command logging with headings, altitude, speed, cross-track, and control outputs.
+- Added SimConnect IO serialization to reduce WinError -2147467259 / unspecified COM failures caused by concurrent poll + controller access.
+- We are-Flying Test now uses a more distinct virtual path guidance path instead of sharing the same surface-guidance flow as PID Test.
+- We are-Flying controller now repositions along the route path with smoothed heading/altitude/speed updates rather than relying on stock MSFS autopilot modes.
+- Reduced the oversized test-screen compass overlay.
+- Pause command UI now applies returned status immediately when the backend responds.
+
+Known note
+- PID Test still uses surface-command guidance and may need more tuning aircraft-by-aircraft.
+- We are-Flying Test is still an adaptation, not a full literal port of the website code.

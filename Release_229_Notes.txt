@@ -1,0 +1,16 @@
+MSFS Hanger Release 229
+
+What changed in 229:
+- Added explicit saved-route loading controls in the test screens so a stored route can be loaded back onto the map without recreating points.
+- Persisted the last selected saved route id so test routes survive app restarts more cleanly.
+- Reworked the virtual-pilot controller start flow to use a short settle phase after spawn/reposition before leg capture begins.
+- Fixed the worst controller bug from 228 where stale live telemetry right after spawn could drive the first commands.
+- Split live telemetry inputs from internal status for surface guidance so PID / We are-Flying use the guarded snapshot instead of stale state.
+- Removed the broken multi-parameter AXIS_THROTTLE_SET call path from the active control loop.
+- Reduced controller aggressiveness at low speed and tightened deadbands for small heading / cross-track errors.
+- Changed the path-policy side to prefer direct capture of the next waypoint when badly off course, then blend back to line-following once closer to the leg.
+- Slowed auto-follow recentering on the map and reduced redundant recenter updates to improve zoom / pan responsiveness.
+
+One honest note:
+- This build is still a tuning pass, not a finished virtual pilot.
+- The goal of 229 is to be more debuggable and less self-destructive than 228 while keeping the aircraft stable.

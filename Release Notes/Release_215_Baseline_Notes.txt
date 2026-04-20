@@ -1,0 +1,18 @@
+MSFS Hangar - Release 215 Baseline
+
+Source baseline
+- Reconstructed from the current public main branch of kwinderlich/MSFS-Hanger.
+- GitHub did not expose published binary releases, so the source tree was used as the baseline.
+
+What was done for this baseline rebuild
+- Pulled the current application source, frontend, launcher batch files, and support modules from the public repository.
+- Added missing helper modules required by the current source tree so the Python package can compile cleanly:
+  - bootstrap_cfg.py
+  - native_dialogs.py
+  - flight_tracker.py
+- Preserved the project structure so this zip can be used as a stable 215 starting point for local Windows testing.
+
+Notes
+- This baseline is intentionally conservative. It is the clean 215 reconstruction before layering 216 flight enhancements on top.
+- Python compile check was run on the rebuilt Python files before packaging.
+- This package assumes the target machine already has the broader local Python/MSFS environment installed, including SimConnect-related pieces if used.

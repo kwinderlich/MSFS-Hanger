@@ -43,6 +43,7 @@ from logger import build_diag_report, get_logger, write_startup_snapshot, setup_
 from paths import BASE_DIR, USER_DATA_DIR, initialize_user_data, SETTINGS_JSON_PATH, DB_PATH, LOG_DIR, BROWSER_PROFILE_DIR, BACKUP_DIR, TEST_DIR, LEGACY_HYBRID_DIR, LEGACY_HQ_DIR, LEGACY_QT_DIR, BOOTSTRAP_CONFIG_PATH, get_forced_storage_root, save_bootstrap_config, load_bootstrap_config, storage_mode, get_library_profiles, get_active_profile, get_active_profile_id
 from native_dialogs import pick_or_create_folder
 from flight_tracker import FlightTracker
+from virtual_pilot import get_virtual_pilot_config
 
 log = get_logger(__name__)
 
@@ -60,8 +61,27 @@ def _simconnect_endpoint_log(level: str, message: str, *args):
                 pass
 
 
-app = FastAPI(title="MSFS Hangar", version="2.0.135")
+app = FastAPI(title="MSFS Hangar", version="2.0.136")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+@app.get('/api/map-tile/{provider}/{z}/{x}/{y}.png')
+async def proxy_map_tile(provider: str, z: int, x: int, y: int):
+    provider_key = str(provider or '').strip().lower()
+    if provider_key == 'osm':
+        url = f'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+        headers = {'User-Agent': 'MSFS-Hangar/225 (+local-proxy)'}
+    elif provider_key in {'esri', 'arcgis'}:
+        url = f'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+        headers = {'User-Agent': 'MSFS-Hangar/225 (+local-proxy)'}
+    else:
+        raise HTTPException(status_code=404, detail='Unknown map tile provider')
+    try:
+        resp = requests.get(url, timeout=20, headers=headers)
+        resp.raise_for_status()
+        return Response(content=resp.content, media_type='image/png', headers={'Cache-Control': 'public, max-age=3600'})
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
 BASE_DIR = Path(__file__).parent
 FRONTEND_DIR = BASE_DIR / "frontend"
@@ -7075,11 +7095,60 @@ async def flight_disconnect():
 class FlightCommandRequest(BaseModel):
     command: str = ''
 
+
+class FlightRepositionRequest(BaseModel):
+    lat: float
+    lon: float
+    altitude_ft: float | None = None
+    heading_deg: float | None = None
+    speed_kt: float | None = None
+
+
+class FlightRouteControllerRequest(BaseModel):
+    points: list[dict] = []
+    altitude_ft: float | None = None
+    speed_kt: float | None = None
+    heading_deg: float | None = None
+    loop: bool = False
+    control_mode: str | None = None
+
+
+class FlightRouteJumpRequest(BaseModel):
+    waypoint_index: int = 0
+
 @app.post('/api/flight/command')
 async def flight_command(body: FlightCommandRequest):
     cmd = str(body.command or '').strip().lower()
     result = _flight_tracker.command(cmd)
     _simconnect_endpoint_log('info', 'API /api/flight/command command=%s result=%s', cmd, str(result)[:500])
+    return result
+
+
+@app.post('/api/flight/reposition')
+async def flight_reposition(body: FlightRepositionRequest):
+    result = _flight_tracker.reposition(lat=body.lat, lon=body.lon, altitude_ft=body.altitude_ft, heading_deg=body.heading_deg, speed_kt=body.speed_kt)
+    _simconnect_endpoint_log('info', 'API /api/flight/reposition result=%s', str(result)[:500])
+    return result
+
+
+@app.post('/api/flight/route/start')
+async def flight_route_start(body: FlightRouteControllerRequest):
+    result = _flight_tracker.start_route_controller(points=body.points, altitude_ft=body.altitude_ft, speed_kt=body.speed_kt, heading_deg=body.heading_deg, loop=body.loop, control_mode=body.control_mode or 'virtual-direct')
+    _simconnect_endpoint_log('info', 'API /api/flight/route/start result=%s', str(result)[:500])
+    return result
+
+
+@app.post('/api/flight/route/stop')
+async def flight_route_stop():
+    result = _flight_tracker.stop_route_controller()
+    _simconnect_endpoint_log('info', 'API /api/flight/route/stop result=%s', str(result)[:500])
+    return result
+
+
+@app.post('/api/flight/route/jump')
+async def flight_route_jump(body: FlightRouteJumpRequest):
+    result = _flight_tracker.jump_to_route_waypoint(body.waypoint_index)
+    _simconnect_endpoint_log('info', 'API /api/flight/route/jump waypoint_index=%s result=%s', body.waypoint_index, str(result)[:500])
     return result
 
 @app.get('/api/flight/logs')
@@ -7093,6 +7162,10 @@ async def flight_logs():
     except Exception as exc:
         return {'items': [], 'error': str(exc)}
 
+@app.get('/api/virtual-pilot/config')
+async def virtual_pilot_config():
+    return get_virtual_pilot_config()
+
 @app.get("/api/flight/airports")
 async def flight_airports(query: str = '', limit: int = 50):
     try:
@@ -7100,6 +7173,45 @@ async def flight_airports(query: str = '', limit: int = 50):
         return {"items": search_airports(query=query, limit=limit), "query": query, "limit": max(1, min(int(limit or 50), 200))}
     except Exception as exc:
         return {"items": [], "query": query, "limit": max(1, min(int(limit or 50), 200)), "error": str(exc)}
+
+@app.get("/api/flight/weather")
+async def flight_weather(lat: float, lon: float, max_candidates: int = 8):
+    try:
+        from airports import nearest_airports
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f'Airport dataset unavailable: {exc}')
+    candidates = nearest_airports(lat=lat, lon=lon, limit=max_candidates or 8, require_four_letter_icao=True)
+    if not candidates:
+        candidates = nearest_airports(lat=lat, lon=lon, limit=max_candidates or 8, require_four_letter_icao=False)
+    if not candidates:
+        raise HTTPException(status_code=404, detail='No nearby airport candidates were found for weather lookup.')
+    last_error = None
+    for airport in candidates:
+        icao = str(airport.get('icao') or '').strip().upper()
+        if not icao:
+            continue
+        try:
+            payload = await asyncio.to_thread(_fetch_aviationweather_metar, icao)
+            if not payload:
+                continue
+            wx = _normalize_aviationweather_payload(payload, icao=icao)
+            return {
+                'airport': {
+                    'icao': icao,
+                    'name': airport.get('name') or '',
+                    'municipality': airport.get('municipality') or airport.get('city') or '',
+                    'distance_nm': round(float(airport.get('distance_nm') or 0.0), 1),
+                    'lat': airport.get('lat'),
+                    'lon': airport.get('lon'),
+                },
+                **wx,
+            }
+        except Exception as exc:
+            last_error = exc
+            continue
+    if last_error is not None:
+        raise HTTPException(status_code=502, detail=f'Unable to retrieve nearby METAR data: {last_error}')
+    raise HTTPException(status_code=404, detail='No nearby airport with METAR data was found.')
 
 @app.post("/api/flight/settings")
 async def flight_settings(request: Request):

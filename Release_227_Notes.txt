@@ -1,0 +1,5 @@
+Release 227
+- Added full SimConnect/SDK command logging while Fly route is active.
+- Logs every route-active event/set/axis command with timestamp, controller mode, phase, leg index, payload, and success/failure.
+- Console and daily log both receive the entries.
+- Added explicit route-start and route-stop command log records.

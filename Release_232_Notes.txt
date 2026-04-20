@@ -1,0 +1,9 @@
+MSFS Hangar - Release 232
+
+Pomax port branch reset:
+- Removed the separate PID Test and We are-Flying Test sidebar entries.
+- Added one new sidebar entry: Virtual Pilot.
+- Added /api/virtual-pilot/config and a new virtual_pilot.py config module.
+- Reworked the Virtual Pilot screen around the Pomax-style AP toggles + navigation map concept.
+- Kept route save/load onto map behavior for repeated testing.
+- Preserved the existing controller backend as the first port-branch control path while the direct Pomax server/client logic is ported further.

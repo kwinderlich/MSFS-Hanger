@@ -1,0 +1,18 @@
+Release 224 Notes
+
+What changed
+- Renamed the existing Flying Test screen to PID Test.
+- Added a separate sidebar screen: We are-Flying Test.
+- Added backend config module we_are_flying.py and /api/we-are-flying/config.
+- PID Test continues the Gemini-style control-surface / PID-inspired route-following approach.
+- We are-Flying Test uses a separate path-policy mode (pomax-law) for comparison.
+- Pause button logic now tracks desired paused state locally so the label switches between Pause Sim and Unpause more reliably.
+- Flight tracker now preserves pause state when IS_PAUSED is temporarily unavailable.
+- Route controller modes now include virtual-surface (PID) and pomax-law (We are-Flying).
+- Reduced the large compass overlay on the test map.
+- Removed the symbol preview clutter from the test harness notes area.
+- Added extra defensive OSError handling around control-surface event sends to reduce WinError spam.
+
+Notes
+- This build compares two custom virtual-pilot paths without depending on the stock aircraft autopilot for the test screens.
+- The We are-Flying Test is an adaptation of the map-first/path-policy ideas, not a literal port of the original JavaScript project.

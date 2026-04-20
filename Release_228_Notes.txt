@@ -1,0 +1,19 @@
+MSFS Hanger Release 228
+
+Key virtual-pilot rewrite:
+- Stop writing full aircraft position/heading/altitude every controller tick.
+- Reposition only once at route start or explicit waypoint jump.
+- After spawn, both PID Test and We are-Flying Test use control-surface/throttle guidance only.
+- Added spawn guard to ignore stale telemetry immediately after repositioning.
+- Stop now neutralizes control surfaces to reduce controller hand-off conflicts.
+- Start waits for the previous route controller to stop before a new one starts.
+
+Map interaction fixes:
+- Reduced follow-camera recenter frequency.
+- Hold follow-camera briefly after user drag/zoom interaction.
+- Lowered map fade cost and disabled world copies in the test maps.
+- Skip redundant breadcrumb trail source updates.
+
+Logging / diagnostics:
+- Full backend SimConnect command logging remains enabled while route control is active.
+- This build is intended to make the controller behavior easier to reason about from logs.

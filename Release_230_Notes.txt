@@ -1,0 +1,14 @@
+MSFS Hangar Release 230
+
+Fixes:
+- Fixed UnboundLocalError in route settle phase (mode/current_index initialization order).
+- Kept load-saved-route controls so a saved route can be loaded back onto the map for testing.
+- Simplified route capture logic for We are-Flying/PID tests:
+  * after spawn at point 1, hold heading toward point 2
+  * when far off the leg, steer directly toward the waypoint
+  * when closer, blend toward the segment heading with small cross-track intercept
+- Reduced heading-step aggressiveness so the controller makes subtler corrections.
+
+Notes:
+- This build does not intentionally use stock aircraft AP for the We are-Flying and PID test modes.
+- These modes are virtual-pilot/control-surface tests and should now survive the route-start settle phase.

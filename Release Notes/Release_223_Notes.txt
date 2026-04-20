@@ -1,0 +1,13 @@
+MSFS Hangar Release 223
+
+What changed
+- Fixed the Flying Test crash caused by a missing pauseBusy state in the React screen.
+- Changed Flying Test to start route control in virtual-surface mode instead of virtual-direct.
+- Added a first-pass control-surface flight-law controller using aileron, elevator, and throttle events rather than stock HDG/NAV autopilot commands.
+- Added bank and pitch telemetry to the flight tracker so the Flying Test controller can respond more smoothly.
+- Tightened pause handling to verify pause state after sending PAUSE_ON / PAUSE_OFF / PAUSE_SET events.
+- Updated Flying Test wording to match the custom-controller direction.
+
+Notes
+- The new Flying Test controller is a first-pass Python adaptation of the reference project's control-law ideas, not a literal port of its JavaScript code.
+- Because aircraft flight models vary widely, further tuning per aircraft class is likely still needed.

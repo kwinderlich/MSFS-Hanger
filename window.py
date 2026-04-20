@@ -91,11 +91,20 @@ class HangarPage(QWebEnginePage):
         b.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         return b.exec() == QMessageBox.Yes
 
-    def javaScriptPrompt(self, _url, msg, default, result) -> bool:
-        text, ok = QInputDialog.getText(None, APP_NAME, msg, text=default)
-        if ok:
-            result.setValue(text)
-        return ok
+    def javaScriptPrompt(self, *args):
+        """Handle both Qt prompt override signatures seen across PySide builds."""
+        msg = args[1] if len(args) >= 2 else ''
+        default = args[2] if len(args) >= 3 else ''
+        result = args[3] if len(args) >= 4 else None
+        text, ok = QInputDialog.getText(None, APP_NAME, msg or 'Enter value', text=str(default or ''))
+        if result is not None and hasattr(result, 'setValue'):
+            if ok:
+                try:
+                    result.setValue(text)
+                except Exception:
+                    pass
+            return ok
+        return (ok, text if ok else str(default or ''))
 
 
 class NativeBrowserPage(QWebEnginePage):

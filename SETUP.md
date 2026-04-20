@@ -10,3 +10,8 @@ User data is stored outside the app folder in your local app-data directory so z
 
 ## MapLibre GL JS
 This build loads MapLibre GL JS from CDN links in `frontend/index.html`, so there is no extra Python install step for the map engine. If you want a fully offline build later, the JS/CSS files can be vendored into the frontend and the batch/install flow can simply copy them with the rest of the app files.
+
+
+## Bootstrap storage override
+
+If a `hangar_bootstrap.json` file exists beside the application files, MSFS Hangar will read `forced_storage_root` from that JSON and use it as the user-data location. The older `bootstrap.json` filename is also supported for compatibility.

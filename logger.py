@@ -87,7 +87,7 @@ def setup_logging(level: str = "INFO"):
     # 3. Console — INFO and above for release debugging and diagnostics
     ch = logging.StreamHandler(sys.stdout)
     ch.setLevel(logging.INFO)
-    ch.setFormatter(logging.Formatter("  %(levelname)-8s %(name)s — %(message)s"))
+    ch.setFormatter(fmt)
     root.addHandler(ch)
 
     # 4. Catch all unhandled exceptions and log them before crash

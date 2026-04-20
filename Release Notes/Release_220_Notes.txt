@@ -1,0 +1,14 @@
+MSFS Hanger Release 220
+
+What changed in this build
+- Added a separate sidebar section called Flying Test so the are-we-flying inspired controller and compass work no longer clutter the main Flight screen.
+- Flight screen simplified: compact weather card, origin/destination/aircraft blocks below the map removed, and the left pane remains scrollable.
+- Flight left pane now resizes horizontally and the map pane can be resized vertically.
+- Added a new Python module flying_test.py and a matching /api/flying-test/config endpoint for the experimental Flying Test screen.
+- Improved pause handling in the SimConnect tracker to prefer explicit pause on / off behavior instead of relying only on pause toggle.
+- Flying Test uses a larger compass rose, mode buttons, and aircraft symbol previews inspired by the are-we-flying project.
+- Compact weather card now shows clear show/hide detail behavior and refresh controls.
+
+Important notes
+- The Flying Test screen is an inspired Python-side harness, not a literal one-for-one port of the website.
+- Auto takeoff, terrain follow, and auto landing remain planned/experimental in this build.

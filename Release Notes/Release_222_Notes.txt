@@ -1,0 +1,13 @@
+MSFS Hanger Release 222
+
+What changed
+- Added a genuinely separate Flying Test screen instead of reusing most of the Flight screen.
+- Flying Test now starts the route controller in virtual-direct mode by default, which does not rely on the aircraft autopilot commands.
+- The virtual-direct route controller steps the aircraft along each leg with direct flight-path updates, keeping the heading aligned to the leg.
+- Added route plan list with clickable waypoint jump rows and total distance.
+- Added a larger instrument/compass panel on the map for Flying Test.
+- Reworked pause handling to use explicit pause events only (PAUSE_ON / PAUSE_OFF with PAUSE_SET fallback) instead of trying to set pause simvars directly.
+- Added a dedicated pause command helper in the UI to reduce pause-state flicker.
+
+Important note
+- This is an experimental compare build. It adapts the are-we-flying concepts to Python/FastAPI; it is not a literal line-by-line port of the original JavaScript/socketless project.
