@@ -1,0 +1,12 @@
+MSFS Hangar - Release 234
+
+Changes in this pass:
+- Virtual Pilot screen now uses the Flight-style left sidebar for SimConnect connect/disconnect, weather, route management, and telemetry.
+- Removed the large center compass overlay from the Virtual Pilot map.
+- Removed the bottom AP/dashboard control bar from the Virtual Pilot map.
+- Kept top-of-map controls limited to map navigation / waypoint editing (no map type selector).
+- Route save/load onto map remains available from the left sidebar.
+
+Notes:
+- This pass focuses on the UI restructuring requested for the Pomax port branch.
+- The underlying virtual-pilot controller is still the current Hangar controller path while the deeper server/client autopilot-port work is staged.

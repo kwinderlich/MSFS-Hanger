@@ -1,0 +1,16 @@
+MSFS Hanger - Release 233
+
+This build starts the direct Virtual Pilot UI port branch.
+
+What changed:
+- Virtual Pilot screen reworked to match the Pomax-style screenshot more closely
+- top toolbar with route save/load and waypoint display controls
+- bottom AP-style action bar
+- custom turn/heading panel on the map
+- compass rose overlay around the aircraft
+- symbol-directory driven waypoint icons loaded from /assets/vpilot
+- dedicated virtual-pilot map styling path in the frontend
+
+Notes:
+- This is the first UI-focused port pass.
+- Backend controller behavior is still the current Hangar route controller while the server/client split is being staged in.
