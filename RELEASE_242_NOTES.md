@@ -1,0 +1,1 @@
+Release 242: stabilize waypoint capture by removing auto ALT arming during route load/AP engagement, stripping imported route waypoint altitudes from the VP bridge, and switching to a conservative smoothed turn-rate fly-level controller for first-leg capture.

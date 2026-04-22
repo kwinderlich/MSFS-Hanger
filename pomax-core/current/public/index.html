@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en-GB">
+  <head>
+    <meta charset="utf-8" />
+    <title>Integrated Virtual Pilot</title>
+    <link rel="stylesheet" href="js/leaflet/leaflet.min.css" async />
+    <script src="js/leaflet/leaflet.min.js" defer async></script>
+    <link rel="stylesheet" href="css/index.css" async />
+    <script src="js/index.js" type="module" async></script>
+  </head>
+  <body class="hangar-vp">
+    <div class="preamble">
+      <h1>Integrated Virtual Pilot</h1>
+      <p></p>
+      <ul id="questions" data-description="Templated from questions.html"></ul>
+    </div>
+    <div id="sim-ap-warning" class="hidden">Simulator autopilot engaged</div>
+    <div id="map-controls">
+      <fieldset>
+        <label for="center-on-plane">Center on aircraft</label>
+        <input id="center-on-plane" type="checkbox" checked="checked" />
+      </fieldset>
+      <fieldset>
+        <button id="zoom-to-aircraft" type="button">Zoom to aircraft</button>
+      </fieldset>
+      <fieldset>
+        <label for="show-labels">Show waypoint labels</label>
+        <input id="show-labels" type="checkbox" checked="checked" />
+      </fieldset>
+      <fieldset>
+        <label for="tiny-waypoints">Tiny waypoints</label>
+        <input id="tiny-waypoints" type="checkbox" />
+      </fieldset>
+      <fieldset>
+        <button id="zoom-to-route" type="button">Zoom to route</button>
+      </fieldset>
+      <fieldset class="hangar-hide-route-io" title="Hangar manages route save/load for this integrated view">
+        flight plan:
+        <button class="save">save</button>
+        load: <input type="file" class="load" />
+      </fieldset>
+      <fieldset>
+        <button class="pause-sim" id="pause-sim">Pause Sim</button>
+      </fieldset>
+      <fieldset>
+        <button class="patrol">patrol</button>
+        <button class="go-around">go-around</button>
+        <button class="revalidate">revalidate</button>
+        <button class="reset">reset waypoints</button>
+        <button class="clear">clear waypoints</button>
+      </fieldset>
+    </div>
+    <div id="visualization">
+      <div id="map" style="width: 1200px; height: 800px"></div>
+      <div id="attitude" data-description="Templated from attitude.html"></div>
+    </div>
+    <div id="autopilot" data-description="Templated from autopilot.html"></div>
+    <div id="science" class="pane"></div>
+  </body>
+</html>

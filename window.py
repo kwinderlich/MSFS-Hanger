@@ -139,6 +139,8 @@ class HangarWindow(QMainWindow):
         self._devtools = None
         self._browser_state = {}
         self._requested_url = ""
+        self._requested_script_id = 0
+        self._panel_kind = ""
         self._requested_id = 0
 
         icon = _make_icon()
@@ -207,6 +209,12 @@ class HangarWindow(QMainWindow):
         btn_open.clicked.connect(self._open_native_external)
         btn_hide = QPushButton("Hide")
         btn_hide.clicked.connect(self.hide_browser_panel)
+        self._btn_go = btn_go
+        self._btn_back = btn_back
+        self._btn_fwd = btn_fwd
+        self._btn_reload = btn_reload
+        self._btn_open = btn_open
+        self._btn_hide = btn_hide
         for b in [btn_go, btn_back, btn_fwd, btn_reload, btn_open, btn_hide]:
             b.setStyleSheet("background:#0F172A;color:#E2E8F0;border:1px solid #334155;padding:6px 10px;border-radius:6px;")
 
@@ -310,8 +318,10 @@ class HangarWindow(QMainWindow):
         requested = state.get("requested_url") or ""
         requested_id = int(state.get("request_id") or 0)
         visible = bool(state.get("visible"))
+        self._panel_kind = str(state.get("panel_kind") or "")
+        self._apply_browser_panel_mode(bool(state.get("minimal_controls")), self._panel_kind)
         if visible and requested:
-            self.show_browser_panel()
+            self.show_browser_panel(kind=self._panel_kind)
             if requested != self._requested_url or requested_id != self._requested_id:
                 self._requested_url = requested
                 self._requested_id = requested_id
@@ -323,6 +333,14 @@ class HangarWindow(QMainWindow):
             self._requested_id = 0
             if self._browser_panel.isVisible():
                 self.hide_browser_panel()
+        script_id = int(state.get("script_id") or 0)
+        requested_script = str(state.get("requested_script") or "")
+        if requested_script and script_id and script_id != self._requested_script_id:
+            self._requested_script_id = script_id
+            try:
+                self._native_browser.page().runJavaScript(requested_script)
+            except Exception:
+                pass
 
     def _normalize_state_url(self, url: str) -> str:
         try:
@@ -400,7 +418,9 @@ class HangarWindow(QMainWindow):
         if url and url != "about:blank":
             webbrowser.open(url)
 
-    def show_browser_panel(self):
+    def show_browser_panel(self, kind: str = ""):
+        if kind:
+            self._panel_kind = kind
         if self._browser_panel.isVisible():
             return
         self._browser_panel.show()
@@ -408,8 +428,31 @@ class HangarWindow(QMainWindow):
             self._splitter.setSizes(self._browser_sizes)
         else:
             total = max(self.width(), 1400)
-            self._browser_sizes = [int(total * 0.58), int(total * 0.42)]
+            if self._panel_kind == 'vp':
+                self._browser_sizes = [int(total * 0.76), int(total * 0.24)]
+            else:
+                self._browser_sizes = [int(total * 0.58), int(total * 0.42)]
             self._splitter.setSizes(self._browser_sizes)
+
+    def _apply_browser_panel_mode(self, minimal: bool, kind: str = ""):
+        hide_for_vp = bool(minimal) or str(kind or "") == 'vp'
+        widgets = [getattr(self, '_browser_url', None), getattr(self, '_btn_go', None), getattr(self, '_btn_back', None), getattr(self, '_btn_fwd', None), getattr(self, '_btn_reload', None)]
+        for w in widgets:
+            try:
+                if w is not None:
+                    w.setVisible(not hide_for_vp)
+            except Exception:
+                pass
+        try:
+            if getattr(self, '_btn_open', None) is not None:
+                self._btn_open.setVisible(not hide_for_vp)
+        except Exception:
+            pass
+        try:
+            if getattr(self, '_btn_hide', None) is not None:
+                self._btn_hide.setVisible(True)
+        except Exception:
+            pass
 
     def hide_browser_panel(self, initial: bool = False):
         if not initial:
@@ -423,6 +466,8 @@ class HangarWindow(QMainWindow):
         except Exception:
             pass
         self._requested_url = ""
+        self._requested_script_id = 0
+        self._panel_kind = ""
         self._requested_id = 0
         try:
             self._native_browser.stop()
@@ -436,6 +481,7 @@ class HangarWindow(QMainWindow):
             self._native_browser.setUrl(QUrl("about:blank"))
         except Exception:
             pass
+        self._apply_browser_panel_mode(False, "")
         self._browser_title.setText("Native Browser")
         self._browser_url.setText("")
         self._emit_app_browser_state("", "", False)

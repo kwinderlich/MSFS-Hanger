@@ -1,0 +1,1 @@
+Release 261: keeps stable 260 wrapper path, fixes slew-to-WP1 by using wrapper-only one-shot browser script with radians for position vars and pause via the same Pomax command path as the UI, changes Zoom to aircraft/route to one-shot buttons, auto-zooms to route after loading into VP, renames the Pomax page title text, and enlarges the turn indicator.

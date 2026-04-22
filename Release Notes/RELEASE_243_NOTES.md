@@ -1,0 +1,1 @@
+Release 243: fixed Pomax runtime build stamp sync, improved Hangar route bridge so the first leg skips a departure waypoint at current position, stopped pre-arming HDG/ALT on bridge load, and added heading-capture debug logging.

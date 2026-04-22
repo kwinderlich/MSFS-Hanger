@@ -20,6 +20,7 @@ import uuid
 import sys
 import unicodedata
 import math
+import textwrap
 import xml.etree.ElementTree as ET
 from html import escape, unescape
 from pathlib import Path
@@ -44,6 +45,7 @@ from paths import BASE_DIR, USER_DATA_DIR, initialize_user_data, SETTINGS_JSON_P
 from native_dialogs import pick_or_create_folder
 from flight_tracker import FlightTracker
 from virtual_pilot import get_virtual_pilot_config
+from pomax_service import start_pomax, stop_pomax, get_pomax_status
 
 log = get_logger(__name__)
 
@@ -61,7 +63,7 @@ def _simconnect_endpoint_log(level: str, message: str, *args):
                 pass
 
 
-app = FastAPI(title="MSFS Hangar", version="2.0.136")
+app = FastAPI(title="MSFS Hangar", version="2.0.138")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
@@ -87,6 +89,212 @@ BASE_DIR = Path(__file__).parent
 FRONTEND_DIR = BASE_DIR / "frontend"
 initialize_user_data()
 setup_logging()
+VP_ROUTE_DIR = USER_DATA_DIR / 'vp_routes'
+VP_ROUTE_DIR.mkdir(parents=True, exist_ok=True)
+
+def _slugify_route_name(value: str) -> str:
+    raw = unicodedata.normalize('NFKD', str(value or '')).encode('ascii', 'ignore').decode('ascii')
+    raw = re.sub(r'[\\/:*?"<>|]+', ' ', raw)
+    raw = re.sub(r'\s+', ' ', raw).strip(' .')
+    if not raw:
+        raw = f'route-{int(time.time())}'
+    return raw
+
+def _friendly_route_file_name(name: str) -> str:
+    base_name = _slugify_route_name(name)
+    if not base_name.lower().endswith('.json'):
+        base_name += '.json'
+    return base_name
+
+def _normalize_route_points(points) -> list[dict]:
+    out = []
+    for pt in list(points or []):
+        try:
+            lat = float(pt.get('lat'))
+            lon_val = pt.get('lon', pt.get('long'))
+            lon = float(lon_val)
+            item = {'lat': lat, 'long': lon}
+            alt_val = pt.get('alt')
+            if alt_val not in (None, ''):
+                try:
+                    item['alt'] = float(alt_val)
+                except Exception:
+                    pass
+            out.append(item)
+        except Exception:
+            continue
+    return out
+
+def _vp_route_file_path(name: str = '', file_name: str = '') -> Path:
+    chosen = str(file_name or '').strip() or _friendly_route_file_name(name)
+    chosen = Path(chosen).name
+    if not chosen.lower().endswith('.json'):
+        chosen += '.json'
+    return VP_ROUTE_DIR / chosen
+
+def _write_vp_route_file(name: str, points, file_name: str = '') -> dict:
+    pts = _normalize_route_points(points)
+    if len(pts) < 2:
+        raise ValueError('At least two valid waypoints are required.')
+    path = _vp_route_file_path(name=name, file_name=file_name)
+    payload = {'name': str(name or path.stem), 'saved_at': datetime.utcnow().isoformat() + 'Z', 'points': pts}
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding='utf-8')
+    return {'file_name': path.name, 'path': str(path), 'count': len(pts), 'points': pts, 'name': payload['name']}
+
+def _read_vp_route_file(name: str = '', file_name: str = '') -> dict:
+    path = _vp_route_file_path(name=name, file_name=file_name)
+    if not path.exists():
+        raise FileNotFoundError(f'Route file not found: {path.name}')
+    raw = json.loads(path.read_text(encoding='utf-8'))
+    if isinstance(raw, list):
+        payload = {'name': path.stem, 'points': raw}
+    else:
+        payload = {'name': raw.get('name') or path.stem, 'points': raw.get('points') or []}
+    pts = _normalize_route_points(payload.get('points'))
+    if len(pts) < 2:
+        raise ValueError('Route file does not contain at least two valid waypoints.')
+    return {'file_name': path.name, 'path': str(path), 'name': payload['name'], 'count': len(pts), 'points': pts}
+
+def _build_pomax_load_script(points: list[dict], plan_name: str) -> str:
+    payload = json.dumps(points, ensure_ascii=False)
+    plan_name_js = json.dumps(str(plan_name or 'Hangar Route'))
+    script = textwrap.dedent("""
+        (function() {
+          const plan = __PAYLOAD__;
+          const planName = __PLAN_NAME__;
+          const loadPlan = () => {
+            try {
+              const browserClient = globalThis.browserClient;
+              const plane = browserClient?.plane || globalThis.plane;
+              const server = browserClient?.server || globalThis.server || plane?.server;
+              if (!server?.autopilot?.setFlightPlan) return false;
+              server.autopilot.setFlightPlan(plan);
+              const flightData = plane?.state?.flightInformation?.data || {};
+              if (!flightData.onGround && Number.isFinite(Number(flightData.lat)) && Number.isFinite(Number(flightData.long)) && typeof server.autopilot.revalidate === 'function') {
+                server.autopilot.revalidate(Number(flightData.lat), Number(flightData.long));
+              }
+              try { globalThis.__hangarLoadedRouteName = planName; } catch (e) {}
+              try { window.dispatchEvent(new CustomEvent('hangar-route-loaded', { detail: { name: planName, count: plan.length } })); } catch (e) {}
+              try { if (plane?.requestZoomToRoute) plane.requestZoomToRoute(); } catch (e) { console.warn('Hangar zoom-to-route request failed', e); }
+              return true;
+            } catch (e) {
+              console.error('Hangar route bridge failed', e);
+              return false;
+            }
+          };
+          if (loadPlan()) return 'ok';
+          let tries = 0;
+          const timer = setInterval(() => {
+            tries += 1;
+            if (loadPlan() || tries > 40) clearInterval(timer);
+          }, 500);
+          return 'queued';
+        })();
+    """)
+
+    return script.replace('__PAYLOAD__', payload).replace('__PLAN_NAME__', plan_name_js)
+
+
+def _build_pomax_command_script(command: str) -> str:
+    cmd = str(command or '').strip().lower()
+    command_json = json.dumps(cmd)
+    script = textwrap.dedent("""
+        (function(){
+          const command = __COMMAND__;
+          const server = globalThis.browserClient?.server || globalThis.server || globalThis.browserClient?.plane?.server;
+          const plane = globalThis.browserClient?.plane || globalThis.plane;
+          if (!server) return {ok:false,error:'server_unavailable'};
+          const trigger = (name, value) => server?.api?.trigger ? server.api.trigger(name, value) : false;
+          if (command === 'pause_on') {
+            trigger('PAUSE_ON', 0);
+            if (plane?.updatePauseButton) plane.updatePauseButton(true);
+            return {ok:true};
+          }
+          if (command === 'pause_off') {
+            trigger('PAUSE_OFF', 0);
+            if (plane?.updatePauseButton) plane.updatePauseButton(false);
+            return {ok:true};
+          }
+          return {ok:false,error:'unknown_command'};
+        })();
+    """)
+    return script.replace('__COMMAND__', command_json)
+
+
+def _bearing_degrees(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    phi1 = math.radians(float(lat1))
+    phi2 = math.radians(float(lat2))
+    dlon = math.radians(float(lon2) - float(lon1))
+    y = math.sin(dlon) * math.cos(phi2)
+    x = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(dlon)
+    brng = math.degrees(math.atan2(y, x))
+    return (brng + 360.0) % 360.0
+
+
+def _build_pomax_slew_script(points: list[dict], pause_after: bool = True) -> str:
+    pts = _normalize_route_points(points)
+    if not pts:
+        raise ValueError('At least one valid waypoint is required for slew.')
+    wp1 = dict(pts[0])
+    if len(pts) > 1:
+        try:
+            wp1['heading'] = round(_bearing_degrees(wp1['lat'], wp1['long'], pts[1]['lat'], pts[1]['long']), 1)
+        except Exception:
+            pass
+    payload = json.dumps(wp1, ensure_ascii=False)
+    pause_json = 'true' if pause_after else 'false'
+    script = textwrap.dedent("""
+        (async function(){
+          const waypoint = __WAYPOINT__;
+          const pauseAfter = __PAUSE_AFTER__;
+          const getServer = () => globalThis.browserClient?.server || globalThis.server || globalThis.browserClient?.plane?.server;
+          const plane = globalThis.browserClient?.plane || globalThis.plane;
+          const apiBase = globalThis.__hangarApiBase || 'http://127.0.0.1:7891';
+          const toRad = (v) => Number(v) * Math.PI / 180;
+          const tryRun = async () => {
+            const server = getServer();
+            if (!server?.api?.set || !server?.api?.trigger) return false;
+            const api = server.api;
+            const lat = Number(waypoint.lat);
+            const lon = Number(waypoint.long);
+            const heading = Number(waypoint.heading);
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+            try { await api.trigger('SLEW_ON', 0); } catch (e) { console.warn('SLEW_ON failed', e); }
+            await new Promise(r => setTimeout(r, 180));
+            try {
+              await api.set({
+                PLANE_LATITUDE: toRad(lat),
+                PLANE_LONGITUDE: toRad(lon),
+                ...(Number.isFinite(Number(waypoint.alt)) && Number(waypoint.alt) > 0 ? { INDICATED_ALTITUDE: Number(waypoint.alt) } : {}),
+                ...(Number.isFinite(heading) ? { PLANE_HEADING_DEGREES_TRUE: toRad(heading), AUTOPILOT_HEADING_LOCK_DIR: heading } : {})
+              });
+            } catch (e) { console.error('Hangar slew position set failed', e); }
+            await new Promise(r => setTimeout(r, 350));
+            try { await api.trigger('SLEW_OFF', 0); } catch (e) { console.warn('SLEW_OFF failed', e); }
+            await new Promise(r => setTimeout(r, 220));
+            if (pauseAfter) {
+              try {
+                await fetch(`${apiBase}/api/pomax/command`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ command: 'pause_on' })
+                });
+                if (plane?.updatePauseButton) plane.updatePauseButton(true);
+              } catch (e) { console.warn('Pause after slew failed', e); }
+            }
+            return true;
+          };
+          if (await tryRun()) return 'queued';
+          let tries = 0;
+          const timer = setInterval(async () => {
+            tries += 1;
+            if (await tryRun() || tries > 20) clearInterval(timer);
+          }, 500);
+          return 'waiting';
+        })();
+    """)
+    return script.replace('__WAYPOINT__', payload).replace('__PAUSE_AFTER__', pause_json)
+
 DATA_DIR = USER_DATA_DIR
 if DATA_DIR.exists():
     app.mount("/data", StaticFiles(directory=str(DATA_DIR)), name="data")
@@ -108,6 +316,10 @@ _browser_state = {
     'current_url': '',
     'current_title': '',
     'visible': False,
+    'minimal_controls': False,
+    'panel_kind': '',
+    'requested_script': '',
+    'script_id': 0,
     'updated_at': 0.0,
 }
 
@@ -141,6 +353,10 @@ def _update_browser_state(**kwargs):
 @app.on_event("startup")
 async def startup():
     initialize_user_data()
+    try:
+        stop_pomax()
+    except Exception:
+        pass
     await storage.init_db()
     settings = await storage.get_all_settings()
     flight_cfg = await storage.get_json_setting('flight_tracker_settings', {'poll_interval': 1.0})
@@ -154,6 +370,14 @@ async def startup():
     log.info("Using external data dir: %s", USER_DATA_DIR)
     log.info("Settings file: %s | exists=%s | size=%s | modified=%s", settings_info["path"], settings_info["exists"], settings_info["size"], settings_info["modified"] or "")
     log.info("Library DB: %s | exists=%s | size=%s | modified=%s", db_info["path"], db_info["exists"], db_info["size"], db_info["modified"] or "")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    try:
+        stop_pomax()
+    except Exception:
+        pass
 
 
 def _file_info(path: Path) -> dict:
@@ -1980,6 +2204,30 @@ class BrowserOpenRequest(BaseModel):
     url: str
     title: Optional[str] = None
     request_id: Optional[int] = None
+    minimal_controls: Optional[bool] = None
+    panel_kind: Optional[str] = None
+
+class BrowserScriptRequest(BaseModel):
+    script: str
+    script_id: Optional[int] = None
+
+class PomaxFlightPlanRequest(BaseModel):
+    points: list[dict] = []
+    name: Optional[str] = None
+    open_panel: Optional[bool] = True
+
+class PomaxRouteFileRequest(BaseModel):
+    name: str = 'Hangar Route'
+    file_name: str = ''
+    points: list[dict] = []
+    open_panel: bool = True
+
+class PomaxCommandRequest(BaseModel):
+    command: str = ''
+
+class PomaxSlewRequest(BaseModel):
+    points: list[dict] = []
+    pause_after: bool = True
 
 class BrowserUpdateRequest(BaseModel):
     current_url: Optional[str] = None
@@ -7017,6 +7265,11 @@ async def scan_status():
 async def browser_state():
     return {**_browser_state, 'shell_mode': os.environ.get('HANGAR_SHELL_MODE', 'browser')}
 
+@app.post("/api/browser/script")
+async def browser_script(body: BrowserScriptRequest):
+    _update_browser_state(requested_script=body.script, script_id=(body.script_id or time.time_ns()))
+    return {"ok": True, "script_id": _browser_state.get('script_id', 0)}
+
 @app.post("/api/browser/open")
 async def browser_open(body: BrowserOpenRequest):
     parsed = urlparse(body.url)
@@ -7031,7 +7284,7 @@ async def browser_open(body: BrowserOpenRequest):
             await _record_library_event('web_search', screen='browser', details={'url': body.url, 'title': body.title or '', 'search_query': q})
     except Exception:
         pass
-    _update_browser_state(requested_url=body.url, requested_title=body.title or body.url, request_id=(body.request_id or time.time_ns()), visible=True)
+    _update_browser_state(requested_url=body.url, requested_title=body.title or body.url, request_id=(body.request_id or time.time_ns()), visible=True, minimal_controls=bool(body.minimal_controls), panel_kind=(body.panel_kind or ''))
     return {"ok": True, "url": body.url, "request_id": _browser_state.get('request_id', 0)}
 
 @app.post("/api/browser/update")
@@ -7047,6 +7300,10 @@ async def browser_close():
         requested_title="",
         current_url="",
         current_title="",
+        minimal_controls=False,
+        panel_kind="",
+        requested_script="",
+        script_id=0,
     )
     return {"ok": True}
 
@@ -7161,6 +7418,106 @@ async def flight_logs():
         return {'items': data if isinstance(data, list) else []}
     except Exception as exc:
         return {'items': [], 'error': str(exc)}
+
+@app.get('/api/pomax/status')
+async def pomax_status():
+    return get_pomax_status()
+
+
+@app.post('/api/pomax/start')
+async def pomax_start(request: Request):
+    mode = request.query_params.get('mode', 'live')
+    try:
+        body = await request.json()
+        if isinstance(body, dict) and body.get('mode'):
+            mode = str(body.get('mode'))
+    except Exception:
+        pass
+    return start_pomax(mode=mode)
+
+
+@app.post('/api/pomax/stop')
+async def pomax_stop():
+    return stop_pomax()
+
+
+@app.post('/api/pomax/load-flightplan')
+async def pomax_load_flightplan(body: PomaxFlightPlanRequest):
+    points = _normalize_route_points(body.points or [])
+    if len(points) < 2:
+        raise HTTPException(400, 'At least two valid route points are required.')
+    status = get_pomax_status()
+    if not status.get('ready'):
+        raise HTTPException(409, 'Integrated Virtual Pilot is not ready yet.')
+    if body.open_panel is not False:
+        _update_browser_state(
+            requested_url=status.get('web_url') or 'http://127.0.0.1:3300',
+            requested_title='Integrated Virtual Pilot',
+            request_id=time.time_ns(),
+            visible=True,
+            minimal_controls=True,
+            panel_kind='vp',
+        )
+    _update_browser_state(requested_script=_build_pomax_load_script(points, str(body.name or 'Hangar Route')), script_id=time.time_ns())
+    return {'ok': True, 'count': len(points), 'message': f'Loaded {len(points)} Hangar route waypoints into the integrated Virtual Pilot.'}
+
+
+@app.post('/api/pomax/route-file/save')
+async def pomax_route_file_save(body: PomaxRouteFileRequest):
+    try:
+        result = _write_vp_route_file(name=str(body.name or 'Hangar Route'), points=body.points or [], file_name=str(body.file_name or ''))
+        return {'ok': True, **result, 'message': f"Saved route file {result['file_name']}"}
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post('/api/pomax/route-file/load')
+async def pomax_route_file_load(body: PomaxRouteFileRequest):
+    try:
+        result = _read_vp_route_file(name=str(body.name or ''), file_name=str(body.file_name or ''))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+    status = get_pomax_status()
+    if not status.get('ready'):
+        raise HTTPException(409, 'Integrated Virtual Pilot is not ready yet.')
+    if body.open_panel is not False:
+        _update_browser_state(
+            requested_url=status.get('web_url') or 'http://127.0.0.1:3300',
+            requested_title='Integrated Virtual Pilot',
+            request_id=time.time_ns(),
+            visible=True,
+            minimal_controls=True,
+            panel_kind='vp',
+        )
+    _update_browser_state(requested_script=_build_pomax_load_script(result['points'], result['name']), script_id=time.time_ns())
+    return {'ok': True, **result, 'message': f"Loaded {result['count']} waypoint(s) from {result['file_name']}"}
+
+
+@app.post('/api/pomax/command')
+async def pomax_command(body: PomaxCommandRequest):
+    status = get_pomax_status()
+    if not status.get('ready'):
+        raise HTTPException(409, 'Integrated Virtual Pilot is not ready yet.')
+    cmd = str(body.command or '').strip().lower()
+    if cmd not in {'pause_on', 'pause_off'}:
+        raise HTTPException(400, 'Unsupported Pomax command.')
+    _update_browser_state(requested_script=_build_pomax_command_script(cmd), script_id=time.time_ns())
+    return {'ok': True, 'command': cmd, 'message': f'Issued {cmd} to the integrated Virtual Pilot.'}
+
+
+@app.post('/api/pomax/slew-start')
+async def pomax_slew_start(body: PomaxSlewRequest):
+    status = get_pomax_status()
+    if not status.get('ready'):
+        raise HTTPException(409, 'Integrated Virtual Pilot is not ready yet.')
+    points = _normalize_route_points(body.points)
+    if len(points) < 1:
+        raise HTTPException(400, 'At least one valid waypoint is required.')
+    _update_browser_state(requested_script=_build_pomax_slew_script(points, pause_after=bool(body.pause_after)), script_id=time.time_ns())
+    return {'ok': True, 'message': 'Queued slew to route start for the integrated Virtual Pilot.', 'count': len(points)}
+
 
 @app.get('/api/virtual-pilot/config')
 async def virtual_pilot_config():
